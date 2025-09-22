@@ -1,17 +1,13 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/cagostino/npcpy/main/npcpy.png" alt="npcpy logo of a solarpunk sign">
+  <a href= "https://github.com/cagostino/npcpy/blob/main/docs/npcpy.md"> 
+  <img src="https://raw.githubusercontent.com/cagostino/npcpy/main/npcpy/npc-python.png" alt="npc-python logo" width=250></a>
 </p>
-
 
 # npcpy
 
 Welcome to `npcpy`, the core library of the NPC Toolkit that supercharges natural language processing pipelines and agent tooling. `npcpy` is a flexible framework for building state-of-the-art applications and conducting novel research with LLMs.
 
 
-<p align="center">
-  <a href= "https://github.com/cagostino/npcpy/blob/main/docs/npcpy.md"> 
-  <img src="https://raw.githubusercontent.com/cagostino/npcpy/main/npcpy/npc-python.png" alt="npc-python logo" width=250></a>
-</p>
 
 
 Here is an example for getting responses for a particular agent:
