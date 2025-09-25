@@ -443,7 +443,7 @@ def get_global_settings():
             "embedding_model": "nomic-embed-text",
             "embedding_provider": "ollama",
             "search_provider": "perplexity",
-            "NPCSH_LICENSE_KEY": "",
+            "NPC_STUDIO_LICENSE_KEY": "",
             "default_folder": os.path.expanduser("~/.npcsh/"),
         }
         global_vars = {}
@@ -479,7 +479,7 @@ def get_global_settings():
                         "NPCSH_EMBEDDING_MODEL": "embedding_model",
                         "NPCSH_EMBEDDING_PROVIDER": "embedding_provider",
                         "NPCSH_SEARCH_PROVIDER": "search_provider",
-                        "NPCSH_LICENSE_KEY": "NPCSH_LICENSE_KEY",
+                        "NPC_STUDIO_LICENSE_KEY": "NPC_STUDIO_LICENSE_KEY",
                         "NPCSH_STREAM_OUTPUT": "NPCSH_STREAM_OUTPUT",
                         "NPC_STUDIO_DEFAULT_FOLDER": "default_folder",
                     }
@@ -521,7 +521,7 @@ def save_global_settings():
             "embedding_model": "NPCSH_EMBEDDING_MODEL",
             "embedding_provider": "NPCSH_EMBEDDING_PROVIDER",
             "search_provider": "NPCSH_SEARCH_PROVIDER",
-            "NPCSH_LICENSE_KEY": "NPCSH_LICENSE_KEY",
+            "NPC_STUDIO_LICENSE_KEY": "NPC_STUDIO_LICENSE_KEY",
             "NPCSH_STREAM_OUTPUT": "NPCSH_STREAM_OUTPUT",
             "default_folder": "NPC_STUDIO_DEFAULT_FOLDER",
         }
