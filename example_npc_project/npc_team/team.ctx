@@ -1,0 +1,12 @@
+name: Data Science Team
+context: We are a data-driven team focused on extracting actionable insights from complex business data
+model: mistral-large2
+provider: ollama
+forenpc: data_analyst
+databases: 
+  - customer_insights
+  - sales_performance
+preferences:
+  - detail-oriented analysis
+  - predictive modeling
+  - data visualization
