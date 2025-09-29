@@ -475,9 +475,9 @@ def get_litellm_response(
                         pdf_data = load_pdf(attachment)
                         if pdf_data is not None:
                             if prompt:
-                                prompt += f"\n\nContent from PDF: {os.path.basename(attachment)}\n{pdf_data[:5000]}..."
+                                prompt += f"\n\nContent from PDF: {os.path.basename(attachment)}\n{pdf_data}..."
                             else:
-                                prompt = f"Content from PDF: {os.path.basename(attachment)}\n{pdf_data[:5000]}..."
+                                prompt = f"Content from PDF: {os.path.basename(attachment)}\n{pdf_data}..."
 
                     except Exception:
                         pass
