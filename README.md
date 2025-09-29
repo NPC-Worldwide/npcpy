@@ -324,6 +324,59 @@ model_path = run_sft(X_train, y_train)
 model, tokenizer = load_sft_model(model_path)
 response = predict_sft(model, tokenizer, "translate to french: thanks")
 ```
+### Unsupervised Fine-Tuning (USFT)
+Adapt models to domain-specific text corpora without labels:
+```python
+from npcpy.ft.usft import run_usft, load_corpus_from_hf
+
+texts = load_corpus_from_hf("tiny_shakespeare", split="train[:1000]")
+
+model_path = run_usft(
+    texts,
+    config=USFTConfig(
+        output_model_path="models/shakespeare",
+        num_train_epochs=3
+    )
+)
+Train on your own text corpus:
+pythondomain_texts = [
+    "Your domain-specific text 1",
+    "Your domain-specific text 2",
+] * 100
+
+model_path = run_usft(domain_texts)
+```
+### Diffusion Fine-tuning
+```
+from npcpy.ft.diff import train_diffusion, generate_image
+
+image_paths = ["img1.png", "img2.png", "img3.png"]
+captions = ["a cat", "a dog", "a bird"]
+
+model_path = train_diffusion(
+    image_paths,
+    captions,
+    config=DiffusionConfig(
+        num_epochs=100,
+        batch_size=4
+    )
+)
+
+generated = generate_image(
+    model_path,
+    prompt="a white square",
+    image_size=128
+)
+Resume training from checkpoint:
+pythonmodel_path = train_diffusion(
+    image_paths,
+    captions,
+    config,
+    resume_from="models/diffusion/checkpoints/checkpoint-epoch10-step1000.pt"
+)
+```
+
+
 ### Reinforcement Learning (RL)
 Collect agent traces and train with DPO based on reward signals:
 ```python
