@@ -1908,7 +1908,8 @@ class Team:
             "dataframes": {},
             "memories": {},          
             "execution_history": [],   
-            "npc_messages": {}                 
+            "npc_messages": {},
+            "context":''       
             }
                 
         if team_path:
@@ -2017,11 +2018,12 @@ class Team:
                         self.databases = ctx_data['databases']
                     else:
                         self.databases = []
-                    if 'context' in ctx_data:
-                        self.context = ctx_data['context']
-                    else:
-                        self.context = ''
-
+                    
+                    base_context = ctx_data.get('context', '')
+                    self.shared_context['context'] = base_context
+                    if 'file_patterns' in ctx_data:
+                        file_cache = self._parse_file_patterns(ctx_data['file_patterns'])
+                        self.shared_context['files'] = file_cache
                     if 'preferences' in ctx_data:
                         self.preferences = ctx_data['preferences']
                     else:
@@ -2031,7 +2033,7 @@ class Team:
                     else:
                         self.forenpc = self.npcs[list(self.npcs.keys())[0]] if self.npcs else None
                     for key, item in ctx_data.items():
-                        if key not in ['name', 'mcp_servers', 'databases', 'context']:
+                        if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns']:
                             self.shared_context[key] = item
                 return ctx_data
         return {}
@@ -2288,6 +2290,85 @@ class Team:
             team.save(team_dir)
             
         return True
+    def _parse_file_patterns(self, patterns_config):
+        """Parse file patterns configuration and load matching files into KV cache"""
+        if not patterns_config:
+            return {}
+        
+        file_cache = {}
+        
+        for pattern_entry in patterns_config:
+            if isinstance(pattern_entry, str):
+                pattern_entry = {"pattern": pattern_entry}
+            
+            pattern = pattern_entry.get("pattern", "")
+            recursive = pattern_entry.get("recursive", False)
+            base_path = pattern_entry.get("base_path", ".")
+            
+            if not pattern:
+                continue
+                
+            base_path = os.path.expanduser(base_path)
+            if not os.path.isabs(base_path):
+                base_path = os.path.join(self.team_path or os.getcwd(), base_path)
+            
+            matching_files = self._find_matching_files(pattern, base_path, recursive)
+            
+            for file_path in matching_files:
+                file_content = self._load_file_content(file_path)
+                if file_content:
+                    relative_path = os.path.relpath(file_path, base_path)
+                    file_cache[relative_path] = file_content
+        
+        return file_cache
+
+    def _find_matching_files(self, pattern, base_path, recursive=False):
+        """Find files matching the given pattern"""
+        matching_files = []
+        
+        if not os.path.exists(base_path):
+            return matching_files
+        
+        if recursive:
+            for root, dirs, files in os.walk(base_path):
+                for filename in files:
+                    if fnmatch.fnmatch(filename, pattern):
+                        matching_files.append(os.path.join(root, filename))
+        else:
+            try:
+                for item in os.listdir(base_path):
+                    item_path = os.path.join(base_path, item)
+                    if os.path.isfile(item_path) and fnmatch.fnmatch(item, pattern):
+                        matching_files.append(item_path)
+            except PermissionError:
+                print(f"Permission denied accessing {base_path}")
+        
+        return matching_files
+
+    def _load_file_content(self, file_path):
+        """Load content from a file with error handling"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
+            return None
+
+
+    def _format_parsed_files_context(self, parsed_files):
+        """Format parsed files into context string"""
+        if not parsed_files:
+            return ""
+        
+        context_parts = ["Additional context from files:"]
+        
+        for file_path, content in parsed_files.items():
+            context_parts.append(f"\n--- {file_path} ---")
+            context_parts.append(content)
+            context_parts.append("")
+        
+        return "\n".join(context_parts)
+
 class Pipeline:
     def __init__(self, pipeline_data=None, pipeline_path=None, npc_team=None):
         """Initialize a pipeline from data or file path"""
