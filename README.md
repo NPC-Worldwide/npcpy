@@ -303,6 +303,99 @@ the citizens, being directed by simple and incontestable principles, may tend to
 maintenance of the Constitution, and the general happiness. ''')
 # it will play the audio automatically.
 ```
+## Fine-Tuning and Evolution
+
+`npcpy` provides modular tools for building adaptive AI systems through supervised fine-tuning, reinforcement learning, and genetic algorithms.
+
+See examples/fine_tuning_demo.py for a complete working example.
+
+
+### Supervised Fine-Tuning (SFT)
+
+Train models on specific tasks using simple X, y pairs:
+```python
+from npcpy.ft.sft import run_sft, load_sft_model, predict_sft
+
+X_train = ["translate to french: hello", "translate to french: goodbye"]
+y_train = ["bonjour", "au revoir"]
+
+model_path = run_sft(X_train, y_train)
+
+model, tokenizer = load_sft_model(model_path)
+response = predict_sft(model, tokenizer, "translate to french: thanks")
+```
+### Reinforcement Learning (RL)
+Collect agent traces and train with DPO based on reward signals:
+```python
+from npcpy.ft.rl import collect_traces, run_rl_training
+from npcpy.npc_compiler import NPC
+
+tasks = [
+    {'prompt': 'Solve 2+2', 'expected': '4'},
+    {'prompt': 'Solve 5+3', 'expected': '8'}
+]
+
+agents = [
+    NPC(name="farlor", primary_directive="Be concise", 
+        model="qwen3:0.6b", provider="ollama"),
+    NPC(name="tedno", primary_directive="Show your work",
+        model="qwen3:0.6b", provider="ollama")
+]
+
+def reward_fn(trace):
+    if trace['task_metadata']['expected'] in trace['final_output']:
+        return 1.0
+    return 0.0
+
+adapter_path = run_rl_training(tasks, agents, reward_fn)
+```
+### Genetic Evolution
+
+Evolve populations of knowledge graphs or model ensembles:
+```python
+from npcpy.ft.ge import GeneticEvolver, GAConfig
+
+config = GAConfig(
+    population_size=20,
+    generations=50,
+    mutation_rate=0.15
+)
+
+evolver = GeneticEvolver(
+    fitness_fn=your_fitness_function,
+    mutate_fn=your_mutation_function,
+    crossover_fn=your_crossover_function,
+    initialize_fn=your_init_function,
+    config=config
+)
+
+best_individual = evolver.run()
+```
+
+### Smart Model Ensembler and response router 
+Build fast intuitive responses with fallback to reasoning:
+```python
+from npcpy.ft.model_ensembler import (
+    ResponseRouter,
+    create_model_genome
+)
+
+genome = create_model_genome(['math', 'code', 'factual'])
+router = ResponseRouter(fast_threshold=0.8)
+
+result = router.route_query("What is 2+2?", genome)
+
+if result['used_fast_path']:
+    print("Fast gut reaction")
+elif result['used_ensemble']:
+    print("Ensemble voting")
+else:
+    print("Full reasoning")
+```
+The intention for this model ensembler system is to mimic human cognition: pattern-matched gut reactions (System 1 of Kahneman) for familiar queries, falling back to deliberate reasoning (System 2 of Kahneman) for novel problems. Genetic algorithms evolve both knowledge structures and model specializations over time.
+
+
+
 ## Serving an NPC Team
 
 `npcpy` includes a built-in Flask server that makes it easy to deploy NPC teams for production use. You can serve teams with tools, jinxs, and complex workflows that frontends can interact with via REST APIs.
