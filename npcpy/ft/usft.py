@@ -1,14 +1,24 @@
 from dataclasses import dataclass, field
-from datasets import Dataset, load_dataset
+try:
+    from datasets import Dataset, load_dataset
+    import torch
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        TrainingArguments
+    )
+    from trl import SFTTrainer
+    from peft import LoraConfig
+except:
+    Dataset = None
+    load_dataset = None
+    torch = None
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+    TrainingArguments = None
+    SFTTrainer = None
+    
 from typing import List, Optional
-import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    TrainingArguments
-)
-from trl import SFTTrainer
-from peft import LoraConfig
 
 
 @dataclass

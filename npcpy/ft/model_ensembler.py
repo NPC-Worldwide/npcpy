@@ -4,8 +4,11 @@ import random
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from npcpy.llm_funcs import get_llm_response
-from npcpy.ft.sft import predict_sft, load_sft_model
 
+try:
+    from npcpy.ft.sft import predict_sft, load_sft_model
+except:
+    pass
 
 @dataclass
 class ModelGene:

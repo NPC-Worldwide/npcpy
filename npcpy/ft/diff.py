@@ -1,8 +1,18 @@
 # finetuning diffuser models
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset as TorchDataset
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from torch.utils.data import DataLoader, Dataset as TorchDataset
+    from transformers import CLIPTextModel, CLIPTokenizer
+except:
+    torch = None
+    nn = None    
+    F = None
+    DataLoader = None
+    TorchDataset = None
+    CLIPTextModel = None
+    CLIPTokenizer = None
 import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable
@@ -11,7 +21,6 @@ from PIL import Image
 import os
 from tqdm import tqdm
 import gc
-from transformers import CLIPTextModel, CLIPTokenizer
 
 
 @dataclass

@@ -4,14 +4,23 @@ from datasets import Dataset
 import json
 import numpy as np
 import os
-import torch
-from transformers import (
-    AutoModelForCausalLM, 
-    AutoTokenizer, 
-    TrainingArguments
-)
-from trl import SFTTrainer
-from peft import LoraConfig
+try:
+    import torch
+    from transformers import (
+        AutoModelForCausalLM, 
+        AutoTokenizer, 
+        TrainingArguments
+    )
+    from trl import SFTTrainer
+    from peft import LoraConfig
+except:
+    torch = None
+    SFTTrainer = None
+    LoraConfig = None
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+    TrainingArguments = None
+
 from typing import List, Dict, Any, Optional
 
 

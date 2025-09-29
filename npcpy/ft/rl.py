@@ -1,18 +1,31 @@
 from dataclasses import dataclass
-from datasets import Dataset
+
 from datetime import datetime
 import glob
 import json
 import os
 import pandas as pd
-from peft import LoraConfig, PeftModel
+try:
+    from datasets import Dataset
+
+    from peft import LoraConfig, PeftModel
+    import torch
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoTokenizer
+    )
+    from trl import DPOTrainer, DPOConfig
+except:
+    Dataset = None
+    PeftModel = None
+    DPOConfig = None
+    DPOTrainer = None
+    torch = None
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+
+    
 import random
-import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer
-)
-from trl import DPOTrainer, DPOConfig
 from typing import List, Dict, Any, Optional, Callable
 from npcpy.npc_compiler import NPC
 from npcpy.llm_funcs import get_llm_response

@@ -619,6 +619,29 @@ class CommandHistory:
         }
         
         return self._execute_returning_id(stmt, params)
+    def get_memories_for_scope(
+        self,
+        npc: str,
+        team: str,
+        directory_path: str,
+        status: Optional[str] = None
+    ) -> List[Dict]:
+        
+        query = """
+            SELECT id, initial_memory, final_memory, 
+                status, timestamp, created_at
+            FROM memory_lifecycle
+            WHERE npc = :npc AND team = :team AND directory_path = :path
+        """
+        params = {"npc": npc, "team": team, "path": directory_path}
+        
+        if status:
+            query += " AND status = :status"
+            params["status"] = status
+        
+        query += " ORDER BY created_at DESC"
+        data =self._fetch_all(query, params)
+        return  data
 
     def search_memory(self, query: str, npc: str = None, team: str = None, 
                     directory_path: str = None, status_filter: str = None, limit: int = 10):

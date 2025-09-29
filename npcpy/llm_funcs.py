@@ -1015,7 +1015,7 @@ def execute_multi_step_plan(
 
     step_outputs = []
     current_messages = messages.copy()
-    render_markdown(f"### Plan for Command: {command[100:]}")
+    render_markdown(f"### Plan for Command: {command[:100]}")
     for action in planned_actions:
         step_info = json.dumps({'action': action.get('action', ''), 
                                 'explanation': str(action.get('explanation',''))[0:10]+'...'})
