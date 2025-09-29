@@ -5,20 +5,19 @@ from npcpy.ft.rl import (
     RLConfig,
     TaskExecutor
 )
-from npcpy.ft.ge import (
-    GeneticEvolver, 
-    GAConfig,
-    create_knowledge_graph,
-    mutate_knowledge_graph,
-    crossover_knowledge_graphs,
-    evaluate_knowledge_graph
-)
+from npcpy.ft.ge import GeneticEvolver, GAConfig
 from npcpy.ft.model_ensembler import (
     ResponseRouter,
     create_model_genome,
     mutate_model_genome,
     crossover_model_genomes,
     evaluate_model_genome
+)
+from npcpy.memory.knowledge_graph import (
+    kg_initial,
+    kg_evolve_incremental,
+    kg_sleep_process,
+    kg_dream_process
 )
 from npcpy.npc_compiler import NPC
 import random
@@ -143,50 +142,49 @@ def demo_rl():
 def demo_genetic_knowledge_graphs():
     print("\n=== GENETIC KNOWLEDGE GRAPH EVOLUTION ===")
     
-    initial_facts = [
-        {
-            'statement': 'Paris is the capital of France',
-            'source_text': 'geography',
-            'type': 'explicit'
-        },
-        {
-            'statement': 'France is in Europe',
-            'source_text': 'geography',
-            'type': 'explicit'
-        },
-        {
-            'statement': 'The Eiffel Tower is in Paris',
-            'source_text': 'landmarks',
-            'type': 'explicit'
-        },
-    ]
+    initial_content = """
+    Paris is the capital of France. France is in Europe.
+    The Eiffel Tower is in Paris and is a famous landmark.
+    """
     
-    test_queries = [
-        "Where is the Eiffel Tower?",
-        "What continent is Paris in?",
-    ]
+    kg = kg_initial(
+        content=initial_content,
+        model="qwen3:0.6b",
+        provider="ollama"
+    )
     
-    def init_graph():
-        return create_knowledge_graph(
-            initial_facts,
+    print(f"Initial KG: {len(kg['facts'])} facts, "
+          f"{len(kg['concepts'])} concepts")
+    
+    def mutate_kg(kg_data):
+        evolved_kg, _ = kg_sleep_process(
+            kg_data,
             model="qwen3:0.6b",
-            provider="ollama"
+            provider="ollama",
+            operations_config=['prune', 'deepen']
         )
+        return evolved_kg
     
-    def mutate_graph(graph):
-        return mutate_knowledge_graph(
-            graph,
-            model="qwen3:0.6b",
-            provider="ollama"
-        )
+    def crossover_kgs(kg1, kg2):
+        child = {
+            'facts': kg1['facts'][:len(kg1['facts'])//2] + 
+                    kg2['facts'][len(kg2['facts'])//2:],
+            'concepts': kg1['concepts'] if len(kg1['concepts']) > 
+                       len(kg2['concepts']) else kg2['concepts'],
+            'generation': max(kg1['generation'], kg2['generation']) + 1,
+            'fact_to_concept_links': kg1.get('fact_to_concept_links', {}),
+            'fact_to_fact_links': kg1.get('fact_to_fact_links', [])
+        }
+        return child
     
-    def fitness_graph(graph):
-        return evaluate_knowledge_graph(
-            graph,
-            test_queries,
-            model="qwen3:0.6b",
-            provider="ollama"
-        )
+    def fitness_kg(kg_data):
+        fact_count = len(kg_data.get('facts', []))
+        concept_count = len(kg_data.get('concepts', []))
+        
+        return (fact_count * 0.5 + concept_count * 0.5) / 100.0
+    
+    def init_kg():
+        return kg
     
     config = GAConfig(
         population_size=5,
@@ -195,20 +193,20 @@ def demo_genetic_knowledge_graphs():
     )
     
     evolver = GeneticEvolver(
-        fitness_fn=fitness_graph,
-        mutate_fn=mutate_graph,
-        crossover_fn=crossover_knowledge_graphs,
-        initialize_fn=init_graph,
+        fitness_fn=fitness_kg,
+        mutate_fn=mutate_kg,
+        crossover_fn=crossover_kgs,
+        initialize_fn=init_kg,
         config=config
     )
     
     print("Evolving knowledge graphs...")
-    best_graph = evolver.run()
+    best_kg = evolver.run()
     
-    print(f"\nBest graph has {len(best_graph['facts'])} facts")
-    print(f"Groups: {[g['name'] for g in best_graph['groups'][:3]]}")
+    print(f"\nBest KG: {len(best_kg['facts'])} facts, "
+          f"{len(best_kg['concepts'])} concepts")
     
-    return best_graph
+    return best_kg
 
 
 def demo_genetic_model_genomes():
