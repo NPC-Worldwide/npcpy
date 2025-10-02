@@ -63,7 +63,7 @@ warnings.filterwarnings("ignore", module="torch.serialization")
 os.environ["PYTHONWARNINGS"] = "ignore"
 os.environ["SDL_AUDIODRIVER"] = "dummy"
 
-def check_internet_connection(timeout=0.5):
+def check_internet_connection(timeout=5):
     """
     Checks for internet connectivity by trying to connect to a well-known host.
     """
@@ -87,16 +87,78 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                         key, value = line.split("=", 1)
                         env_vars[key.strip()] = value.strip().strip("\"'")
 
-    
     internet_available = check_internet_connection()
     if not internet_available:
-        logging.info("No internet connection detected. External API calls will be skipped (effective airplane_mode).")
-        
+        logging.info(
+            "No internet connection detected. "
+            "External API calls will be skipped."
+        )
         airplane_mode = True
     else:
-        logging.info("Internet connection detected. Proceeding based on 'airplane_mode' parameter.")
+        logging.info(
+            "Internet connection detected. "
+            "Proceeding based on 'airplane_mode' parameter."
+        )
+    
+    custom_providers = load_custom_providers()
+    
+    for provider_name, config in custom_providers.items():
+        api_key_var = config.get('api_key_var')
+        if not api_key_var:
+            api_key_var = f"{provider_name.upper()}_API_KEY"
+        
+        if api_key_var in env_vars or os.environ.get(api_key_var):
+            try:
+                import requests
+                
+                def fetch_custom_models():
+                    base_url = config.get('base_url', '')
+                    headers = config.get('headers', {})
+                    
+                    api_key = env_vars.get(api_key_var) or \
+                              os.environ.get(api_key_var)
+                    if api_key:
+                        headers['Authorization'] = f'Bearer {api_key}'
+                    
+                    models_endpoint = f"{base_url.rstrip('/')}/models"
+                    response = requests.get(
+                        models_endpoint, 
+                        headers=headers,
+                        timeout=3.5
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        if isinstance(data, dict) and 'data' in data:
+                            return [
+                                m['id'] for m in data['data'] 
+                                if 'id' in m
+                            ]
+                        elif isinstance(data, list):
+                            return [
+                                m['id'] for m in data 
+                                if isinstance(m, dict) and 'id' in m
+                            ]
+                    return []
+                
+                models = fetch_custom_models()
+                for model in models:
+                    available_models[model] = provider_name
+                    
+                logging.info(
+                    f"Loaded {len(models)} models "
+                    f"from custom provider '{provider_name}'"
+                )
+                
+            except Exception as e:
+                logging.warning(
+                    f"Failed to load models from "
+                    f"custom provider '{provider_name}': {e}"
+                )
     
 
+    airplane_mode = False
     if not airplane_mode:
         timeout_seconds = 3.5
         
@@ -802,50 +864,116 @@ def load_env_from_execution_dir() -> None:
 
 
 
+
 def lookup_provider(model: str) -> str:
     """
-    Function Description:
-        This function determines the provider based on the model name.
+    Determine the provider based on the model name.
+    Checks custom providers first, then falls back to known providers.
+    
     Args:
-        model (str): The model name.
-    Keyword Args:
-        None
+        model: The model name
+        
     Returns:
-        str: The provider based on the model name.
+        The provider name or None if not found
     """
+    custom_providers = load_custom_providers()
+    
+    for provider_name, config in custom_providers.items():
+        if model.startswith(f"{provider_name}-"):
+            return provider_name
+        
+        try:
+            import requests
+            api_key_var = config.get('api_key_var') or \
+                         f"{provider_name.upper()}_API_KEY"
+            api_key = os.environ.get(api_key_var)
+            
+            if api_key:
+                base_url = config.get('base_url', '')
+                headers = config.get('headers', {})
+                headers['Authorization'] = f'Bearer {api_key}'
+                
+                models_endpoint = f"{base_url.rstrip('/')}/models"
+                response = requests.get(
+                    models_endpoint, 
+                    headers=headers, 
+                    timeout=1.0
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    models = []
+                    
+                    if isinstance(data, dict) and 'data' in data:
+                        models = [m['id'] for m in data['data']]
+                    elif isinstance(data, list):
+                        models = [m['id'] for m in data]
+                    
+                    if model in models:
+                        return provider_name
+        except:
+            pass
+    
     if model == "deepseek-chat" or model == "deepseek-reasoner":
         return "deepseek"
+        
     ollama_prefixes = [
-        "llama",
-        "deepseek",
-        "qwen",
-        "llava",
-        "phi",
-        "mistral",
-        "mixtral",
-        "dolphin",
-        "codellama",
-        "gemma",
-    ]
+        "llama", "deepseek", "qwen", "llava", 
+        "phi", "mistral", "mixtral", "dolphin", 
+        "codellama", "gemma",]
     if any(model.startswith(prefix) for prefix in ollama_prefixes):
         return "ollama"
 
-    
     openai_prefixes = ["gpt-", "dall-e-", "whisper-", "o1"]
     if any(model.startswith(prefix) for prefix in openai_prefixes):
         return "openai"
 
-    
     if model.startswith("claude"):
         return "anthropic"
     if model.startswith("gemini"):
         return "gemini"
     if "diffusion" in model:
         return "diffusers"
+        
     return None
+
+
+def load_custom_providers():
+    """
+    Load custom provider configurations from .npcshrc
+    
+    Returns:
+        dict: Custom provider configurations keyed by provider name
+    """
+    custom_providers = {}
+    npcshrc_path = os.path.expanduser("~/.npcshrc")
+    
+    if os.path.exists(npcshrc_path):
+        with open(npcshrc_path, "r") as f:
+            for line in f:
+                line = line.split("#")[0].strip()
+                if "CUSTOM_PROVIDER_" in line and "=" in line:
+                    key, value = line.split("=", 1)
+                    key = key.strip().replace("export ", "")
+                    value = value.strip().strip("\"'")
+                    
+                    try:
+                        config = json.loads(value)
+                        provider_name = key.replace(
+                            "CUSTOM_PROVIDER_", ""
+                        ).lower()
+                        custom_providers[provider_name] = config
+                    except json.JSONDecodeError as e:
+                        logging.warning(
+                            f"Failed to parse custom provider {key}: {e}"
+                        )
+                        continue
+    
+    return custom_providers
 load_env_from_execution_dir()
 deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", None)
 gemini_api_key = os.getenv("GEMINI_API_KEY", None)
 
 anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", None)
 openai_api_key = os.getenv("OPENAI_API_KEY", None)
+

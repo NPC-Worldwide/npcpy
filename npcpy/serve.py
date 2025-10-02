@@ -1942,7 +1942,7 @@ def stream():
 
                 print('.', end="", flush=True)
                 dot_count += 1
-                if "hf.co" in model or provider == 'ollama':
+                if "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
                     chunk_content = response_chunk["message"]["content"] if "message" in response_chunk and "content" in response_chunk["message"] else ""
                     if "message" in response_chunk and "tool_calls" in response_chunk["message"]:
                         for tool_call in response_chunk["message"]["tool_calls"]:
@@ -1959,7 +1959,9 @@ def stream():
                     if chunk_content:
                         complete_response.append(chunk_content)
                     chunk_data = {
-                        "id": None, "object": None, "created": response_chunk["created_at"], "model": response_chunk["model"],
+                        "id": None, "object": None, 
+                        "created": response_chunk["created_at"] or datetime.datetime.now(), 
+                        "model": response_chunk["model"],
                         "choices": [{"index": 0, "delta": {"content": chunk_content, "role": response_chunk["message"]["role"]}, "finish_reason": response_chunk.get("done_reason")}]
                     }
                     yield f"data: {json.dumps(chunk_data)}\n\n"
