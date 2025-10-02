@@ -1288,6 +1288,187 @@ def get_available_image_models(current_path=None):
 
     return unique_models
 
+@app.route('/api/generative_fill', methods=['POST'])
+def generative_fill():
+    data = request.get_json()
+    image_path = data.get('imagePath')
+    mask_data = data.get('mask')
+    prompt = data.get('prompt')
+    model = data.get('model')
+    provider = data.get('provider')
+    
+    if not all([image_path, mask_data, prompt, model, provider]):
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    try:
+        image_path = os.path.expanduser(image_path)
+        
+        mask_b64 = mask_data.split(',')[1] if ',' in mask_data else mask_data
+        mask_bytes = base64.b64decode(mask_b64)
+        mask_image = Image.open(BytesIO(mask_bytes))
+        
+        original_image = Image.open(image_path)
+        
+        if provider == 'openai':
+            result = inpaint_openai(original_image, mask_image, prompt, model)
+        elif provider == 'gemini':
+            result = inpaint_gemini(original_image, mask_image, prompt, model)
+        elif provider == 'diffusers':
+            result = inpaint_diffusers(original_image, mask_image, prompt, model)
+        else:
+            return jsonify({"error": f"Provider {provider} not supported"}), 400
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"inpaint_{timestamp}.png"
+        save_dir = os.path.dirname(image_path)
+        result_path = os.path.join(save_dir, filename)
+        
+        result.save(result_path)
+        
+        return jsonify({"resultPath": result_path, "error": None})
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+def inpaint_openai(image, mask, prompt, model):
+    import io
+    from openai import OpenAI
+    from PIL import Image
+    import base64
+    
+    client = OpenAI()
+    
+    original_size = image.size
+    
+    if model == 'dall-e-2':
+        valid_sizes = ['256x256', '512x512', '1024x1024']
+        max_dim = max(image.width, image.height)
+        
+        if max_dim <= 256:
+            target_size = (256, 256)
+            size_str = '256x256'
+        elif max_dim <= 512:
+            target_size = (512, 512)
+            size_str = '512x512'
+        else:
+            target_size = (1024, 1024)
+            size_str = '1024x1024'
+    else:
+        valid_sizes = {
+            (1024, 1024): "1024x1024",
+            (1024, 1536): "1024x1536", 
+            (1536, 1024): "1536x1024"
+        }
+        
+        target_size = (1024, 1024)
+        for size in valid_sizes.keys():
+            if image.width > image.height and size == (1536, 1024):
+                target_size = size
+                break
+            elif image.height > image.width and size == (1024, 1536):
+                target_size = size
+                break
+        
+        size_str = valid_sizes[target_size]
+    
+    resized_image = image.resize(target_size, Image.Resampling.LANCZOS)
+    resized_mask = mask.resize(target_size, Image.Resampling.LANCZOS)
+    
+    img_bytes = io.BytesIO()
+    resized_image.save(img_bytes, format='PNG')
+    img_bytes.seek(0)
+    img_bytes.name = 'image.png'
+    
+    mask_bytes = io.BytesIO()
+    resized_mask.save(mask_bytes, format='PNG')
+    mask_bytes.seek(0)
+    mask_bytes.name = 'mask.png'
+    
+    response = client.images.edit(
+        model=model,
+        image=img_bytes,
+        mask=mask_bytes,
+        prompt=prompt,
+        n=1,
+        size=size_str
+    )
+    
+    if response.data[0].url:
+        import requests
+        img_data = requests.get(response.data[0].url).content
+    elif hasattr(response.data[0], 'b64_json'):
+        img_data = base64.b64decode(response.data[0].b64_json)
+    else:
+        raise Exception("No image data in response")
+    
+    result_image = Image.open(io.BytesIO(img_data))
+    return result_image.resize(original_size, Image.Resampling.LANCZOS)
+
+def inpaint_diffusers(image, mask, prompt, model):
+    from diffusers import StableDiffusionInpaintPipeline
+    import torch
+    
+    pipe = StableDiffusionInpaintPipeline.from_pretrained(
+        model,
+        torch_dtype=torch.float16
+    )
+    pipe = pipe.to("cuda" if torch.cuda.is_available() else "cpu")
+    
+    result = pipe(
+        prompt=prompt,
+        image=image,
+        mask_image=mask
+    ).images[0]
+    
+    return result
+def inpaint_gemini(image, mask, prompt, model):
+    from npcpy.gen.image_gen import generate_image
+    import io
+    import numpy as np
+    
+    mask_np = np.array(mask.convert('L'))
+    ys, xs = np.where(mask_np > 128)
+    
+    if len(xs) == 0:
+        return image
+    
+    x_center = int(np.mean(xs))
+    y_center = int(np.mean(ys))
+    width_pct = (xs.max() - xs.min()) / image.width * 100
+    height_pct = (ys.max() - ys.min()) / image.height * 100
+    
+    position = "center"
+    if y_center < image.height / 3:
+        position = "top"
+    elif y_center > 2 * image.height / 3:
+        position = "bottom"
+    
+    if x_center < image.width / 3:
+        position += " left"
+    elif x_center > 2 * image.width / 3:
+        position += " right"
+    
+    img_bytes = io.BytesIO()
+    image.save(img_bytes, format='PNG')
+    img_bytes.seek(0)
+    
+    full_prompt =  f"""Using the provided image, change only the region in the {position} 
+        approximately {int(width_pct)}% wide by {int(height_pct)}% tall) to: {prompt}. 
+        
+        Keep everything else exactly the same, matching the original lighting and style.
+        You are in-painting the image. You should not be changing anything other than what was requested in prompt: {prompt}
+        """    
+    results = generate_image(
+        prompt=full_prompt,
+        model=model,
+        provider='gemini',
+        attachments=[img_bytes],
+        n_images=1
+    )
+    
+    return results[0] if results else None
 
 @app.route('/api/generate_images', methods=['POST'])
 def generate_images():
