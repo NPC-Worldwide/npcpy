@@ -563,12 +563,10 @@ def get_npc_action_space(npc=None, team=None):
         }
     
     return actions
-
-
 def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
     inputs = {}
 
-    
+    # Create flag mapping for inputs
     flag_mapping = {}
     for input_ in jinx.inputs:
         if isinstance(input_, str):
@@ -579,45 +577,62 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
             flag_mapping[f"-{key[0]}"] = key
             flag_mapping[f"--{key}"] = key
 
-    
+    # Parse key=value pairs first
     used_args = set()
     for i, arg in enumerate(args):
-        if arg in flag_mapping:
+        if '=' in arg and not arg.startswith('-'):
+            key, value = arg.split('=', 1)
+            key = key.strip().strip("'\"")
+            value = value.strip().strip("'\"")
+            inputs[key] = value
+            used_args.add(i)
+
+    # Parse flags
+    for i, arg in enumerate(args):
+        if i in used_args:
+            continue
             
-            if i + 1 < len(args):
+        if arg in flag_mapping:
+            if i + 1 < len(args) and not args[i + 1].startswith('-'):
                 input_name = flag_mapping[arg]
                 inputs[input_name] = args[i + 1]
                 used_args.add(i)
                 used_args.add(i + 1)
             else:
-                print(f"Warning: {arg} flag is missing a value.")
+                # Boolean flag
+                input_name = flag_mapping[arg]
+                inputs[input_name] = True
+                used_args.add(i)
 
-    
+    # Handle remaining positional arguments
     unused_args = [arg for i, arg in enumerate(args) if i not in used_args]
-    if unused_args and jinx.inputs:
-        first_input = jinx.inputs[0]
-        if isinstance(first_input, str):
-            inputs[first_input] = " ".join(unused_args)
-        elif isinstance(first_input, dict):
-            key = list(first_input.keys())[0]
-            inputs[key] = " ".join(unused_args)
-
     
+    # Map positional args to jinx inputs in order
+    jinx_input_names = []
+    for input_ in jinx.inputs:
+        if isinstance(input_, str):
+            jinx_input_names.append(input_)
+        elif isinstance(input_, dict):
+            jinx_input_names.append(list(input_.keys())[0])
+    
+    for i, arg in enumerate(unused_args):
+        if i < len(jinx_input_names):
+            input_name = jinx_input_names[i]
+            if input_name not in inputs:  # Don't overwrite existing values
+                inputs[input_name] = arg
+
+    # Set default values for missing inputs
     for input_ in jinx.inputs:
         if isinstance(input_, str):
             if input_ not in inputs:
-                if any(args):  
-                    raise ValueError(f"Missing required input: {input_}")
-                else:
-                    inputs[input_] = None  
+                raise ValueError(f"Missing required input: {input_}")
         elif isinstance(input_, dict):
             key = list(input_.keys())[0]
+            default_value = input_[key]
             if key not in inputs:
-                inputs[key] = input_[key]
+                inputs[key] = default_value
 
     return inputs
-
-
 
 from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
 from npcpy.memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_sleep_process, kg_dream_process

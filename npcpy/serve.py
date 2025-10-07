@@ -504,7 +504,233 @@ def get_global_settings():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/jinxs/available", methods=["GET"])
+def get_available_jinxs():
+    """
+    Get all available jinxs for a given NPC and/or team.
+    Returns a list of jinx names that can be executed.
+    """
+    try:
+        current_path = request.args.get('currentPath')
+        npc_name = request.args.get('npc')
+        
+        jinx_names = set()  # Use set to avoid duplicates
+        
+        # Get team jinxs from project directory
+        if current_path:
+            team_jinxs_dir = os.path.join(current_path, 'npc_team', 'jinxs')
+            if os.path.exists(team_jinxs_dir):
+                for file in os.listdir(team_jinxs_dir):
+                    if file.endswith('.jinx'):
+                        jinx_names.add(file[:-5])  # Remove .jinx extension
+        
+        # Get global jinxs
+        global_jinxs_dir = os.path.expanduser('~/.npcsh/npc_team/jinxs')
+        if os.path.exists(global_jinxs_dir):
+            for file in os.listdir(global_jinxs_dir):
+                if file.endswith('.jinx'):
+                    jinx_names.add(file[:-5])
+        
+        # Get NPC-specific jinxs if NPC is specified
+        if npc_name:
+            # Try to load the NPC and get its jinxs
+            db_conn = get_db_connection()
+            npc_object = load_npc_by_name_and_source(npc_name, 'project', db_conn, current_path)
+            if not npc_object:
+                npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
+            
+            if npc_object and hasattr(npc_object, 'jinxs_dict') and npc_object.jinxs_dict:
+                jinx_names.update(npc_object.jinxs_dict.keys())
+        
+        return jsonify({
+            'jinxs': sorted(list(jinx_names)),
+            'error': None
+        })
+        
+    except Exception as e:
+        print(f"Error getting available jinxs: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'jinxs': [], 'error': str(e)}), 500
 
+
+@app.route("/api/jinx/execute", methods=["POST"])
+def execute_jinx():
+    """
+    Execute a specific jinx with provided arguments.
+    Streams the output back to the client.
+    """
+    data = request.json
+    
+    stream_id = data.get("streamId")
+    if not stream_id:
+        stream_id = str(uuid.uuid4())
+    
+    with cancellation_lock:
+        cancellation_flags[stream_id] = False
+    
+    jinx_name = data.get("jinxName")
+    jinx_args = data.get("jinxArgs", [])
+    conversation_id = data.get("conversationId")
+    model = data.get("model")
+    provider = data.get("provider")
+    npc_name = data.get("npc")
+    npc_source = data.get("npcSource", "global")
+    current_path = data.get("currentPath")
+    
+    if not jinx_name:
+        return jsonify({"error": "jinxName is required"}), 400
+    
+    # Load project environment if applicable
+    if current_path:
+        load_project_env(current_path)
+    
+    # Load the NPC
+    npc_object = None
+    if npc_name:
+        db_conn = get_db_connection()
+        npc_object = load_npc_by_name_and_source(npc_name, npc_source, db_conn, current_path)
+        if not npc_object and npc_source == 'project':
+            npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
+    
+    # Try to find the jinx
+    jinx = None
+    
+    # Check NPC's jinxs
+    if npc_object and hasattr(npc_object, 'jinxs_dict') and jinx_name in npc_object.jinxs_dict:
+        jinx = npc_object.jinxs_dict[jinx_name]
+    
+    # Check team jinxs
+    if not jinx and current_path:
+        team_jinx_path = os.path.join(current_path, 'npc_team', 'jinxs', f'{jinx_name}.jinx')
+        if os.path.exists(team_jinx_path):
+            jinx = Jinx(jinx_path=team_jinx_path)
+    
+    # Check global jinxs
+    if not jinx:
+        global_jinx_path = os.path.expanduser(f'~/.npcsh/npc_team/jinxs/{jinx_name}.jinx')
+        if os.path.exists(global_jinx_path):
+            jinx = Jinx(jinx_path=global_jinx_path)
+    
+    if not jinx:
+        return jsonify({"error": f"Jinx '{jinx_name}' not found"}), 404
+    
+    # Extract inputs from args
+    from npcpy.npc_compiler import extract_jinx_inputs
+    input_values = extract_jinx_inputs(jinx_args, jinx)
+    
+    # Get conversation history
+    command_history = CommandHistory(app.config.get('DB_PATH'))
+    messages = fetch_messages_for_conversation(conversation_id)
+    
+    # Prepare jinxs_dict for execution
+    all_jinxs = {}
+    if npc_object and hasattr(npc_object, 'jinxs_dict'):
+        all_jinxs.update(npc_object.jinxs_dict)
+    
+    def event_stream(current_stream_id):
+        try:
+            # Execute the jinx
+            result = jinx.execute(
+                input_values=input_values,
+                jinxs_dict=all_jinxs,
+                jinja_env=npc_object.jinja_env if npc_object else None,
+                npc=npc_object,
+                messages=messages
+            )
+            
+            # Get output
+            output = result.get('output', str(result))
+            messages_updated = result.get('messages', messages)
+            
+            # Check for interruption
+            with cancellation_lock:
+                if cancellation_flags.get(current_stream_id, False):
+                    yield f"data: {json.dumps({'type': 'interrupted'})}\n\n"
+                    return
+            
+            # Stream the output in chunks for consistent UI experience
+            if isinstance(output, str):
+                chunk_size = 50  # Characters per chunk
+                for i in range(0, len(output), chunk_size):
+                    chunk = output[i:i + chunk_size]
+                    chunk_data = {
+                        "id": None,
+                        "object": None,
+                        "created": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {
+                                "content": chunk,
+                                "role": "assistant"
+                            },
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk_data)}\n\n"
+            else:
+                # Non-string output, send as single chunk
+                chunk_data = {
+                    "id": None,
+                    "object": None,
+                    "created": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "content": str(output),
+                            "role": "assistant"
+                        },
+                        "finish_reason": None
+                    }]
+                }
+                yield f"data: {json.dumps(chunk_data)}\n\n"
+            
+            # Send completion message
+            yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
+            
+            # Save to conversation history
+            message_id = generate_message_id()
+            save_conversation_message(
+                command_history,
+                conversation_id,
+                "user",
+                f"/{jinx_name} {' '.join(jinx_args)}",
+                wd=current_path,
+                model=model,
+                provider=provider,
+                npc=npc_name,
+                message_id=message_id
+            )
+            
+            message_id = generate_message_id()
+            save_conversation_message(
+                command_history,
+                conversation_id,
+                "assistant",
+                str(output),
+                wd=current_path,
+                model=model,
+                provider=provider,
+                npc=npc_name,
+                message_id=message_id
+            )
+            
+        except Exception as e:
+            print(f"Error executing jinx {jinx_name}: {str(e)}")
+            traceback.print_exc()
+            error_data = {
+                "type": "error",
+                "error": str(e)
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+        
+        finally:
+            with cancellation_lock:
+                if current_stream_id in cancellation_flags:
+                    del cancellation_flags[current_stream_id]
+    
+    return Response(event_stream(stream_id), mimetype="text/event-stream")
 
 @app.route("/api/settings/global", methods=["POST", "OPTIONS"])
 def save_global_settings():
