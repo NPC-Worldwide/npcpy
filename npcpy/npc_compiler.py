@@ -566,7 +566,6 @@ def get_npc_action_space(npc=None, team=None):
 def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
     inputs = {}
 
-    # Create flag mapping for inputs
     flag_mapping = {}
     for input_ in jinx.inputs:
         if isinstance(input_, str):
@@ -577,17 +576,19 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
             flag_mapping[f"-{key[0]}"] = key
             flag_mapping[f"--{key}"] = key
 
-    # Parse key=value pairs first
-    used_args = set()
-    for i, arg in enumerate(args):
-        if '=' in arg and not arg.startswith('-'):
-            key, value = arg.split('=', 1)
-            key = key.strip().strip("'\"")
-            value = value.strip().strip("'\"")
-            inputs[key] = value
-            used_args.add(i)
+    if len(jinx.inputs) > 1:
+        used_args = set()
+        for i, arg in enumerate(args):
+            if '=' in arg and arg != '=' and not arg.startswith('-'):
+                key, value = arg.split('=', 1)
+                key = key.strip().strip("'\"")
+                value = value.strip().strip("'\"")
+                inputs[key] = value
+                used_args.add(i)
+    else:
+        used_args = set()
 
-    # Parse flags
+
     for i, arg in enumerate(args):
         if i in used_args:
             continue
@@ -599,29 +600,28 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
                 used_args.add(i)
                 used_args.add(i + 1)
             else:
-                # Boolean flag
                 input_name = flag_mapping[arg]
                 inputs[input_name] = True
                 used_args.add(i)
 
-    # Handle remaining positional arguments
     unused_args = [arg for i, arg in enumerate(args) if i not in used_args]
     
-    # Map positional args to jinx inputs in order
     jinx_input_names = []
     for input_ in jinx.inputs:
         if isinstance(input_, str):
             jinx_input_names.append(input_)
         elif isinstance(input_, dict):
             jinx_input_names.append(list(input_.keys())[0])
-    
-    for i, arg in enumerate(unused_args):
-        if i < len(jinx_input_names):
-            input_name = jinx_input_names[i]
-            if input_name not in inputs:  # Don't overwrite existing values
-                inputs[input_name] = arg
+    if len(jinx_input_names) == 1:
+        inputs[jinx_input_names[0]] = ' '.join(unused_args).strip()
+    else:
+        for i, arg in enumerate(unused_args):
+            if i < len(jinx_input_names):
+                input_name = jinx_input_names[i]
+                if input_name not in inputs: 
+                    inputs[input_name] = arg
 
-    # Set default values for missing inputs
+
     for input_ in jinx.inputs:
         if isinstance(input_, str):
             if input_ not in inputs:
