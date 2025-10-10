@@ -561,7 +561,7 @@ def get_litellm_response(
     if provider =='enpisi' and api_url is None:
         api_params['api_base'] = 'https://api.enpisi.com'
         if api_key is None:
-            api_key = os.environ.get('NPC_STUDIO_LICENSE')
+            api_key = os.environ.get('NPC_STUDIO_LICENSE_KEY')
             api_params['api_key'] = api_key
         if '-npc' in model: 
             model = model.split('-npc')[0]

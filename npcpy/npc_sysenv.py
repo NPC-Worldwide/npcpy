@@ -164,18 +164,18 @@ def get_locally_available_models(project_directory, airplane_mode=False):
         
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            if 'NPC_STUDIO_LICENSE' in env_vars or os.environ.get('NPC_STUDIO_LICENSE'):
+            if 'NPC_STUDIO_LICENSE_KEY' in env_vars or os.environ.get('NPC_STUDIO_LICENSE_KEY'):
                 try:
                     def fetch_enpisi_models():
                         import requests
 
                         api_url = 'https://api.enpisi.com'
                         headers = {
-                            'Authorization': f"Bearer {env_vars.get('NPC_STUDIO_LICENSE') or os.environ.get('NPC_STUDIO_LICENSE')}",
+                            'Authorization': f"Bearer {env_vars.get('NPC_STUDIO_LICENSE_KEY') or os.environ.get('NPC_STUDIO_LICENSE_KEY')}",
                             'Content-Type': 'application/json'
                         }
-                        import requests
                         response = requests.get(f"{api_url}/models", headers=headers)
+
                         return [model['id'] for model in response.json().get('data','')]
                     for model in fetch_enpisi_models():
                         available_models[model+'-npc'] = 'enpisi'
