@@ -1093,26 +1093,32 @@ class NPC:
         
         self.jinxs_dict = {jinx.jinx_name: jinx for jinx in npc_jinxs}
         return npc_jinxs
-        
+            
     def get_llm_response(self, 
-                            request,
-                            jinxs=None,
-                            tools=None,
-                            tool_map=None,
-                            tool_choice=None, 
-                            messages=None,
-                            auto_process_tool_calls=True,
-                            **kwargs):
-        """Get response from LLM with automatic tool integration including memory CRUD"""
-        
-        if tools is None and tool_map is None and tool_choice is None:
-            core_tools = [
+                        request,
+                        jinxs=None,
+                        tools: Optional[list] = None,
+                        tool_map: Optional[dict] = None,
+                        tool_choice=None, 
+                        messages=None,
+                        auto_process_tool_calls=True,
+                        use_core_tools: bool = False,
+                        **kwargs):
+        all_candidate_functions = []
+
+        if tools is not None and tool_map is not None:
+            all_candidate_functions.extend([func for func in tool_map.values() if callable(func)])
+        elif hasattr(self, 'tool_map') and self.tool_map:
+            all_candidate_functions.extend([func for func in self.tool_map.values() if callable(func)])
+
+        if use_core_tools:
+            dynamic_core_tools_list = [
                 self.think_step_by_step,
                 self.write_code
             ]
-            
+
             if self.command_history:
-                core_tools.extend([
+                dynamic_core_tools_list.extend([
                     self.search_my_conversations,
                     self.search_my_memories,
                     self.create_memory,
@@ -1124,35 +1130,44 @@ class NPC:
                     self.archive_old_memories,
                     self.get_memory_stats
                 ])
-            
+
             if self.db_conn:
-                core_tools.append(self.query_database)
-            
-            if hasattr(self, 'tools') and self.tools:
-                core_tools.extend([func for func in self.tool_map.values() if callable(func)])
-            
-            if core_tools:
-                tools, tool_map = auto_tools(core_tools)
-        
-        if tool_choice is None and tools:
-            tool_choice = "auto"
+                dynamic_core_tools_list.append(self.query_database)
+
+            all_candidate_functions.extend(dynamic_core_tools_list)
+
+        unique_functions = []
+        seen_names = set()
+        for func in all_candidate_functions:
+            if func.__name__ not in seen_names:
+                unique_functions.append(func)
+                seen_names.add(func.__name__)
+
+        final_tools_schema = None
+        final_tool_map_dict = None
+
+        if unique_functions:
+            final_tools_schema, final_tool_map_dict = auto_tools(unique_functions)
+
+        if tool_choice is None:
+            if final_tools_schema:
+                tool_choice = "auto"
+            else:
+                tool_choice = "none"
 
         response = npy.llm_funcs.get_llm_response(
             request, 
-            model=self.model, 
-            provider=self.provider, 
             npc=self, 
             jinxs=jinxs,
-            tools=tools, 
-            tool_map=tool_map,
+            tools=final_tools_schema,
+            tool_map=final_tool_map_dict,
             tool_choice=tool_choice,           
             auto_process_tool_calls=auto_process_tool_calls,
             messages=self.memory if messages is None else messages,
             **kwargs
         )        
-        
-        return response
 
+        return response
     
 
 
@@ -2383,269 +2398,3 @@ class Team:
             context_parts.append("")
         
         return "\n".join(context_parts)
-
-class Pipeline:
-    def __init__(self, pipeline_data=None, pipeline_path=None, npc_team=None):
-        """Initialize a pipeline from data or file path"""
-        self.npc_team = npc_team
-        self.steps = []
-        
-        if pipeline_path:
-            self._load_from_path(pipeline_path)
-        elif pipeline_data:
-            self.name = pipeline_data.get("name", "unnamed_pipeline")
-            self.steps = pipeline_data.get("steps", [])
-        else:
-            raise ValueError("Either pipeline_data or pipeline_path must be provided")
-            
-    def _load_from_path(self, path):
-        """Load pipeline from file"""
-        pipeline_data = load_yaml_file(path)
-        if not pipeline_data:
-            raise ValueError(f"Failed to load pipeline from {path}")
-            
-        self.name = os.path.splitext(os.path.basename(path))[0]
-        self.steps = pipeline_data.get("steps", [])
-        self.pipeline_path = path
-        
-    def execute(self, initial_context=None):
-        """Execute the pipeline with given context"""
-        context = initial_context or {}
-        results = {}
-        
-        
-        init_db_tables()
-        
-        
-        pipeline_hash = self._generate_hash()
-        
-        
-        results_table = f"{self.name}_results"
-        self._ensure_results_table(results_table)
-        
-        
-        run_id = self._create_run_entry(pipeline_hash)
-        
-        
-        context.update({
-            "ref": lambda step_name: results.get(step_name),
-            "source": self._fetch_data_from_source,
-        })
-        
-        
-        for step in self.steps:
-            step_name = step.get("step_name")
-            if not step_name:
-                raise ValueError(f"Missing step_name in step: {step}")
-                
-            
-            npc_name = self._render_template(step.get("npc", ""), context)
-            npc = self._get_npc(npc_name)
-            if not npc:
-                raise ValueError(f"NPC {npc_name} not found for step {step_name}")
-                
-            
-            task = self._render_template(step.get("task", ""), context)
-            
-            
-            model = step.get("model", npc.model)
-            provider = step.get("provider", npc.provider)
-            
-            
-            mixa = step.get("mixa", False)
-            if mixa:
-                response = self._execute_mixa_step(step, context, npc, model, provider)
-            else:
-                
-                source_matches = re.findall(r"{{\s*source\('([^']+)'\)\s*}}", task)
-                if source_matches:
-                    response = self._execute_data_source_step(step, context, source_matches, npc, model, provider)
-                else:
-                    
-                    llm_response = npy.llm_funcs.get_llm_response(task, model=model, provider=provider, npc=npc)
-                    response = llm_response.get("response", "")
-            
-            
-            results[step_name] = response
-            context[step_name] = response
-            
-            
-            self._store_step_result(run_id, step_name, npc_name, model, provider, 
-                                   {"task": task}, response, results_table)
-            
-        
-        return {
-            "results": results,
-            "run_id": run_id
-        }
-        
-    def _render_template(self, template_str, context):
-        """Render a template with the given context"""
-        if not template_str:
-            return ""
-            
-        try:
-            template = Template(template_str)
-            return template.render(**context)
-        except Exception as e:
-            print(f"Error rendering template: {e}")
-            return template_str
-            
-    def _get_npc(self, npc_name):
-        """Get NPC by name from team"""
-        if not self.npc_team:
-            raise ValueError("No NPC team available")
-            
-        return self.npc_team.get_npc(npc_name)
-        
-    def _generate_hash(self):
-        """Generate a hash for the pipeline"""
-        if hasattr(self, 'pipeline_path') and self.pipeline_path:
-            with open(self.pipeline_path, 'r') as f:
-                content = f.read()
-            return hashlib.sha256(content.encode()).hexdigest()
-        else:
-            
-            content = json.dumps(self.steps)
-            return hashlib.sha256(content.encode()).hexdigest()
-            
-    def _ensure_results_table(self, table_name):
-        """Ensure results table exists"""
-        db_path = "~/npcsh_history.db"
-        with sqlite3.connect(os.path.expanduser(db_path)) as conn:
-            conn.execute(f"""
-                CREATE TABLE IF NOT EXISTS {table_name} (
-                    result_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER,
-                    step_name TEXT,
-                    npc_name TEXT,
-                    model TEXT,
-                    provider TEXT,
-                    inputs TEXT,
-                    outputs TEXT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
-                )
-            """)
-            conn.commit()
-            
-    def _create_run_entry(self, pipeline_hash):
-        """Create run entry in pipeline_runs table"""
-        db_path = "~/npcsh_history.db"
-        with sqlite3.connect(os.path.expanduser(db_path)) as conn:
-            cursor = conn.execute(
-                "INSERT INTO pipeline_runs (pipeline_name, pipeline_hash, timestamp) VALUES (?, ?, ?)",
-                (self.name, pipeline_hash, datetime.now())
-            )
-            conn.commit()
-            return cursor.lastrowid
-            
-    def _store_step_result(self, run_id, step_name, npc_name, model, provider, inputs, outputs, table_name):
-        """Store step result in database"""
-        db_path = "~/npcsh_history.db"
-        with sqlite3.connect(os.path.expanduser(db_path)) as conn:
-            conn.execute(
-                f"""
-                INSERT INTO {table_name} 
-                (run_id, step_name, npc_name, model, provider, inputs, outputs)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    step_name,
-                    npc_name,
-                    model,
-                    provider,
-                    json.dumps(self._clean_for_json(inputs)),
-                    json.dumps(self._clean_for_json(outputs))
-                )
-            )
-            conn.commit()
-            
-    def _clean_for_json(self, obj):
-        """Clean an object for JSON serialization"""
-        if isinstance(obj, dict):
-            return {
-                k: self._clean_for_json(v)
-                for k, v in obj.items()
-                if not k.startswith("_") and not callable(v)
-            }
-        elif isinstance(obj, list):
-            return [self._clean_for_json(i) for i in obj]
-        elif isinstance(obj, (str, int, float, bool, type(None))):
-            return obj
-        else:
-            return str(obj)
-            
-    def _fetch_data_from_source(self, table_name):
-        """Fetch data from a database table"""
-        db_path = "~/npcsh_history.db"
-        try:
-            engine = create_engine(f"sqlite:///{os.path.expanduser(db_path)}")
-            df = pd.read_sql(f"SELECT * FROM {table_name}", engine)
-            return df.to_json(orient="records")
-        except Exception as e:
-            print(f"Error fetching data from {table_name}: {e}")
-            return "[]"
-            
-    def _execute_mixa_step(self, step, context, npc, model, provider):
-        """Execute a mixture of agents step"""
-        
-        task = self._render_template(step.get("task", ""), context)
-        
-        
-        mixa_turns = step.get("mixa_turns", 5)
-        num_generating_agents = len(step.get("mixa_agents", []))
-        if num_generating_agents == 0:
-            num_generating_agents = 3  
-            
-        num_voting_agents = len(step.get("mixa_voters", []))
-        if num_voting_agents == 0:
-            num_voting_agents = 3  
-            
-        
-        round_responses = []
-        
-        
-        return 
-        
-    def _execute_data_source_step(self, step, context, source_matches, npc, model, provider):
-        """Execute a step with data source"""
-        task_template = step.get("task", "")
-        table_name = source_matches[0]
-        
-        try:
-            
-            db_path = "~/npcsh_history.db"
-            engine = create_engine(f"sqlite:///{os.path.expanduser(db_path)}")
-            df = pd.read_sql(f"SELECT * FROM {table_name}", engine)
-            
-            
-            if step.get("batch_mode", False):
-                
-                data_str = df.to_json(orient="records")
-                task = task_template.replace(f"{{{{ source('{table_name}') }}}}", data_str)
-                task = self._render_template(task, context)
-                
-                
-                response = npy.llm_funcs.get_llm_response(task, model=model, provider=provider, npc=npc)
-                return response.get("response", "")
-            else:
-                
-                results = []
-                for _, row in df.iterrows():
-                    
-                    row_data = json.dumps(row.to_dict())
-                    row_task = task_template.replace(f"{{{{ source('{table_name}') }}}}", row_data)
-                    row_task = self._render_template(row_task, context)
-                    
-                    
-                    response = npy.llm_funcs.get_llm_response(row_task, model=model, provider=provider, npc=npc)
-                    results.append(response.get("response", ""))
-                    
-                return results
-        except Exception as e:
-            print(f"Error processing data source {table_name}: {e}")
-            return f"Error: {str(e)}"
-
-
