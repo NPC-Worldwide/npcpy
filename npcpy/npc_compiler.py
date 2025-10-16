@@ -477,23 +477,23 @@ output = {mcp_tool.__module__}.{name}(
         except: 
             pass    
 
-
 def load_jinxs_from_directory(directory):
-    """Load all jinxs from a directory"""
+    """Load all jinxs from a directory recursively"""
     jinxs = []
     directory = os.path.expanduser(directory)
     
     if not os.path.exists(directory):
         return jinxs
-        
-    for filename in os.listdir(directory):
-        if filename.endswith(".jinx"):
-            try:
-                jinx_path = os.path.join(directory, filename)
-                jinx = Jinx(jinx_path=jinx_path)
-                jinxs.append(jinx)
-            except Exception as e:
-                print(f"Error loading jinx {filename}: {e}")
+    
+    for root, dirs, files in os.walk(directory):
+        for filename in files:
+            if filename.endswith(".jinx"):
+                try:
+                    jinx_path = os.path.join(root, filename)
+                    jinx = Jinx(jinx_path=jinx_path)
+                    jinxs.append(jinx)
+                except Exception as e:
+                    print(f"Error loading jinx {filename}: {e}")
                 
     return jinxs
 
@@ -693,7 +693,8 @@ class NPC:
                 self.jinxs_directory = os.path.expanduser('~/.npcsh/npc_team/jinxs/')
             else: 
                 self.jinxs_directory = None
-            self.npc_directory = None 
+            self.npc_directory = None
+
         self.team = team
         if tools is not None:
             tools_schema, tool_map = auto_tools(tools)
@@ -1057,18 +1058,16 @@ class NPC:
         """Load and process NPC-specific jinxs"""
         npc_jinxs = []
         
-        if self.jinxs_directory is None:
-            self.jinxs_dict = {}
-            return None
-        
         if jinxs == "*":
-            npc_jinxs.extend(load_jinxs_from_directory(self.jinxs_directory))
-            
-            if os.path.exists(self.jinxs_directory):
-                npc_jinxs.extend(load_jinxs_from_directory(self.jinxs_directory))                
+            if self.team and hasattr(self.team, 'jinxs_dict'):
+                for jinx in self.team.jinxs_dict.values():
+                    npc_jinxs.append(jinx)
+            elif self.use_global_jinxs or (hasattr(self, 'jinxs_directory') and self.jinxs_directory):
+                jinxs_dir = self.jinxs_directory or os.path.expanduser('~/.npcsh/npc_team/jinxs/')
+                if os.path.exists(jinxs_dir):
+                    npc_jinxs.extend(load_jinxs_from_directory(jinxs_dir))
             
             self.jinxs_dict = {jinx.jinx_name: jinx for jinx in npc_jinxs}
-            
             return npc_jinxs
 
         for jinx in jinxs:
@@ -1076,13 +1075,13 @@ class NPC:
                 npc_jinxs.append(jinx)
             elif isinstance(jinx, dict):
                 npc_jinxs.append(Jinx(jinx_data=jinx))
-            
+            elif isinstance(jinx, str):
                 jinx_path = None
                 jinx_name = jinx
                 if not jinx_name.endswith(".jinx"):
                     jinx_name += ".jinx"
                 
-                if hasattr(self, 'jinxs_directory') and os.path.exists(self.jinxs_directory):
+                if hasattr(self, 'jinxs_directory') and self.jinxs_directory and os.path.exists(self.jinxs_directory):
                     candidate_path = os.path.join(self.jinxs_directory, jinx_name)
                     if os.path.exists(candidate_path):
                         jinx_path = candidate_path
@@ -1092,8 +1091,8 @@ class NPC:
                     npc_jinxs.append(jinx_obj)
         
         self.jinxs_dict = {jinx.jinx_name: jinx for jinx in npc_jinxs}
+        print(npc_jinxs)
         return npc_jinxs
-            
     def get_llm_response(self, 
                         request,
                         jinxs=None,

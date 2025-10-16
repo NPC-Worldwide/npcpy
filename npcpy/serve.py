@@ -502,56 +502,73 @@ def get_global_settings():
     except Exception as e:
         print(f"Error in get_global_settings: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
+def _get_jinx_files_recursively(directory):
+    """Helper to recursively find all .jinx file paths."""
+    jinx_paths = []
+    if os.path.exists(directory):
+        for root, _, files in os.walk(directory):
+            for filename in files:
+                if filename.endswith(".jinx"):
+                    jinx_paths.append(os.path.join(root, filename))
+    return jinx_paths
 
 @app.route("/api/jinxs/available", methods=["GET"])
 def get_available_jinxs():
-    """
-    Get all available jinxs for a given NPC and/or team.
-    Returns a list of jinx names that can be executed.
-    """
     try:
         current_path = request.args.get('currentPath')
-        npc_name = request.args.get('npc')
-        
-        jinx_names = set()  # Use set to avoid duplicates
-        
-        # Get team jinxs from project directory
+        jinx_names = set()
+
         if current_path:
             team_jinxs_dir = os.path.join(current_path, 'npc_team', 'jinxs')
-            if os.path.exists(team_jinxs_dir):
-                for file in os.listdir(team_jinxs_dir):
-                    if file.endswith('.jinx'):
-                        jinx_names.add(file[:-5])  # Remove .jinx extension
-        
-        # Get global jinxs
+            jinx_paths = _get_jinx_files_recursively(team_jinxs_dir)
+            for path in jinx_paths:
+                jinx_names.add(os.path.basename(path)[:-5])
+
         global_jinxs_dir = os.path.expanduser('~/.npcsh/npc_team/jinxs')
-        if os.path.exists(global_jinxs_dir):
-            for file in os.listdir(global_jinxs_dir):
-                if file.endswith('.jinx'):
-                    jinx_names.add(file[:-5])
-        
-        # Get NPC-specific jinxs if NPC is specified
-        if npc_name:
-            # Try to load the NPC and get its jinxs
-            db_conn = get_db_connection()
-            npc_object = load_npc_by_name_and_source(npc_name, 'project', db_conn, current_path)
-            if not npc_object:
-                npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
-            
-            if npc_object and hasattr(npc_object, 'jinxs_dict') and npc_object.jinxs_dict:
-                jinx_names.update(npc_object.jinxs_dict.keys())
-        
-        return jsonify({
-            'jinxs': sorted(list(jinx_names)),
-            'error': None
-        })
-        
+        jinx_paths = _get_jinx_files_recursively(global_jinxs_dir)
+        for path in jinx_paths:
+            jinx_names.add(os.path.basename(path)[:-5])
+
+        return jsonify({'jinxs': sorted(list(jinx_names)), 'error': None})
     except Exception as e:
         print(f"Error getting available jinxs: {str(e)}")
         traceback.print_exc()
         return jsonify({'jinxs': [], 'error': str(e)}), 500
 
+@app.route("/api/jinxs/global", methods=["GET"])
+def get_global_jinxs():
+    jinxs_dir = os.path.join(os.path.expanduser("~"), ".npcsh", "npc_team", "jinxs")
+    jinx_paths = _get_jinx_files_recursively(jinxs_dir)
+    jinxs = []
+    for path in jinx_paths:
+        try:
+            with open(path, "r") as f:
+                jinx_data = yaml.safe_load(f)
+                jinxs.append(jinx_data)
+        except Exception as e:
+            print(f"Error loading global jinx {path}: {e}")
+    return jsonify({"jinxs": jinxs})
+
+@app.route("/api/jinxs/project", methods=["GET"])
+def get_project_jinxs():
+    current_path = request.args.get("currentPath")
+    if not current_path:
+        return jsonify({"jinxs": []})
+
+    if not current_path.endswith("npc_team"):
+        current_path = os.path.join(current_path, "npc_team")
+
+    jinxs_dir = os.path.join(current_path, "jinxs")
+    jinx_paths = _get_jinx_files_recursively(jinxs_dir)
+    jinxs = []
+    for path in jinx_paths:
+        try:
+            with open(path, "r") as f:
+                jinx_data = yaml.safe_load(f)
+                jinxs.append(jinx_data)
+        except Exception as e:
+            print(f"Error loading project jinx {path}: {e}")
+    return jsonify({"jinxs": jinxs})
 
 @app.route("/api/jinx/execute", methods=["POST"])
 def execute_jinx():
@@ -568,8 +585,11 @@ def execute_jinx():
     with cancellation_lock:
         cancellation_flags[stream_id] = False
     
+    print(data)
+
     jinx_name = data.get("jinxName")
     jinx_args = data.get("jinxArgs", [])
+    print(jinx_args)
     conversation_id = data.get("conversationId")
     model = data.get("model")
     provider = data.get("provider")
@@ -616,8 +636,45 @@ def execute_jinx():
     
     # Extract inputs from args
     from npcpy.npc_compiler import extract_jinx_inputs
-    input_values = extract_jinx_inputs(jinx_args, jinx)
-    
+
+    # --- Start of Fix ---
+    # Re-assemble arguments that were incorrectly split by spaces.
+    fixed_args = []
+    i = 0
+    while i < len(jinx_args):
+        arg = jinx_args[i]
+        if arg.startswith('-'):
+            fixed_args.append(arg)
+            value_parts = []
+            i += 1
+            # Collect all subsequent parts until the next flag or the end of the list.
+            while i < len(jinx_args) and not jinx_args[i].startswith('-'):
+                value_parts.append(jinx_args[i])
+                i += 1
+            
+            if value_parts:
+                # Join the parts back into a single string.
+                full_value = " ".join(value_parts)
+                # Clean up the extraneous quotes that the initial bad split left behind.
+                if full_value.startswith("'") and full_value.endswith("'"):
+                    full_value = full_value[1:-1]
+                elif full_value.startswith('"') and full_value.endswith('"'):
+                    full_value = full_value[1:-1]
+                fixed_args.append(full_value)
+            # The 'i' counter is already advanced, so the loop continues from the next flag.
+        else:
+            # This handles positional arguments, just in case.
+            fixed_args.append(arg)
+            i += 1
+    # --- End of Fix ---
+
+    # Now, use the corrected arguments to extract inputs.
+    input_values = extract_jinx_inputs(fixed_args, jinx)
+
+
+
+
+    print('executing jinx with input_values ,', input_values)
     # Get conversation history
     command_history = CommandHistory(app.config.get('DB_PATH'))
     messages = fetch_messages_for_conversation(conversation_id)
@@ -964,49 +1021,6 @@ def get_npc_team_global():
     except Exception as e:
         print(f"Error loading global NPCs: {str(e)}")
         return jsonify({"npcs": [], "error": str(e)})
-
-
-@app.route("/api/jinxs/global", methods=["GET"])
-def get_global_jinxs():
-    
-    user_home = os.path.expanduser("~")
-    jinxs_dir = os.path.join(user_home, ".npcsh", "npc_team", "jinxs")
-    jinxs = []
-    if os.path.exists(jinxs_dir):
-        for file in os.listdir(jinxs_dir):
-            if file.endswith(".jinx"):
-                with open(os.path.join(jinxs_dir, file), "r") as f:
-                    jinx_data = yaml.safe_load(f)
-                    jinxs.append(jinx_data)
-            print("file", file)
-
-    return jsonify({"jinxs": jinxs})
-
-
-
-
-
-
-@app.route("/api/jinxs/project", methods=["GET"])
-def get_project_jinxs():
-    current_path = request.args.get(
-        "currentPath"
-    )  
-    if not current_path:
-        return jsonify({"jinxs": []})
-
-    if not current_path.endswith("npc_team"):
-        current_path = os.path.join(current_path, "npc_team")
-
-    jinxs_dir = os.path.join(current_path, "jinxs")
-    jinxs = []
-    if os.path.exists(jinxs_dir):
-        for file in os.listdir(jinxs_dir):
-            if file.endswith(".jinx"):
-                with open(os.path.join(jinxs_dir, file), "r") as f:
-                    jinx_data = yaml.safe_load(f)
-                    jinxs.append(jinx_data)
-    return jsonify({"jinxs": jinxs})
 
 
 @app.route("/api/jinxs/save", methods=["POST"])
