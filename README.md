@@ -234,7 +234,7 @@ Users are not required to pass agents to get_llm_response, so you can work with 
 ```python
 from npcpy.npc_sysenv import print_and_process_stream
 from npcpy.llm_funcs import get_llm_response
-response = get_llm_response("When did the united states government begin sending advisors to vietnam?", model='qwen2.5:14b', provider='ollama', stream = True)
+response = get_llm_response("When did the united states government begin sending advisors to vietnam?", model='qwen3:latest', provider='ollama', stream = True)
 
 full_response = print_and_process_stream(response['response'], 'llama3.2', 'ollama')
 ```
@@ -242,7 +242,7 @@ Return structured outputs by specifying `format='json'` or passing a Pydantic sc
 
 ```python
 from npcpy.llm_funcs import get_llm_response
-response = get_llm_response("What is the sentiment of the american people towards the repeal of Roe v Wade? Return a json object with `sentiment` as the key and a float value from -1 to 1 as the value", model='deepseek-coder', provider='deepseek', format='json')
+response = get_llm_response("What is the sentiment of the american people towards the repeal of Roe v Wade? Return a json object with `sentiment` as the key and a float value from -1 to 1 as the value", model='claude-4-5-haiku-latest', provider='deepseek', format='json')
 
 print(response['response'])
 ```
