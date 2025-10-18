@@ -86,6 +86,16 @@ def generate_image_diffusers(
         else:
             raise e
 
+import os
+import base64
+import io
+from typing import Union, List, Optional
+
+import PIL
+from PIL import Image
+
+import requests
+from urllib.request import urlopen
 
 def openai_image_gen(
     prompt: str,
@@ -97,36 +107,47 @@ def openai_image_gen(
 ):
     """Generate or edit an image using the OpenAI API."""
     from openai import OpenAI
-    
+
     client = OpenAI()
-    
+
     if height is None:
         height = 1024
     if width is None:
-        width = 1024  
-    
-    size_str = f"{width}x{height}" 
+        width = 1024
+
+    size_str = f"{width}x{height}"
 
     if attachments is not None:
         processed_images = []
+        files_to_close = []
         for attachment in attachments:
             if isinstance(attachment, str):
-                processed_images.append(open(attachment, "rb"))
+                file_handle = open(attachment, "rb")
+                processed_images.append(file_handle)
+                files_to_close.append(file_handle)
             elif isinstance(attachment, bytes):
-                processed_images.append(io.BytesIO(attachment))
+                img_byte_arr = io.BytesIO(attachment)
+                img_byte_arr.name = 'image.png'  # FIX: Add filename hint
+                processed_images.append(img_byte_arr)
             elif isinstance(attachment, Image.Image):
                 img_byte_arr = io.BytesIO()
                 attachment.save(img_byte_arr, format='PNG')
                 img_byte_arr.seek(0)
+                img_byte_arr.name = 'image.png'  # FIX: Add filename hint
                 processed_images.append(img_byte_arr)
         
-        result = client.images.edit(
-            model=model,
-            image=processed_images[0],
-            prompt=prompt,
-            n=n_images,
-            size=size_str,
-        )
+        try:
+            result = client.images.edit(
+                model=model,
+                image=processed_images[0],
+                prompt=prompt,
+                n=n_images,
+                size=size_str,
+            )
+        finally:
+            # This ensures any files we opened are properly closed
+            for f in files_to_close:
+                f.close()
     else:
         result = client.images.generate(
             model=model,
@@ -134,7 +155,7 @@ def openai_image_gen(
             n=n_images,
             size=size_str,
         )
-    
+
     collected_images = []
     for item_data in result.data:
         if model == 'gpt-image-1':
@@ -151,6 +172,7 @@ def openai_image_gen(
         collected_images.append(image)
         
     return collected_images
+
 
 
 def gemini_image_gen(
