@@ -264,7 +264,6 @@ class Jinx:
         self.inputs = jinx_data.get("inputs", [])
         self.description = jinx_data.get("description", "")
         self.steps = self._parse_steps(jinx_data.get("steps", []))
-            
     def _parse_steps(self, steps):
         """Parse steps from jinx definition"""
         parsed_steps = []
@@ -275,11 +274,12 @@ class Jinx:
                     "engine": step.get("engine", "natural"),
                     "code": step.get("code", "")
                 }
+                if "mode" in step:
+                    parsed_step["mode"] = step["mode"]
                 parsed_steps.append(parsed_step)
             else:
                 raise ValueError(f"Invalid step format: {step}")
         return parsed_steps
-        
     def execute(self,
                 input_values, 
                 jinxs_dict, 
@@ -317,24 +317,19 @@ class Jinx:
             )            
 
         return context
-            
     def _execute_step(self,
-                      step, 
-                      context, 
-                      jinja_env,
-                      npc=None,
-                      messages=None, 
-):
-        """Execute a single step of the jinx"""
+                  step, 
+                  context, 
+                  jinja_env,
+                  npc=None,
+                  messages=None, 
+    ):
         engine = step.get("engine", "natural")
         code = step.get("code", "")
         step_name = step.get("name", "unnamed_step")
-
-        
-        
+        mode = step.get("mode", "chat")
 
         try:
-            
             template = jinja_env.from_string(code)
             rendered_code = template.render(**context)
             
@@ -346,16 +341,23 @@ class Jinx:
             rendered_code = code
             rendered_engine = engine
                 
-        
         if rendered_engine == "natural":
             if rendered_code.strip():
-                
-                response = npc.get_llm_response(
-                    rendered_code,
-                    context=context,
-                    messages=messages,
-                )
-               
+                if mode == "agent":
+                    response = npc.get_llm_response(
+                        rendered_code,
+                        context=context,
+                        messages=messages,
+                        auto_process_tool_calls=True,
+                        use_core_tools=True
+                    )
+                else:
+                    response = npc.get_llm_response(
+                        rendered_code,
+                        context=context,
+                        messages=messages,
+                    )
+            
                 response_text = response.get("response", "")
                 context['output'] = response_text
                 context["llm_response"] = response_text
@@ -363,7 +365,6 @@ class Jinx:
                 context[step_name] = response_text
                 context['messages'] = response.get('messages')
         elif rendered_engine == "python":
-            
             exec_globals = {
                 "__builtins__": __builtins__,
                 "npc": npc,
@@ -379,48 +380,44 @@ class Jinx:
                 "pathlib": pathlib,
                 "subprocess": subprocess,
                 "get_llm_response": npy.llm_funcs.get_llm_response, 
-                
                 }
-            
-            
             
             exec_locals = {}
             exec(rendered_code, exec_globals, exec_locals)
             
-            
             context.update(exec_locals)
-            
             
             if "output" in exec_locals:
                 outp = exec_locals["output"]
                 context["output"] = outp
                 context[step_name] = outp
                 messages.append({'role':'assistant', 
-                                 'content': f'Jinx executed with following output: {outp}'})
+                                'content': f'Jinx executed with following output: {outp}'})
                 context['messages'] = messages
                 
         else:
-            
             context[step_name] = {"error": f"Unsupported engine: {rendered_engine}"}
             
         return context
-        
     def to_dict(self):
         """Convert to dictionary representation"""
+        steps_list = []
+        for i, step in enumerate(self.steps):
+            step_dict = {
+                "name": step.get("name", f"step_{i}"),
+                "engine": step.get("engine"),
+                "code": step.get("code")
+            }
+            if "mode" in step:
+                step_dict["mode"] = step["mode"]
+            steps_list.append(step_dict)
+        
         return {
             "jinx_name": self.jinx_name,
             "description": self.description,
             "inputs": self.inputs,
-            "steps": [
-                {
-                    "name": step.get("name", f"step_{i}"),
-                    "engine": step.get("engine"),
-                    "code": step.get("code")
-                }
-                for i, step in enumerate(self.steps)
-            ]
+            "steps": steps_list
         }
-        
     def save(self, directory):
         """Save jinx to file"""
         jinx_path = os.path.join(directory, f"{self.jinx_name}.jinx")
