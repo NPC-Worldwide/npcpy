@@ -154,13 +154,17 @@ def run_sft(
         save_steps=config.save_steps,
         weight_decay=config.weight_decay,
     )
-    
+            
+    def formatting_func(example):
+        return example["text"]
+
     trainer = SFTTrainer(
         model=model,
         train_dataset=dataset,
         peft_config=peft_config,
         args=training_args,
-        max_seq_length=config.max_length
+        processing_class=tokenizer,
+        formatting_func=formatting_func
     )
     
     print(f"Training on {len(dataset)} examples")
@@ -190,8 +194,6 @@ def load_sft_model(model_path: str):
         tokenizer.pad_token = tokenizer.eos_token
     
     return model, tokenizer
-
-
 def predict_sft(
     model,
     tokenizer,
@@ -202,8 +204,13 @@ def predict_sft(
 
     device = next(model.parameters()).device
     
+    formatted_prompt = (
+        f"<start_of_turn>user\n{prompt}<end_of_turn>\n"
+        f"<start_of_turn>model\n"
+    )
+    
     inputs = tokenizer(
-        prompt,
+        formatted_prompt,
         return_tensors="pt",
         truncation=True,
         max_length=512
@@ -222,9 +229,20 @@ def predict_sft(
             pad_token_id=tokenizer.eos_token_id
         )
     
-    response = tokenizer.decode(
+    full_response = tokenizer.decode(
         outputs[0],
-        skip_special_tokens=True
+        skip_special_tokens=False
     )
+    
+    if "<start_of_turn>model\n" in full_response:
+        response = full_response.split(
+            "<start_of_turn>model\n"
+        )[-1]
+        response = response.split("<end_of_turn>")[0].strip()
+    else:
+        response = tokenizer.decode(
+            outputs[0][len(input_ids[0]):],
+            skip_special_tokens=True
+        )
     
     return response
