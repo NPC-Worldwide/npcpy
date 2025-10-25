@@ -584,6 +584,9 @@ def get_npc_action_space(npc=None, team=None):
     
     return actions
 def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
+    print(f"DEBUG extract_jinx_inputs called with args: {args}")
+    print(f"DEBUG jinx.inputs: {jinx.inputs}")
+    
     inputs = {}
 
     flag_mapping = {}
@@ -608,7 +611,6 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
     else:
         used_args = set()
 
-
     for i, arg in enumerate(args):
         if i in used_args:
             continue
@@ -626,21 +628,38 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
 
     unused_args = [arg for i, arg in enumerate(args) if i not in used_args]
     
-    jinx_input_names = []
+    print(f"DEBUG unused_args: {unused_args}")
+    
+    # Find first required input (no default value)
+    first_required = None
     for input_ in jinx.inputs:
         if isinstance(input_, str):
-            jinx_input_names.append(input_)
-        elif isinstance(input_, dict):
-            jinx_input_names.append(list(input_.keys())[0])
-    if len(jinx_input_names) == 1:
-        inputs[jinx_input_names[0]] = ' '.join(unused_args).strip()
+            first_required = input_
+            break
+    
+    print(f"DEBUG first_required: {first_required}")
+    
+    # Give all unused args to first required input
+    if first_required and unused_args:
+        inputs[first_required] = ' '.join(unused_args).strip()
+        print(f"DEBUG assigned to first_required: {inputs[first_required]}")
     else:
-        for i, arg in enumerate(unused_args):
-            if i < len(jinx_input_names):
-                input_name = jinx_input_names[i]
-                if input_name not in inputs: 
-                    inputs[input_name] = arg
-
+        # Fallback to original behavior
+        jinx_input_names = []
+        for input_ in jinx.inputs:
+            if isinstance(input_, str):
+                jinx_input_names.append(input_)
+            elif isinstance(input_, dict):
+                jinx_input_names.append(list(input_.keys())[0])
+        
+        if len(jinx_input_names) == 1:
+            inputs[jinx_input_names[0]] = ' '.join(unused_args).strip()
+        else:
+            for i, arg in enumerate(unused_args):
+                if i < len(jinx_input_names):
+                    input_name = jinx_input_names[i]
+                    if input_name not in inputs: 
+                        inputs[input_name] = arg
 
     for input_ in jinx.inputs:
         if isinstance(input_, str):
@@ -652,8 +671,8 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
             if key not in inputs:
                 inputs[key] = default_value
 
+    print(f"DEBUG final inputs: {inputs}")
     return inputs
-
 from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
 from npcpy.memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_sleep_process, kg_dream_process
 from npcpy.llm_funcs import get_llm_response, breathe
