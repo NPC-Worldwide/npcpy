@@ -280,50 +280,59 @@ class Jinx:
             else:
                 raise ValueError(f"Invalid step format: {step}")
         return parsed_steps
+
     def execute(self,
-                input_values, 
-                jinxs_dict, 
-                jinja_env = None,
-                npc = None,
-                messages=None):
-        """Execute the jinx with given inputs"""
+                input_values: Dict[str, Any],
+                jinxs_dict: Dict[str, 'Jinx'],
+                jinja_env: Optional[Environment] = None,
+                npc: Optional[Any] = None,
+                messages: Optional[List[Dict[str, str]]] = None,
+                **kwargs: Any):
+        """
+        Execute the jinx with given inputs.
+        **kwargs can be used to pass 'extra_globals' for the python engine.
+        """
         if jinja_env is None:
-            
-            
             from jinja2 import DictLoader
             jinja_env = Environment(
-                loader=DictLoader({}),  
+                loader=DictLoader({}),
                 undefined=SilentUndefined,
             )
         
-        context = (npc.shared_context.copy() if npc else {})
+        context = (npc.shared_context.copy() if npc and hasattr(npc, 'shared_context') else {})
         context.update(input_values)
         context.update({
             "jinxs": jinxs_dict,
             "llm_response": None,
-            "output": None, 
+            "output": None,
             "messages": messages,
         })
         
-        
+        # This is the key change: Extract 'extra_globals' from kwargs
+        extra_globals = kwargs.get('extra_globals')
+
         for i, step in enumerate(self.steps):
             context = self._execute_step(
-                step, 
+                step,
                 context,
-                jinja_env, 
-                npc=npc, 
-                messages=messages, 
-
-            )            
+                jinja_env,
+                npc=npc,
+                messages=messages,
+                extra_globals=extra_globals # Pass it down to the step executor
+            )
 
         return context
+
     def _execute_step(self,
-                  step, 
-                  context, 
-                  jinja_env,
-                  npc=None,
-                  messages=None, 
-    ):
+                  step: Dict[str, Any],
+                  context: Dict[str, Any],
+                  jinja_env: Environment,
+                  npc: Optional[Any] = None,
+                  messages: Optional[List[Dict[str, str]]] = None,
+                  extra_globals: Optional[Dict[str, Any]] = None):
+        """
+        Execute a single step of the jinx.
+        """
         engine = step.get("engine", "natural")
         code = step.get("code", "")
         step_name = step.get("name", "unnamed_step")
@@ -364,7 +373,9 @@ class Jinx:
                 context["results"] = response_text
                 context[step_name] = response_text
                 context['messages'] = response.get('messages')
+        
         elif rendered_engine == "python":
+            # Base globals available to all python jinxes, defined within the library (npcpy)
             exec_globals = {
                 "__builtins__": __builtins__,
                 "npc": npc,
@@ -379,21 +390,33 @@ class Jinx:
                 "fnmatch": fnmatch,
                 "pathlib": pathlib,
                 "subprocess": subprocess,
-                "get_llm_response": npy.llm_funcs.get_llm_response, 
-                }
+                "get_llm_response": npy.llm_funcs.get_llm_response,
+                "CommandHistory": CommandHistory, # This is fine, it's part of npcpy
+            }
+            
+            # This is the fix: Update the globals with the dictionary passed in from the application (npcsh)
+            if extra_globals:
+                exec_globals.update(extra_globals)
             
             exec_locals = {}
-            exec(rendered_code, exec_globals, exec_locals)
-            
+            try:
+                exec(rendered_code, exec_globals, exec_locals)
+            except Exception as e:
+                # Provide a clear error message in the output if execution fails
+                error_msg = f"Error executing jinx python code: {type(e).__name__}: {e}"
+                context['output'] = error_msg
+                return context
+
             context.update(exec_locals)
             
             if "output" in exec_locals:
                 outp = exec_locals["output"]
                 context["output"] = outp
                 context[step_name] = outp
-                messages.append({'role':'assistant', 
-                                'content': f'Jinx executed with following output: {outp}'})
-                context['messages'] = messages
+                if messages is not None:
+                    messages.append({'role':'assistant', 
+                                     'content': f'Jinx executed with following output: {outp}'})
+                    context['messages'] = messages
                 
         else:
             context[step_name] = {"error": f"Unsupported engine: {rendered_engine}"}

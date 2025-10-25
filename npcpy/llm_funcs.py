@@ -378,7 +378,6 @@ def execute_llm_command(
         "messages": messages,
         "output": "Max attempts reached. Unable to execute the command successfully.",
     }
-
 def handle_jinx_call(
     command: str,
     jinx_name: str,
@@ -391,6 +390,7 @@ def handle_jinx_call(
     n_attempts=3,
     attempt=0,
     context=None,
+    extra_globals=None,  # ADD THIS
     **kwargs
 ) -> Union[str, Dict[str, Any]]:
     """This function handles a jinx call.
@@ -568,6 +568,8 @@ def handle_jinx_call(
                 jinja_env,
                 npc=npc,
                 messages=messages,
+                extra_globals=extra_globals  # ADD THIS
+                
             )
         except Exception as e:
             print(f"An error occurred while executing the jinx: {e}")
@@ -664,10 +666,10 @@ def jinx_handler(command, extracted_data, **kwargs):
         api_key=kwargs.get('api_key'),
         messages=kwargs.get('messages'),
         npc=kwargs.get('npc'),
-        team = kwargs.get('team'),
+        team=kwargs.get('team'),
         stream=kwargs.get('stream'),
-
-        context=kwargs.get('context')
+        context=kwargs.get('context'),
+        extra_globals=kwargs.get('extra_globals')  # ADD THIS
     )
 
 def answer_handler(command, extracted_data, **kwargs):
@@ -714,6 +716,7 @@ def check_llm_command(
     stream=False,
     context=None,
     actions: Dict[str, Dict] = None,
+    extra_globals=None,
 ):
     """This function checks an LLM command and returns sequences of steps with parallel actions."""
     if messages is None:
@@ -734,6 +737,7 @@ def check_llm_command(
         stream=stream,
         context=context,
         actions=actions,
+        extra_globals=extra_globals,
 
     )
     return exec
@@ -873,6 +877,7 @@ def plan_multi_step_actions(
    api_key: str = None,
    context: str = None,
    messages: List[Dict[str, str]] = None,
+   
 
 ):
     """
@@ -992,6 +997,7 @@ def execute_multi_step_plan(
         messages=messages,
         team=team, 
         
+        
     )
     
     if not planned_actions:
@@ -1007,7 +1013,8 @@ def execute_multi_step_plan(
                                 stream=stream,
                                 team = team, 
                                 images=images, 
-                                context=context)
+                                context=context
+                                )
         return {"messages": result.get('messages',
                                        messages), 
                 "output": result.get('response')}
@@ -1037,7 +1044,7 @@ def execute_multi_step_plan(
             render_markdown(
                 f"- Executing Action: {action_name} \n- Explanation: {action_data.get('explanation')}\n "
             )
-                
+                            
             result = handler(
                 command=command, 
                 extracted_data=action_data,
@@ -1049,10 +1056,10 @@ def execute_multi_step_plan(
                 npc=npc,
                 team=team,
                 stream=stream, 
-
                 context=context+step_context, 
-                images=images
-                )
+                images=images,
+                extra_globals=kwargs.get('extra_globals')  # ADD THIS
+            )
         except KeyError as e:
           
             return execute_multi_step_plan(
@@ -1068,6 +1075,7 @@ def execute_multi_step_plan(
                                             stream=stream,
                                             context=context,
                                             actions=actions,
+                                            
                                             **kwargs, 
             )
 
