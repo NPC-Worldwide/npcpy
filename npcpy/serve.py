@@ -149,7 +149,7 @@ def load_kg_data(generation=None):
 app = Flask(__name__)
 app.config["REDIS_URL"] = "redis://localhost:6379"
 app.config['DB_PATH'] = ''
-
+app.jinx_conversation_contexts ={}
 
 redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
 
@@ -585,19 +585,27 @@ def execute_jinx():
     with cancellation_lock:
         cancellation_flags[stream_id] = False
     
-    print(data)
+    print(f"--- Jinx Execution Request for streamId: {stream_id} ---")
+    print(f"Request Data: {json.dumps(data, indent=2)}")
 
     jinx_name = data.get("jinxName")
     jinx_args = data.get("jinxArgs", [])
-    print(jinx_args)
+    print(f"Jinx Name: {jinx_name}, Jinx Args: {jinx_args}")
     conversation_id = data.get("conversationId")
     model = data.get("model")
     provider = data.get("provider")
+
+    # --- IMPORTANT: Ensure conversation_id is present for context persistence ---
+    if not conversation_id:
+        print("ERROR: conversationId is required for Jinx execution with persistent variables")
+        return jsonify({"error": "conversationId is required for Jinx execution with persistent variables"}), 400
+
     npc_name = data.get("npc")
     npc_source = data.get("npcSource", "global")
     current_path = data.get("currentPath")
     
     if not jinx_name:
+        print("ERROR: jinxName is required")
         return jsonify({"error": "jinxName is required"}), 400
     
     # Load project environment if applicable
@@ -632,12 +640,12 @@ def execute_jinx():
             jinx = Jinx(jinx_path=global_jinx_path)
     
     if not jinx:
+        print(f"ERROR: Jinx '{jinx_name}' not found")
         return jsonify({"error": f"Jinx '{jinx_name}' not found"}), 404
     
     # Extract inputs from args
     from npcpy.npc_compiler import extract_jinx_inputs
 
-    # --- Start of Fix ---
     # Re-assemble arguments that were incorrectly split by spaces.
     fixed_args = []
     i = 0
@@ -666,15 +674,11 @@ def execute_jinx():
             # This handles positional arguments, just in case.
             fixed_args.append(arg)
             i += 1
-    # --- End of Fix ---
 
     # Now, use the corrected arguments to extract inputs.
     input_values = extract_jinx_inputs(fixed_args, jinx)
 
-
-
-
-    print('executing jinx with input_values ,', input_values)
+    print(f'Executing jinx with input_values: {input_values}')
     # Get conversation history
     command_history = CommandHistory(app.config.get('DB_PATH'))
     messages = fetch_messages_for_conversation(conversation_id)
@@ -684,20 +688,48 @@ def execute_jinx():
     if npc_object and hasattr(npc_object, 'jinxs_dict'):
         all_jinxs.update(npc_object.jinxs_dict)
     
+    # --- IMPORTANT: Retrieve or initialize the persistent Jinx context for this conversation ---
+    if conversation_id not in app.jinx_conversation_contexts:
+        app.jinx_conversation_contexts[conversation_id] = {}
+    jinx_local_context = app.jinx_conversation_contexts[conversation_id]
+
+    print(f"--- CONTEXT STATE (conversationId: {conversation_id}) ---")
+    print(f"jinx_local_context BEFORE Jinx execution: {jinx_local_context}")
+
     def event_stream(current_stream_id):
         try:
-            # Execute the jinx
+            # --- IMPORTANT: Pass the persistent context as 'extra_globals' ---
             result = jinx.execute(
                 input_values=input_values,
                 jinxs_dict=all_jinxs,
                 jinja_env=npc_object.jinja_env if npc_object else None,
                 npc=npc_object,
-                messages=messages
+                messages=messages,
+                extra_globals=jinx_local_context # <--- THIS IS WHERE THE PERSISTENT CONTEXT IS PASSED
             )
             
-            # Get output
+            # --- CRITICAL FIX: Capture and update local_vars from the Jinx's result ---
+            # The Jinx.execute method returns its internal 'context' dictionary.
+            # We need to update our persistent 'jinx_local_context' with the new variables
+            # from the Jinx's returned context.
+            if isinstance(result, dict):
+                # We need to be careful not to overwrite core Jinx/NPC context keys
+                # that are not meant for variable persistence.
+                keys_to_exclude = ['output', 'llm_response', 'messages', 'results', 'npc', 'context', 'jinxs', 'team']
+                
+                # Update jinx_local_context with all non-excluded keys from the result
+                for key, value in result.items():
+                    if key not in keys_to_exclude and not key.startswith('_'): # Exclude internal/temporary keys
+                        jinx_local_context[key] = value
+                
+                print(f"jinx_local_context UPDATED from Jinx result: {jinx_local_context}") # NEW LOG
+            
+            # Get output (this still comes from the 'output' key in the result)
             output = result.get('output', str(result))
             messages_updated = result.get('messages', messages)
+
+            print(f"jinx_local_context AFTER Jinx execution (final state): {jinx_local_context}")
+            print(f"Jinx execution result output: {output}")
             
             # Check for interruption
             with cancellation_lock:
@@ -774,7 +806,7 @@ def execute_jinx():
             )
             
         except Exception as e:
-            print(f"Error executing jinx {jinx_name}: {str(e)}")
+            print(f"ERROR: Exception during jinx execution {jinx_name}: {str(e)}")
             traceback.print_exc()
             error_data = {
                 "type": "error",
@@ -786,6 +818,7 @@ def execute_jinx():
             with cancellation_lock:
                 if current_stream_id in cancellation_flags:
                     del cancellation_flags[current_stream_id]
+            print(f"--- Jinx Execution Finished for streamId: {stream_id} ---")
     
     return Response(event_stream(stream_id), mimetype="text/event-stream")
 
