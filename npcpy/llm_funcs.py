@@ -105,6 +105,7 @@ def gen_video(
         try:
             output_path = generate_video_veo3(
                 prompt=prompt,
+                model=model,
                 negative_prompt=negative_prompt,
                 output_path=output_path,
             )
