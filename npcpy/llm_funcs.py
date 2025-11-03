@@ -594,7 +594,7 @@ def handle_jinx_call(
             render_markdown(f""" ## jinx OUTPUT FROM CALLING {jinx_name} \n \n output:{jinx_output['output']}""" )            
             response = get_llm_response(f"""
                 The user had the following request: {command}. 
-                Here were the jinx outputs from calling {jinx_name}: {jinx_output}
+                Here were the jinx outputs from calling {jinx_name}: {jinx_output.get('output', '')}
                 
                 Given the jinx outputs and the user request, please format a simple answer that 
                 provides the answer without requiring the user to carry out any further steps.
