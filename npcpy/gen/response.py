@@ -582,7 +582,7 @@ def get_litellm_response(
       litellm.include_cost_in_streaming_usage = True
       api_params['stream_options'] = {"include_usage": True}
 
-    if api_url is not None and (provider == "openai-like" or provider == "openai"):
+    if api_url is not None and ('openai-like' in provider or provider == "openai-like" or provider == "openai"):
         api_params["api_base"] = api_url
         provider = "openai"
     

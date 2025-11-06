@@ -2166,6 +2166,7 @@ def stream():
             model=model,
             provider=provider, 
             npc=npc_object, 
+            api_url = npc_object.api_url if npc_object.api_url else None,
             team=team_object,
             stream=True, 
             attachments=attachment_paths_for_llm,
