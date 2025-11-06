@@ -74,6 +74,7 @@ def generate_video_diffusers(
 
 def generate_video_veo3(
     prompt: str,
+    model: str, 
     negative_prompt: str = "",
     output_path: str = "",
 ):
@@ -93,7 +94,7 @@ def generate_video_veo3(
         config.negative_prompt = negative_prompt
     
     operation = client.models.generate_videos(
-        model="veo-3.0-generate-preview",
+        model=model,
         prompt=prompt,
         config=config,
     )
