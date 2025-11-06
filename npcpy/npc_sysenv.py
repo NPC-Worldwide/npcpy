@@ -144,7 +144,7 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                 
                 models = fetch_custom_models()
                 for model in models:
-                    available_models[model] = provider_name
+                    available_models[model] = 'openai-like'
                     
                 logging.info(
                     f"Loaded {len(models)} models "
@@ -157,32 +157,56 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                     f"custom provider '{provider_name}': {e}"
                 )
     
-
+    
     airplane_mode = False
     if not airplane_mode:
         timeout_seconds = 3.5
         
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            if 'NPC_STUDIO_LICENSE_KEY' in env_vars or os.environ.get('NPC_STUDIO_LICENSE_KEY'):
-                try:
-                    def fetch_enpisi_models():
-                        import requests
+          
+            if 'NPCSH_API_URL' in env_vars or os.environ.get('NPCSH_API_URL'):
+              try:
+                  import requests
+                  
+                  def fetch_custom_models():
+                      base_url = env_vars.get('NPCSH_API_URL') or os.environ.get('NPCSH_API_URL')                      
+                      models_endpoint = f"{base_url.rstrip('/')}/models"
+                      response = requests.get(
+                          models_endpoint, 
+                          headers=headers,
+                          timeout=3.5
+                      )
+                      
+                      if response.status_code == 200:
+                          data = response.json()
+                          
+                          if isinstance(data, dict) and 'data' in data:
+                              return [
+                                  m['id'] for m in data['data'] 
+                                  if 'id' in m
+                              ]
+                          elif isinstance(data, list):
+                              return [
+                                  m['id'] for m in data 
+                                  if isinstance(m, dict) and 'id' in m
+                              ]
+                      return []
+                  
+                  models = fetch_custom_models()
+                  for model in models:
+                      available_models[model] = 'openai-like'
+                      
 
-                        api_url = 'https://api.enpisi.com'
-                        headers = {
-                            'Authorization': f"Bearer {env_vars.get('NPC_STUDIO_LICENSE_KEY') or os.environ.get('NPC_STUDIO_LICENSE_KEY')}",
-                            'Content-Type': 'application/json'
-                        }
-                        response = requests.get(f"{api_url}/models", headers=headers)
-
-                        return [model['id'] for model in response.json().get('data','')]
-                    for model in fetch_enpisi_models():
-                        available_models[model+'-npc'] = 'enpisi'
-
-                except Exception as e:
-                    logging.error(f"Error fetching NPC Studio models: {e}")
-
+                
+                  
+              except Exception as e:
+                  logging.warning(
+                      f"Failed to load models from "
+                      f"custom provider 'openai-like': {e}"
+                  )
+  
+            
             if "ANTHROPIC_API_KEY" in env_vars or os.environ.get("ANTHROPIC_API_KEY"):
                 try:
                     import anthropic
