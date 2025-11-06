@@ -174,7 +174,7 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                       models_endpoint = f"{base_url.rstrip('/')}/models"
                       response = requests.get(
                           models_endpoint, 
-                          headers=headers,
+
                           timeout=3.5
                       )
                       
