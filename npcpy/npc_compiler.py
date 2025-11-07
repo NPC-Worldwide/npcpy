@@ -275,69 +275,104 @@ class Jinx:
         self.npc = jinx_data.get("npc")
         self.steps = jinx_data.get("steps", []) # These are the raw steps initially
 
-    def render_first_pass(self, jinja_env_for_macros: Environment, all_jinx_callables: Dict[str, Callable]):
+    def render_first_pass(
+        self, 
+        jinja_env_for_macros: Environment, 
+        all_jinx_callables: Dict[str, Callable]
+    ):
         """
         Performs the first-pass Jinja rendering on the Jinx's raw steps.
-        This expands nested Jinx calls (e.g., {{ sh(...) }} or engine: jinx_name)
-        but preserves runtime variables (e.g., {{ command_var }}).
+        This expands nested Jinx calls (e.g., {{ sh(...) }} or 
+        engine: jinx_name) but preserves runtime variables 
+        (e.g., {{ command_var }}).
         
         Args:
-            jinja_env_for_macros: The Jinja Environment configured with Jinx callables in its globals.
-            all_jinx_callables: A dictionary of Jinx names to their callable functions (from create_jinx_callable).
+            jinja_env_for_macros: The Jinja Environment configured with 
+                Jinx callables in its globals.
+            all_jinx_callables: A dictionary of Jinx names to their 
+                callable functions (from create_jinx_callable).
         """
         rendered_steps_output = []
 
         for raw_step in self._raw_steps:
             if not isinstance(raw_step, dict):
-                # If a step is not a dict (e.g., a simple string), just append it.
-                # This might indicate malformed YAML, but we should handle it gracefully.
                 rendered_steps_output.append(raw_step)
                 continue
 
-            # Check for declarative Jinx invocation (e.g., engine: fart)
             engine_name = raw_step.get('engine')
+            
             if engine_name and engine_name in all_jinx_callables:
-                # This is a Jinx invocation!
+                step_name = raw_step.get('name', f'call_{engine_name}')
+                jinx_args = {
+                    k: v for k, v in raw_step.items() 
+                    if k not in ['engine', 'name']
+                }
                 
-                # Extract arguments for the invoked Jinx
-                jinx_args = {k: v for k, v in raw_step.items() if k not in ['engine', 'name']}
-                
-                # Call the Jinx callable (from all_jinx_callables) to get its expanded YAML
-                # The callable_jinx from create_jinx_callable will handle rendering its _raw_steps
                 jinx_callable = all_jinx_callables[engine_name]
                 try:
                     expanded_yaml_string = jinx_callable(**jinx_args)
                     expanded_steps = yaml.safe_load(expanded_yaml_string)
+                    
                     if isinstance(expanded_steps, list):
+                        context_setup_step = {
+                            'name': f'{step_name}_setup',
+                            'engine': 'python',
+                            'code': (
+                                f'# Setup inputs for {engine_name}\n' +
+                                '\n'.join([
+                                    f"context['{k}'] = {repr(v)}"
+                                    for k, v in jinx_args.items()
+                                ])
+                            )
+                        }
+                        rendered_steps_output.append(context_setup_step)
                         rendered_steps_output.extend(expanded_steps)
+                        
+                        context_result_step = {
+                            'name': step_name,
+                            'engine': 'python',
+                            'code': (
+                                f"context['{step_name}'] = "
+                                f"{{'output': context.get('output', None)}}\n"
+                                f"output = context['{step_name}']"
+                            )
+                        }
+                        rendered_steps_output.append(context_result_step)
+                        
                     elif expanded_steps is not None:
                         rendered_steps_output.append(expanded_steps)
+                        
                 except Exception as e:
-                    print(f"Warning: Error expanding Jinx '{engine_name}' within Jinx '{self.jinx_name}' (declarative): {e}")
-                    rendered_steps_output.append(raw_step) # Fallback to original step
+                    print(
+                        f"Warning: Error expanding Jinx '{engine_name}' "
+                        f"within Jinx '{self.jinx_name}' "
+                        f"(declarative): {e}"
+                    )
+                    rendered_steps_output.append(raw_step)
             else:
-                # This is a regular step, or a Jinja macro call (e.g., {{ sh(...) }}) within a field.
-                # We need to deep copy the step to avoid modifying the original _raw_steps during rendering
-                # of string fields.
                 processed_step = {}
                 for key, value in raw_step.items():
                     if isinstance(value, str):
                         try:
-                            template = jinja_env_for_macros.from_string(value)
-                            # Render with an empty context for now, as we only want to expand macros.
-                            # The `jinja_env_for_macros.globals` will contain the Jinx callables.
-                            rendered_value = template.render({}) # Pass empty context to avoid resolving runtime vars prematurely
+                            template = jinja_env_for_macros.from_string(
+                                value
+                            )
+                            rendered_value = template.render({})
                             
-                            # If the rendered value is a YAML fragment (e.g., from {{ sh(...) }}), load it.
-                            # This handles the `{{ sh(...) }}` style invocation.
                             try:
-                                loaded_value = yaml.safe_load(rendered_value)
+                                loaded_value = yaml.safe_load(
+                                    rendered_value
+                                )
                                 processed_step[key] = loaded_value
                             except yaml.YAMLError:
-                                processed_step[key] = rendered_value # Not YAML, keep as string
+                                processed_step[key] = rendered_value
                         except Exception as e:
-                            print(f"Warning: Error during first-pass rendering of Jinx '{self.jinx_name}' step field '{key}' (inline macro): {e}")
-                            processed_step[key] = value # Fallback to original if rendering fails
+                            print(
+                                f"Warning: Error during first-pass "
+                                f"rendering of Jinx '{self.jinx_name}' "
+                                f"step field '{key}' (inline macro): {e}"
+                            )
+                            processed_step[key] = value
                     else:
                         processed_step[key] = value
                 rendered_steps_output.append(processed_step)
