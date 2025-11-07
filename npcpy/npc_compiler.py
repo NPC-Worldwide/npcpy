@@ -13,7 +13,7 @@ import hashlib
 import pathlib
 import fnmatch
 import subprocess
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Callable
 from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoader
 from sqlalchemy import create_engine, text
 import npcpy as npy 
@@ -275,52 +275,74 @@ class Jinx:
         self.npc = jinx_data.get("npc")
         self.steps = jinx_data.get("steps", []) # These are the raw steps initially
 
-    def render_first_pass(self, jinja_env_for_macros: Environment, first_pass_context: Optional[Dict[str, Any]] = None):
+    def render_first_pass(self, jinja_env_for_macros: Environment, all_jinx_callables: Dict[str, Callable]):
         """
         Performs the first-pass Jinja rendering on the Jinx's raw steps.
-        This expands nested Jinx calls (e.g., {{ sh(...) }}) but preserves
-        runtime variables (e.g., {{ command_var }}).
-        """
-        if first_pass_context is None:
-            first_pass_context = {}
-
-        self.steps = [] # Clear previous steps, will be replaced by rendered ones
-        for step in self._raw_steps:
-            rendered_step = {}
-            for key, value in step.items():
-                if isinstance(value, str):
-                    try:
-                        template = jinja_env_for_macros.from_string(value)
-                        # The context here is for global variables, not runtime step variables.
-                        # The `jinja_env_for_macros`'s globals should handle `{{ sh(...) }}` calls.
-                        rendered_value = template.render(**first_pass_context)
-                        
-                        # Attempt to load as YAML if it's a Jinx expansion, otherwise keep as string
-                        try:
-                            # This handles cases where a Jinx macro returns a YAML fragment
-                            loaded_value = yaml.safe_load(rendered_value)
-                            # If loaded_value is a list, it means a list of steps was returned.
-                            # We need to extend the current steps with these, not assign to a key.
-                            if key == 'steps' and isinstance(loaded_value, list):
-                                # This scenario needs careful handling if a step itself is replaced by multiple steps.
-                                # For now, assume a step's field (like 'code') is replaced by a string.
-                                # If the *entire step* is replaced by a Jinx call that returns multiple steps,
-                                # the outer loop needs to be aware.
-                                # For now, we'll keep it simple and assume `value` is a string that becomes a string.
-                                # If `value` is a jinja call that returns a YAML dict/list, it will be loaded.
-                                rendered_step[key] = loaded_value
-                            else:
-                                rendered_step[key] = loaded_value
-                        except yaml.YAMLError:
-                            rendered_step[key] = rendered_value # Not YAML, keep as string
-                    except Exception as e:
-                        print(f"Warning: Error during first-pass rendering of Jinx '{self.jinx_name}' step field '{key}': {e}")
-                        rendered_step[key] = value # Fallback to original if rendering fails
-                else:
-                    rendered_step[key] = value
-            self.steps.append(rendered_step)
+        This expands nested Jinx calls (e.g., {{ sh(...) }} or engine: jinx_name)
+        but preserves runtime variables (e.g., {{ command_var }}).
         
-        # self.steps now contains the first-pass rendered steps.
+        Args:
+            jinja_env_for_macros: The Jinja Environment configured with Jinx callables in its globals.
+            all_jinx_callables: A dictionary of Jinx names to their callable functions (from create_jinx_callable).
+        """
+        rendered_steps_output = []
+
+        for raw_step in self._raw_steps:
+            if not isinstance(raw_step, dict):
+                # If a step is not a dict (e.g., a simple string), just append it.
+                # This might indicate malformed YAML, but we should handle it gracefully.
+                rendered_steps_output.append(raw_step)
+                continue
+
+            # Check for declarative Jinx invocation (e.g., engine: fart)
+            engine_name = raw_step.get('engine')
+            if engine_name and engine_name in all_jinx_callables:
+                # This is a Jinx invocation!
+                
+                # Extract arguments for the invoked Jinx
+                jinx_args = {k: v for k, v in raw_step.items() if k not in ['engine', 'name']}
+                
+                # Call the Jinx callable (from all_jinx_callables) to get its expanded YAML
+                # The callable_jinx from create_jinx_callable will handle rendering its _raw_steps
+                jinx_callable = all_jinx_callables[engine_name]
+                try:
+                    expanded_yaml_string = jinx_callable(**jinx_args)
+                    expanded_steps = yaml.safe_load(expanded_yaml_string)
+                    if isinstance(expanded_steps, list):
+                        rendered_steps_output.extend(expanded_steps)
+                    elif expanded_steps is not None:
+                        rendered_steps_output.append(expanded_steps)
+                except Exception as e:
+                    print(f"Warning: Error expanding Jinx '{engine_name}' within Jinx '{self.jinx_name}' (declarative): {e}")
+                    rendered_steps_output.append(raw_step) # Fallback to original step
+            else:
+                # This is a regular step, or a Jinja macro call (e.g., {{ sh(...) }}) within a field.
+                # We need to deep copy the step to avoid modifying the original _raw_steps during rendering
+                # of string fields.
+                processed_step = {}
+                for key, value in raw_step.items():
+                    if isinstance(value, str):
+                        try:
+                            template = jinja_env_for_macros.from_string(value)
+                            # Render with an empty context for now, as we only want to expand macros.
+                            # The `jinja_env_for_macros.globals` will contain the Jinx callables.
+                            rendered_value = template.render({}) # Pass empty context to avoid resolving runtime vars prematurely
+                            
+                            # If the rendered value is a YAML fragment (e.g., from {{ sh(...) }}), load it.
+                            # This handles the `{{ sh(...) }}` style invocation.
+                            try:
+                                loaded_value = yaml.safe_load(rendered_value)
+                                processed_step[key] = loaded_value
+                            except yaml.YAMLError:
+                                processed_step[key] = rendered_value # Not YAML, keep as string
+                        except Exception as e:
+                            print(f"Warning: Error during first-pass rendering of Jinx '{self.jinx_name}' step field '{key}' (inline macro): {e}")
+                            processed_step[key] = value # Fallback to original if rendering fails
+                    else:
+                        processed_step[key] = value
+                rendered_steps_output.append(processed_step)
+        
+        self.steps = rendered_steps_output
 
     def execute(self,
                 input_values: Dict[str, Any],
@@ -776,7 +798,9 @@ class NPC:
 
             
         self.jinxs_dict = {} # Initialize here, will be populated by _load_and_render_npc_jinxs
-        self._load_and_render_npc_jinxs(jinxs or "*") # Load and perform first-pass rendering for NPC-specific jinxs
+        # Pass the team's raw jinxs to the NPC for its first-pass rendering
+        team_raw_jinxs = self.team._raw_jinxs_list if self.team and hasattr(self.team, '_raw_jinxs_list') else []
+        self._load_and_render_npc_jinxs(jinxs or "*", team_raw_jinxs=team_raw_jinxs) # Load and perform first-pass rendering for NPC-specific jinxs
         
         self.shared_context = {
             "dataframes": {},
@@ -1097,7 +1121,7 @@ class NPC:
         """
         return self._load_and_render_npc_jinxs(jinxs_spec)
 
-    def _load_and_render_npc_jinxs(self, jinxs_spec):
+    def _load_and_render_npc_jinxs(self, jinxs_spec, team_raw_jinxs: Optional[List['Jinx']] = None):
         """
         Loads NPC-specific jinxs and performs the first-pass Jinja rendering.
         """
@@ -1121,12 +1145,12 @@ class NPC:
                     npc_jinxs_raw_list.append(jinx_obj)
         
         # If there are raw NPC jinxs to render
-        if npc_jinxs_raw_list:
+        if npc_jinxs_raw_list or team_raw_jinxs:
             # Create a Jinja environment for first-pass rendering for NPC's own jinxs
             # This environment needs access to *all* available jinxs (team's and NPC's)
             # for cross-jinx rendering.
             
-            all_available_raw_jinxs = list(self.team._raw_jinxs_list if self.team and hasattr(self.team, '_raw_jinxs_list') else [])
+            all_available_raw_jinxs = list(team_raw_jinxs or [])
             all_available_raw_jinxs.extend(npc_jinxs_raw_list)
 
             # Create a combined dictionary for lookup during macro creation
@@ -1159,9 +1183,11 @@ class NPC:
             
             npc_first_pass_jinja_env.globals.update(jinx_macro_globals)
 
+            # Now, perform first-pass rendering for the NPC's own raw jinxs
             for raw_npc_jinx in npc_jinxs_raw_list:
                 try:
-                    raw_npc_jinx.render_first_pass(npc_first_pass_jinja_env, {})
+                    # Pass the jinx_macro_globals to render_first_pass so it can resolve declarative calls
+                    raw_npc_jinx.render_first_pass(npc_first_pass_jinja_env, jinx_macro_globals)
                     self.jinxs_dict[raw_npc_jinx.jinx_name] = raw_npc_jinx
                 except Exception as e:
                     print(f"Error performing first-pass rendering for NPC Jinx '{raw_npc_jinx.jinx_name}': {e}")
@@ -2146,8 +2172,8 @@ class Team:
         # Now, iterate through the raw Jinxs and perform the first-pass rendering
         for raw_jinx in self._raw_jinxs_list:
             try:
-                # The context for the first pass can be empty or contain global configuration
-                raw_jinx.render_first_pass(self.jinja_env_for_first_pass, {})
+                # Pass the jinx_macro_globals to render_first_pass so it can resolve declarative calls
+                raw_jinx.render_first_pass(self.jinja_env_for_first_pass, jinx_macro_globals)
                 self.jinxs_dict[raw_jinx.jinx_name] = raw_jinx # Store the first-pass rendered Jinx
             except Exception as e:
                 print(f"Error performing first-pass rendering for Jinx '{raw_jinx.jinx_name}': {e}")
