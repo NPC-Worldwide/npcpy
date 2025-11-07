@@ -89,62 +89,117 @@ for tool_call in response['tool_results']:
 Here is an example for setting up an agent team to use Jinja Execution (Jinxs) templates that are processed entirely with prompts, allowing you to use them with models that do or do not possess tool calling support.
 
 ```python
+
 from npcpy.npc_compiler import NPC, Team, Jinx
 from npcpy.tools import auto_tools
 import os
+from jinja2 import Environment, Undefined, DictLoader # Import necessary Jinja2 components for Jinx code
 
-
-
+# --- REVISED file_reader_jinx ---
 file_reader_jinx = Jinx(jinx_data={
     "jinx_name": "file_reader",
-    "description": "Read a file and summarize its contents",
+    "description": "Read a file and optionally summarize its contents using an LLM.",
     "inputs": ["filename"],
     "steps": [
         {
-            "name": "read_file",
+            "name": "read_file_content",
             "engine": "python",
-            "code": """
+            "code": '''
 import os
-with open(os.path.abspath('{{ filename }}'), 'r') as f:
-    content = f.read()
-output= content
-            """
+from jinja2 import Environment, Undefined, DictLoader # Local import for Jinx step
+
+# The 'filename' input to the file_reader jinx might be a Jinja template string like "{{ source_filename }}"
+# or a direct filename. We need to render it using the current execution context.
+
+# Get the Jinja environment from the NPC if available, otherwise create a default one.
+# The 'npc' variable is available in the Jinx execution context.
+# We need to ensure 'npc' exists before trying to access its 'jinja_env'.
+execution_jinja_env = npc.jinja_env if npc else Environment(loader=DictLoader({}), undefined=Undefined)
+
+# Render the filename. The current 'context' should contain the variables needed for rendering.
+# For declarative calls, the parent Jinx's inputs (like 'source_filename') will be in this context.
+# We also need to ensure the value from context['filename'] is treated as a template string.
+filename_template = execution_jinja_env.from_string(context['filename'])
+rendered_filename = filename_template.render(**context)
+
+file_path_abs = os.path.abspath(rendered_filename)
+try:
+    with open(file_path_abs, 'r') as f:
+        content = f.read()
+    context['file_raw_content'] = content # Store raw content in context for later use
+    output = content # Output of this step is the raw content
+except FileNotFoundError:
+    output = f"Error: File not found at {file_path_abs}"
+    context['file_raw_content'] = output # Store error message for consistency
+except Exception as e:
+    output = f"Error reading file {file_path_abs}: {e}"
+    context['file_raw_content'] = output # Store error message for consistency
+            '''
         },
         {
-            "name": "summarize_content",
-            "engine": "natural",
-            "code": """
-                Summarize the content of the file: {{ read_file }}.
-            """
+            "name": "summarize_file_content",
+            "engine": "python",
+            "code": '''
+# Check if the previous step encountered an error
+if "Error" not in context['file_raw_content']:
+    prompt = f"Summarize the following content concisely, highlighting key themes and points: {context['file_raw_content']}"
+    llm_result = npc.get_llm_response(prompt, tool_choice=False) # FIX: Passed prompt positionally
+    output = llm_result.get('response', 'Failed to generate summary due to LLM error.')
+else:
+    output = "Skipping summary due to previous file reading error."
+            '''
         }
     ]
 })
 
-
-# Define a jinx for literary research
+# --- REVISED literary_research_jinx ---
 literary_research_jinx = Jinx(jinx_data={
     "jinx_name": "literary_research",
-    "description": "Research a literary topic, analyze files, and summarize findings",
-    "inputs": ["topic"],
+    "description": "Research a literary topic, read a specific file, analyze, and synthesize findings.",
+    "inputs": ["topic", "source_filename"],
     "steps": [
         {
-            "name": "gather_info",
-            "engine": "natural",
-            "code": """
-                Research the topic: {{ topic }}.
-                Summarize the main themes and historical context.
-            """
+            "name": "initial_llm_research",
+            "engine": "python",
+            "code": '''
+prompt = f"Research the topic: {context['topic']}. Summarize the main themes, key authors, and historical context. Be thorough."
+llm_result = npc.get_llm_response(prompt, tool_choice=False) # FIX: Passed prompt positionally
+context['research_summary'] = llm_result.get('response', 'No initial LLM research found.')
+output = context['research_summary']
+            '''
         },
         {
-            "name": "final_summary",
-            "engine": "natural",
-            "code": """
-                Based on the research in. {{gather_info}}, write a concise, creative summary.
-            """
+            "name": "read_and_process_source_file",
+            "engine": "file_reader",
+            "filename": "{{ source_filename }}" # This is passed as a string template to file_reader
+        },
+        {
+            "name": "final_synthesis_and_creative_writing",
+            "engine": "python",
+            "code": '''
+# Access outputs from previous steps.
+research_summary = context['initial_llm_research']
+# The output of a declarative jinx call (like 'file_reader') is stored under its step name.
+# The actual content we want is the 'output' of the *last step* within that sub-jinx.
+file_summary = context['read_and_process_source_file'].get('output', 'No file summary available.')
+
+prompt = f"""Based on the following information:
+1. Comprehensive Research Summary:
+{research_summary}
+
+2. Key Insights from Source File:
+{file_summary}
+
+Integrate these findings and write a concise, creative, and poetically styled summary of the literary topic '{context['topic']}'. Emphasize unique perspectives or connections between the research and the file content, as if written by a master of magical realism.
+"""
+llm_result = npc.get_llm_response(prompt, tool_choice=False) # FIX: Passed prompt positionally
+output = llm_result.get('response', 'Failed to generate final creative summary.')
+            '''
         }
     ]
 })
 
+# --- NPC Definitions (unchanged) ---
 ggm = NPC(
     name='Gabriel Garcia Marquez',
     primary_directive='You are Gabriel Garcia Marquez, master of magical realism. Research, analyze, and write with poetic flair.',
@@ -167,15 +222,23 @@ borges = NPC(
     provider='ollama',
 )
 
-# Set up a team with a forenpc that orchestrates the other npcs
-lit_team = Team(npcs=[ggm, isabel], forenpc=borges, jinxs={'literary_research': literary_research_jinx, 'file_reader': file_reader_jinx},
+# --- Team Setup ---
+lit_team = Team(
+    npcs=[ggm, isabel], 
+    forenpc=borges, 
+    jinxs=[literary_research_jinx, file_reader_jinx],
 )
 
-# Example: Orchestrate a jinx workflow
+# --- Orchestration Example ---
 result = lit_team.orchestrate(
-    "Research the topic of magical realism, read ./test_data/magical_realism.txt and summarize the findings"
+    "Research the topic of magical realism, using the file './test_data/magical_realism.txt' as a primary source, and provide a comprehensive, creative summary."
 )
+
+print("\n--- Orchestration Result Summary ---")
 print(result['debrief']['summary'])
+
+print("\n--- Full Orchestration Output ---")
+print(result['output'])
 
 ```
 ```

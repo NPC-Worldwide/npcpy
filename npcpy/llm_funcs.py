@@ -379,6 +379,8 @@ def execute_llm_command(
         "messages": messages,
         "output": "Max attempts reached. Unable to execute the command successfully.",
     }
+
+# --- START OF CORRECTED handle_jinx_call ---
 def handle_jinx_call(
     command: str,
     jinx_name: str,
@@ -391,7 +393,7 @@ def handle_jinx_call(
     n_attempts=3,
     attempt=0,
     context=None,
-    extra_globals=None,  # ADD THIS
+    extra_globals=None,
     **kwargs
 ) -> Union[str, Dict[str, Any]]:
     """This function handles a jinx call.
@@ -411,10 +413,13 @@ def handle_jinx_call(
     if npc is None and team is None:
         return f"No jinxs are available. "
     else:
+        jinx = None
+        if npc and hasattr(npc, 'jinxs_dict') and jinx_name in npc.jinxs_dict:
+            jinx = npc.jinxs_dict[jinx_name]
+        elif team and hasattr(team, 'jinxs_dict') and jinx_name in team.jinxs_dict:
+            jinx = team.jinxs_dict[jinx_name]
 
-       
-       
-        if jinx_name not in npc.jinxs_dict and jinx_name not in team.jinxs_dict:
+        if not jinx:
             print(f"Jinx {jinx_name} not available")
             if attempt < n_attempts:
                 print(f"attempt {attempt+1} to generate jinx name failed, trying again")                
@@ -442,16 +447,11 @@ def handle_jinx_call(
                 "messages": messages,
             }
 
-
-
-
-        elif jinx_name in npc.jinxs_dict:
-            jinx = npc.jinxs_dict[jinx_name]
-        elif jinx_name in team.jinxs_dict:
-            jinx = team.jinxs_dict[jinx_name]
-
         render_markdown(f"jinx found: {jinx.jinx_name}")
-        jinja_env = Environment(loader=FileSystemLoader("."), undefined=Undefined)
+        
+        # This jinja_env is for parsing the Jinx's *inputs* from the LLM response, not for Jinx.execute's second pass.
+        local_jinja_env_for_input_parsing = Environment(loader=FileSystemLoader("."), undefined=Undefined)
+        
         example_format = {}
         for inp in jinx.inputs:
             if isinstance(inp, str):
@@ -563,20 +563,32 @@ def handle_jinx_call(
         
         render_markdown( "\n".join(['\n - ' + str(key) + ': ' +str(val) for key, val in input_values.items()]))
 
+        # Initialize jinx_output before the try block to prevent UnboundLocalError
+        jinx_output = {"output": "Jinx execution did not complete."} 
+        
         try:
+            # --- CRITICAL FIX HERE ---
+            # Pass arguments as keyword arguments to avoid positional confusion
+            # Use npc.jinja_env for the second-pass rendering
             jinx_output = jinx.execute(
-                input_values,
-                jinja_env,
-                npc=npc,
+                input_values=input_values,
+                npc=npc, # This is the orchestrating NPC
                 messages=messages,
-                extra_globals=extra_globals  # ADD THIS
-                
+                extra_globals=extra_globals,
+                jinja_env=npc.jinja_env if npc else (team.forenpc.jinja_env if team and team.forenpc else None) # Use NPC's or Team's forenpc's jinja_env
             )
+            # Ensure jinx_output is a dict with an 'output' key
+            if jinx_output is None:
+                jinx_output = {"output": "Jinx executed, but returned no explicit output."}
+            elif not isinstance(jinx_output, dict):
+                jinx_output = {"output": str(jinx_output)}
+
         except Exception as e:
             print(f"An error occurred while executing the jinx: {e}")
             print(f"trying again, attempt {attempt+1}")
             print('command', command)
             if attempt < n_attempts:
+                # Recursively call handle_jinx_call for retry
                 jinx_output = handle_jinx_call(
                     command,
                     jinx_name,
@@ -589,9 +601,15 @@ def handle_jinx_call(
                     attempt=attempt + 1,
                     n_attempts=n_attempts,
                     context=f""" \n \n \n "jinx failed: {e}  \n \n \n here was the previous attempt: {input_values}""",
+                    extra_globals=extra_globals
                 )
+            else:
+                # If max attempts reached, set a clear error output
+                jinx_output = {"output": f"Jinx '{jinx_name}' failed after {n_attempts} attempts: {e}", "error": True}
+
+
         if not stream and len(messages) > 0 :            
-            render_markdown(f""" ## jinx OUTPUT FROM CALLING {jinx_name} \n \n output:{jinx_output['output']}""" )            
+            render_markdown(f""" ## jinx OUTPUT FROM CALLING {jinx_name} \n \n output:{jinx_output.get('output', 'No output.')}""" )            
             response = get_llm_response(f"""
                 The user had the following request: {command}. 
                 Here were the jinx outputs from calling {jinx_name}: {jinx_output.get('output', '')}
@@ -610,7 +628,9 @@ def handle_jinx_call(
             response = response.get("response", {})
             return {'messages':messages, 'output':response}
         
-        return {'messages': messages, 'output': jinx_output['output']}
+        return {'messages': messages, 'output': jinx_output.get('output', 'No output.')} # Ensure 'output' key exists
+
+# --- END OF CORRECTED handle_jinx_call ---
 
 
 def handle_request_input(
@@ -670,7 +690,7 @@ def jinx_handler(command, extracted_data, **kwargs):
         team=kwargs.get('team'),
         stream=kwargs.get('stream'),
         context=kwargs.get('context'),
-        extra_globals=kwargs.get('extra_globals')  # ADD THIS
+        extra_globals=kwargs.get('extra_globals')
     )
 
 def answer_handler(command, extracted_data, **kwargs):
@@ -976,8 +996,8 @@ def execute_multi_step_plan(
    images: list = None,
    stream=False,
    context=None,
-
    actions: Dict[str, Dict] = None,
+   extra_globals=None,
    **kwargs, 
 ):
     """
@@ -1045,7 +1065,7 @@ def execute_multi_step_plan(
             render_markdown(
                 f"- Executing Action: {action_name} \n- Explanation: {action_data.get('explanation')}\n "
             )
-                            
+                                        
             result = handler(
                 command=command, 
                 extracted_data=action_data,
@@ -1059,7 +1079,7 @@ def execute_multi_step_plan(
                 stream=stream, 
                 context=context+step_context, 
                 images=images,
-                extra_globals=kwargs.get('extra_globals')  # ADD THIS
+                extra_globals=extra_globals
             )
         except KeyError as e:
           
@@ -1862,7 +1882,7 @@ def zoom_in(facts,
                        npc=npc,
                        context=context,
                        attempt_number=attempt_number+1,
-                       n_tries=n_tries,
+                       n_tries=n_attempts, # Corrected from n_tries to n_attempts
                        **kwargs)
     return facts
 def generate_groups(facts, 
@@ -1945,7 +1965,6 @@ def remove_redundant_groups(groups,
     response = get_llm_response(prompt, 
                                 model=model, 
                                 provider=provider, 
-                                format="json", 
                                 npc=npc,
                                 context=context,
                                 **kwargs)
@@ -2056,17 +2075,18 @@ def get_related_facts_llm(new_fact_statement,
                                 npc=npc,
                                 context=context,
                                 **kwargs)   
-    if attempt_number > n_attempts:
-        print(f"  Attempt {attempt_number} to find related facts yielded no results. Giving up.")
-        return get_related_facts_llm(new_fact_statement, 
-                                       existing_fact_statements, 
-                                       model=model, 
-                                       provider=provider, 
-                                       npc=npc,
-                                       attempt_number=attempt_number+1,
-                                       n_attempts=n_attempts,
-                                       context=context,
-                                       **kwargs)    
+    if attempt_number <= n_attempts: # Corrected logic: retry if attempt_number is within limits
+        if not response["response"].get("related_facts", []): # Only retry if no related facts found
+            print(f"  Attempt {attempt_number} to find related facts yielded no results. Retrying...")
+            return get_related_facts_llm(new_fact_statement, 
+                                           existing_fact_statements, 
+                                           model=model, 
+                                           provider=provider, 
+                                           npc=npc,
+                                           attempt_number=attempt_number+1,
+                                           n_attempts=n_attempts,
+                                           context=context,
+                                           **kwargs)    
 
     return response["response"].get("related_facts", [])
 
