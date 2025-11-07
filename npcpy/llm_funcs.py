@@ -976,8 +976,8 @@ def execute_multi_step_plan(
    images: list = None,
    stream=False,
    context=None,
-
    actions: Dict[str, Dict] = None,
+   extra_globals=None,
    **kwargs, 
 ):
     """
@@ -1045,7 +1045,7 @@ def execute_multi_step_plan(
             render_markdown(
                 f"- Executing Action: {action_name} \n- Explanation: {action_data.get('explanation')}\n "
             )
-                            
+                                        
             result = handler(
                 command=command, 
                 extracted_data=action_data,
@@ -1059,7 +1059,7 @@ def execute_multi_step_plan(
                 stream=stream, 
                 context=context+step_context, 
                 images=images,
-                extra_globals=kwargs.get('extra_globals')  # ADD THIS
+                extra_globals=extra_globals
             )
         except KeyError as e:
           

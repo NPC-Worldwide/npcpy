@@ -14,7 +14,7 @@ import pathlib
 import fnmatch
 import subprocess
 from typing import Any, Dict, List, Optional, Union
-from jinja2 import Environment, FileSystemLoader, Template, Undefined
+from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoader
 from sqlalchemy import create_engine, text
 import npcpy as npy 
 from npcpy.llm_funcs import DEFAULT_ACTION_SPACE
@@ -228,16 +228,23 @@ def write_yaml_file(file_path, data):
         print(f"Error writing YAML file {file_path}: {e}")
         return False
 
-
 class Jinx:
     ''' 
+    Jinx represents a workflow template with Jinja-rendered steps.
     
-    Jinx is a class that provides methods for rendering jinja templates to execute
-    natural language commands within the NPC ecosystem, python, and eventually
-    other code languages.
+    Loads YAML definition containing:
+    - jinx_name: identifier
+    - inputs: list of input parameters
+    - description: what the jinx does
+    - npc: optional NPC to execute with
+    - steps: list of step definitions with code
+    
+    Execution:
+    - Renders Jinja templates in step code with input values
+    - Executes resulting Python code
+    - Returns context with outputs
     '''
     def __init__(self, jinx_data=None, jinx_path=None):
-        """Initialize a jinx from data or file path"""
         if jinx_path:
             self._load_from_file(jinx_path)
         elif jinx_data:
@@ -245,15 +252,17 @@ class Jinx:
         else:
             raise ValueError("Either jinx_data or jinx_path must be provided")
             
+        # Store the raw steps as loaded from YAML
+        self._raw_steps = list(self.steps) # Make a copy to preserve original
+        self.steps = [] # This will hold the steps after the first Jinja pass
+
     def _load_from_file(self, path):
-        """Load jinx from file"""
         jinx_data = load_yaml_file(path)
         if not jinx_data:
             raise ValueError(f"Failed to load jinx from {path}")
         self._load_from_data(jinx_data)
             
     def _load_from_data(self, jinx_data):
-        """Load jinx from data dictionary"""
         if not jinx_data or not isinstance(jinx_data, dict):
             raise ValueError("Invalid jinx data provided")
             
@@ -263,62 +272,90 @@ class Jinx:
         self.jinx_name = jinx_data.get("jinx_name")
         self.inputs = jinx_data.get("inputs", [])
         self.description = jinx_data.get("description", "")
-        self.steps = self._parse_steps(jinx_data.get("steps", []))
-    def _parse_steps(self, steps):
-        """Parse steps from jinx definition"""
-        parsed_steps = []
-        for i, step in enumerate(steps):
-            if isinstance(step, dict):
-                parsed_step = {
-                    "name": step.get("name", f"step_{i}"),
-                    "engine": step.get("engine", "natural"),
-                    "code": step.get("code", "")
-                }
-                if "mode" in step:
-                    parsed_step["mode"] = step["mode"]
-                parsed_steps.append(parsed_step)
-            else:
-                raise ValueError(f"Invalid step format: {step}")
-        return parsed_steps
+        self.npc = jinx_data.get("npc")
+        self.steps = jinx_data.get("steps", []) # These are the raw steps initially
+
+    def render_first_pass(self, jinja_env_for_macros: Environment, first_pass_context: Optional[Dict[str, Any]] = None):
+        """
+        Performs the first-pass Jinja rendering on the Jinx's raw steps.
+        This expands nested Jinx calls (e.g., {{ sh(...) }}) but preserves
+        runtime variables (e.g., {{ command_var }}).
+        """
+        if first_pass_context is None:
+            first_pass_context = {}
+
+        self.steps = [] # Clear previous steps, will be replaced by rendered ones
+        for step in self._raw_steps:
+            rendered_step = {}
+            for key, value in step.items():
+                if isinstance(value, str):
+                    try:
+                        template = jinja_env_for_macros.from_string(value)
+                        # The context here is for global variables, not runtime step variables.
+                        # The `jinja_env_for_macros`'s globals should handle `{{ sh(...) }}` calls.
+                        rendered_value = template.render(**first_pass_context)
+                        
+                        # Attempt to load as YAML if it's a Jinx expansion, otherwise keep as string
+                        try:
+                            # This handles cases where a Jinx macro returns a YAML fragment
+                            loaded_value = yaml.safe_load(rendered_value)
+                            # If loaded_value is a list, it means a list of steps was returned.
+                            # We need to extend the current steps with these, not assign to a key.
+                            if key == 'steps' and isinstance(loaded_value, list):
+                                # This scenario needs careful handling if a step itself is replaced by multiple steps.
+                                # For now, assume a step's field (like 'code') is replaced by a string.
+                                # If the *entire step* is replaced by a Jinx call that returns multiple steps,
+                                # the outer loop needs to be aware.
+                                # For now, we'll keep it simple and assume `value` is a string that becomes a string.
+                                # If `value` is a jinja call that returns a YAML dict/list, it will be loaded.
+                                rendered_step[key] = loaded_value
+                            else:
+                                rendered_step[key] = loaded_value
+                        except yaml.YAMLError:
+                            rendered_step[key] = rendered_value # Not YAML, keep as string
+                    except Exception as e:
+                        print(f"Warning: Error during first-pass rendering of Jinx '{self.jinx_name}' step field '{key}': {e}")
+                        rendered_step[key] = value # Fallback to original if rendering fails
+                else:
+                    rendered_step[key] = value
+            self.steps.append(rendered_step)
+        
+        # self.steps now contains the first-pass rendered steps.
 
     def execute(self,
                 input_values: Dict[str, Any],
-                jinxs_dict: Dict[str, 'Jinx'],
-                jinja_env: Optional[Environment] = None,
                 npc: Optional[Any] = None,
                 messages: Optional[List[Dict[str, str]]] = None,
-                **kwargs: Any):
-        """
-        Execute the jinx with given inputs.
-        **kwargs can be used to pass 'extra_globals' for the python engine.
-        """
+                extra_globals: Optional[Dict[str, Any]] = None,
+                jinja_env: Optional[Environment] = None): # Add jinja_env here for the second pass
+        
+        # If jinja_env is not provided, create a default one for the second pass
         if jinja_env is None:
-            from jinja2 import DictLoader
             jinja_env = Environment(
                 loader=DictLoader({}),
                 undefined=SilentUndefined,
             )
         
-        context = (npc.shared_context.copy() if npc and hasattr(npc, 'shared_context') else {})
+        active_npc = self.npc if self.npc else npc
+        
+        context = (active_npc.shared_context.copy() if active_npc and hasattr(active_npc, 'shared_context') else {})
         context.update(input_values)
         context.update({
-            "jinxs": jinxs_dict,
             "llm_response": None,
             "output": None,
             "messages": messages,
+            "npc": active_npc
         })
-        
-        # This is the key change: Extract 'extra_globals' from kwargs
-        extra_globals = kwargs.get('extra_globals')
 
+        # Iterate over self.steps, which are now first-pass rendered
         for i, step in enumerate(self.steps):
             context = self._execute_step(
                 step,
                 context,
-                jinja_env,
-                npc=npc,
+                jinja_env, # This is the second-pass Jinja env
+                npc=active_npc,
                 messages=messages,
-                extra_globals=extra_globals # Pass it down to the step executor
+                extra_globals=extra_globals
             )
 
         return context
@@ -326,143 +363,103 @@ class Jinx:
     def _execute_step(self,
                   step: Dict[str, Any],
                   context: Dict[str, Any],
-                  jinja_env: Environment,
+                  jinja_env: Environment, # This is for the second pass (runtime vars)
                   npc: Optional[Any] = None,
                   messages: Optional[List[Dict[str, str]]] = None,
                   extra_globals: Optional[Dict[str, Any]] = None):
-        """
-        Execute a single step of the jinx.
-        """
-        engine = step.get("engine", "natural")
-        code = step.get("code", "")
+        
+        code_content = step.get("code", "") # Get the code content, which might still have {{ runtime_var }}
         step_name = step.get("name", "unnamed_step")
-        mode = step.get("mode", "chat")
-
+        step_npc = step.get("npc")
+        
+        active_npc = step_npc if step_npc else npc
+        
+        # Second pass rendering: resolve runtime variables in the code content
         try:
-            template = jinja_env.from_string(code)
+            template = jinja_env.from_string(code_content)
             rendered_code = template.render(**context)
-            
-            engine_template = jinja_env.from_string(engine)
-            rendered_engine = engine_template.render(**context)
-        
         except Exception as e:
-            print(f"Error rendering templates for step {step_name}: {e}")
-            rendered_code = code
-            rendered_engine = engine
-                
-        if rendered_engine == "natural":
-            if rendered_code.strip():
-                if mode == "agent":
-                    response = npc.get_llm_response(
-                        rendered_code,
-                        context=context,
-                        messages=messages,
-                        auto_process_tool_calls=True,
-                        use_core_tools=True
-                    )
-                else:
-                    response = npc.get_llm_response(
-                        rendered_code,
-                        context=context,
-                        messages=messages,
-                    )
-            
-                response_text = response.get("response", "")
-                context['output'] = response_text
-                context["llm_response"] = response_text
-                context["results"] = response_text
-                context[step_name] = response_text
-                context['messages'] = response.get('messages')
+            print(f"Error rendering template for step {step_name} (second pass): {e}")
+            rendered_code = code_content # Fallback to unrendered if error
         
-        elif rendered_engine == "python":
-            # Base globals available to all python jinxes, defined within the library (npcpy)
-            exec_globals = {
-                "__builtins__": __builtins__,
-                "npc": npc,
-                "context": context,
-                "pd": pd,
-                "plt": plt,
-                "np": np,
-                "os": os,
-                're': re, 
-                "json": json,
-                "Path": pathlib.Path,
-                "fnmatch": fnmatch,
-                "pathlib": pathlib,
-                "subprocess": subprocess,
-                "get_llm_response": npy.llm_funcs.get_llm_response,
-                "CommandHistory": CommandHistory, # This is fine, it's part of npcpy
-            }
-            
-            # This is the fix: Update the globals with the dictionary passed in from the application (npcsh)
-            if extra_globals:
-                exec_globals.update(extra_globals)
-            
-            exec_locals = {}
-            try:
-                exec(rendered_code, exec_globals, exec_locals)
-            except Exception as e:
-                # Provide a clear error message in the output if execution fails
-                error_msg = f"Error executing jinx python code: {type(e).__name__}: {e}"
-                context['output'] = error_msg
-                return context
-
-            context.update(exec_locals)
-            
-            if "output" in exec_locals:
-                outp = exec_locals["output"]
-                context["output"] = outp
-                context[step_name] = outp
-                if messages is not None:
-                    messages.append({'role':'assistant', 
-                                     'content': f'Jinx executed with following output: {outp}'})
-                    context['messages'] = messages
-                
-        else:
-            context[step_name] = {"error": f"Unsupported engine: {rendered_engine}"}
-            
+        exec_globals = {
+            "__builtins__": __builtins__,
+            "npc": active_npc,
+            "context": context,
+            "pd": pd,
+            "plt": plt,
+            "np": np,
+            "os": os,
+            're': re, 
+            "json": json,
+            "Path": pathlib.Path,
+            "fnmatch": fnmatch,
+            "pathlib": pathlib,
+            "subprocess": subprocess,
+            "get_llm_response": npy.llm_funcs.get_llm_response,
+            "CommandHistory": CommandHistory,
+        }
+        
+        if extra_globals:
+            exec_globals.update(extra_globals)
+        
+        exec_locals = {}
+        
+        try:
+            exec(rendered_code, exec_globals, exec_locals)
+        except Exception as e:
+            error_msg = f"Error executing step {step_name}: {type(e).__name__}: {e}"
+            context['output'] = error_msg
+            print(error_msg)
+            return context
+        
+        context.update(exec_locals)
+        
+        if "output" in exec_locals:
+            outp = exec_locals["output"]
+            context["output"] = outp
+            context[step_name] = outp
+            if messages is not None:
+                messages.append({
+                    'role':'assistant', 
+                    'content': f'Jinx {self.jinx_name} step {step_name} executed: {outp}'
+                })
+                context['messages'] = messages
+        
         return context
+
     def to_dict(self):
-        """Convert to dictionary representation"""
-        steps_list = []
-        for i, step in enumerate(self.steps):
-            step_dict = {
-                "name": step.get("name", f"step_{i}"),
-                "engine": step.get("engine"),
-                "code": step.get("code")
-            }
-            if "mode" in step:
-                step_dict["mode"] = step["mode"]
-            steps_list.append(step_dict)
-        
-        return {
+        result = {
             "jinx_name": self.jinx_name,
             "description": self.description,
             "inputs": self.inputs,
-            "steps": steps_list
+            # When converting to dict, we should save the *raw* steps
+            # so that when reloaded, the first pass can be done again.
+            "steps": self._raw_steps 
         }
+        
+        if self.npc:
+            result["npc"] = self.npc
+            
+        return result
+
     def save(self, directory):
-        """Save jinx to file"""
         jinx_path = os.path.join(directory, f"{self.jinx_name}.jinx")
         ensure_dirs_exist(os.path.dirname(jinx_path))
         return write_yaml_file(jinx_path, self.to_dict())
         
     @classmethod
     def from_mcp(cls, mcp_tool):
-        """Convert an MCP tool to NPC jinx format"""
-        
         try:
             import inspect
 
-            
             doc = mcp_tool.__doc__ or ""
             name = mcp_tool.__name__
             signature = inspect.signature(mcp_tool)
             
-            
             inputs = []
             for param_name, param in signature.parameters.items():
-                if param_name != 'self':  
+                if param_name != 'self':
                     param_type = param.annotation if param.annotation != inspect.Parameter.empty else None
                     param_default = None if param.default == inspect.Parameter.empty else param.default
                     
@@ -472,7 +469,6 @@ class Jinx:
                         "default": param_default
                     })
             
-            
             jinx_data = {
                 "jinx_name": name,
                 "description": doc.strip(),
@@ -480,9 +476,7 @@ class Jinx:
                 "steps": [
                     {
                         "name": "mcp_function_call",
-                        "engine": "python",
                         "code": f"""
-
 import {mcp_tool.__module__}
 output = {mcp_tool.__module__}.{name}(
     {', '.join([f'{inp["name"]}=context.get("{inp["name"]}")' for inp in inputs])}
@@ -495,7 +489,7 @@ output = {mcp_tool.__module__}.{name}(
             return cls(jinx_data=jinx_data)
             
         except: 
-            pass    
+            pass
 
 def load_jinxs_from_directory(directory):
     """Load all jinxs from a directory recursively"""
@@ -755,6 +749,8 @@ class NPC:
         if self.jinxs_directory:
             dirs.append(self.jinxs_directory)
             
+        # This jinja_env is for the *second pass* (runtime variable resolution in Jinx.execute)
+        # It should *not* be used for the first pass (macro expansion).
         self.jinja_env = Environment(
             loader=FileSystemLoader([
                 os.path.expanduser(d) for d in dirs
@@ -779,7 +775,8 @@ class NPC:
 
 
             
-        self.jinxs = self._load_npc_jinxs(jinxs or "*")
+        self.jinxs_dict = {} # Initialize here, will be populated by _load_and_render_npc_jinxs
+        self._load_and_render_npc_jinxs(jinxs or "*") # Load and perform first-pass rendering for NPC-specific jinxs
         
         self.shared_context = {
             "dataframes": {},
@@ -1093,45 +1090,85 @@ class NPC:
                 self.tables = None
                 self.db_type = None
 
-    def _load_npc_jinxs(self, jinxs):
-        """Load and process NPC-specific jinxs"""
-        npc_jinxs = []
-        
-        if jinxs == "*":
-            if self.team and hasattr(self.team, 'jinxs_dict'):
-                for jinx in self.team.jinxs_dict.values():
-                    npc_jinxs.append(jinx)
-            elif self.use_global_jinxs or (hasattr(self, 'jinxs_directory') and self.jinxs_directory):
-                jinxs_dir = self.jinxs_directory or os.path.expanduser('~/.npcsh/npc_team/jinxs/')
-                if os.path.exists(jinxs_dir):
-                    npc_jinxs.extend(load_jinxs_from_directory(jinxs_dir))
-            
-            self.jinxs_dict = {jinx.jinx_name: jinx for jinx in npc_jinxs}
-            return npc_jinxs
+    def _load_npc_jinxs(self, jinxs_spec):
+        """
+        Loads and performs first-pass Jinja rendering for NPC-specific jinxs.
+        This method is now a wrapper for the new _load_and_render_npc_jinxs.
+        """
+        return self._load_and_render_npc_jinxs(jinxs_spec)
 
-        for jinx in jinxs:
-            if isinstance(jinx, Jinx):
-                npc_jinxs.append(jinx)
-            elif isinstance(jinx, dict):
-                npc_jinxs.append(Jinx(jinx_data=jinx))
-            elif isinstance(jinx, str):
-                jinx_path = None
-                jinx_name = jinx
-                if not jinx_name.endswith(".jinx"):
-                    jinx_name += ".jinx"
-                
-                if hasattr(self, 'jinxs_directory') and self.jinxs_directory and os.path.exists(self.jinxs_directory):
-                    candidate_path = os.path.join(self.jinxs_directory, jinx_name)
-                    if os.path.exists(candidate_path):
-                        jinx_path = candidate_path
-                        
-                if jinx_path:
-                    jinx_obj = Jinx(jinx_path=jinx_path)
-                    npc_jinxs.append(jinx_obj)
+    def _load_and_render_npc_jinxs(self, jinxs_spec):
+        """
+        Loads NPC-specific jinxs and performs the first-pass Jinja rendering.
+        """
+        npc_jinxs_raw_list = []
         
-        self.jinxs_dict = {jinx.jinx_name: jinx for jinx in npc_jinxs}
-        print(npc_jinxs)
-        return npc_jinxs
+        # If team exists, prioritize team's already rendered jinxs
+        if self.team and hasattr(self.team, 'jinxs_dict') and self.team.jinxs_dict:
+            # If jinxs_spec is "*", inherit all from team
+            if jinxs_spec == "*":
+                self.jinxs_dict.update(self.team.jinxs_dict)
+            else: # If specific jinxs are requested, try to get them from team
+                for jinx_name in jinxs_spec:
+                    if jinx_name in self.team.jinxs_dict:
+                        self.jinxs_dict[jinx_name] = self.team.jinxs_dict[jinx_name]
+        
+        # Load NPC's own jinxs (if not already covered by team or if specific ones are requested)
+        if hasattr(self, 'npc_jinxs_directory') and self.npc_jinxs_directory and os.path.exists(self.npc_jinxs_directory):
+            for jinx_obj in load_jinxs_from_directory(self.npc_jinxs_directory):
+                # Only add if not already added from team or if spec is "*"
+                if jinx_obj.jinx_name not in self.jinxs_dict:
+                    npc_jinxs_raw_list.append(jinx_obj)
+        
+        # If there are raw NPC jinxs to render
+        if npc_jinxs_raw_list:
+            # Create a Jinja environment for first-pass rendering for NPC's own jinxs
+            # This environment needs access to *all* available jinxs (team's and NPC's)
+            # for cross-jinx rendering.
+            
+            all_available_raw_jinxs = list(self.team._raw_jinxs_list if self.team and hasattr(self.team, '_raw_jinxs_list') else [])
+            all_available_raw_jinxs.extend(npc_jinxs_raw_list)
+
+            # Create a combined dictionary for lookup during macro creation
+            combined_raw_jinxs_dict = {j.jinx_name: j for j in all_available_raw_jinxs}
+
+            npc_first_pass_jinja_env = Environment(undefined=SilentUndefined)
+            
+            jinx_macro_globals = {}
+            for raw_jinx in combined_raw_jinxs_dict.values():
+                def create_jinx_callable(jinx_obj):
+                    def callable_jinx(**kwargs):
+                        temp_jinja_env = Environment(undefined=SilentUndefined)
+                        rendered_target_steps = []
+                        for target_step in jinx_obj._raw_steps:
+                            temp_rendered_step = {}
+                            for k, v in target_step.items():
+                                if isinstance(v, str):
+                                    try:
+                                        temp_rendered_step[k] = temp_jinja_env.from_string(v).render(**kwargs)
+                                    except Exception as e:
+                                        print(f"Warning: Error in Jinx macro '{jinx_obj.jinx_name}' rendering step field '{k}' (NPC first pass): {e}")
+                                        temp_rendered_step[k] = v
+                                else:
+                                    temp_rendered_step[k] = v
+                            rendered_target_steps.append(temp_rendered_step)
+                        return yaml.dump(rendered_target_steps, default_flow_style=False)
+                    return callable_jinx
+                
+                jinx_macro_globals[raw_jinx.jinx_name] = create_jinx_callable(raw_jinx)
+            
+            npc_first_pass_jinja_env.globals.update(jinx_macro_globals)
+
+            for raw_npc_jinx in npc_jinxs_raw_list:
+                try:
+                    raw_npc_jinx.render_first_pass(npc_first_pass_jinja_env, {})
+                    self.jinxs_dict[raw_npc_jinx.jinx_name] = raw_npc_jinx
+                except Exception as e:
+                    print(f"Error performing first-pass rendering for NPC Jinx '{raw_npc_jinx.jinx_name}': {e}")
+        
+        print(f"NPC {self.name} loaded {len(self.jinxs_dict)} jinxs.")
+        return list(self.jinxs_dict.values()) # Return the list of rendered Jinx objects
+
     def get_llm_response(self, 
                         request,
                         jinxs=None,
@@ -1225,7 +1262,7 @@ class NPC:
             content = result.get('content', '')[:200] + ('...' if len(result.get('content', '')) > 200 else '')
             formatted_results.append(f"[{timestamp}] {content}")
         
-        return f"Found {len(results)} conversations matching '{query}':\n" + "\n".join(formatted_results)
+        return f"Found {len(results)} conversations matching '{query}'s:\n" + "\n".join(formatted_results)
 
     def search_my_memories(self, query: str, limit: int = 10) -> str:
         """Search through this NPC's knowledge graph memories for relevant facts and concepts"""
@@ -1621,23 +1658,29 @@ class NPC:
             "compressed_state": self.compress_planning_state(planning_state),
             "summary": f"Completed {len(planning_state['successes'])} tasks for goal: {user_goal}"
         }
-    
-    def execute_jinx(self, jinx_name, inputs, conversation_id=None, message_id=None, team_name=None):
-        """Execute a jinx by name"""
         
+    def execute_jinx(
+        self, 
+        jinx_name, 
+        inputs, 
+        conversation_id=None, 
+        message_id=None, 
+        team_name=None,
+        extra_globals=None
+    ):
         if jinx_name in self.jinxs_dict:
-            jinx = self.jinxs_dict[jinx_name]
-        elif jinx_name in self.jinxs_dict:
             jinx = self.jinxs_dict[jinx_name]
         else:
             return {"error": f"jinx '{jinx_name}' not found"}
         
         result = jinx.execute(
             input_values=inputs,
-            context=self.shared_context,
-            jinja_env=self.jinja_env,
-            npc=self
+            npc=self,
+            # messages=messages, # messages should be passed from the calling context if available
+            extra_globals=extra_globals,
+            jinja_env=self.jinja_env # Pass the NPC's second-pass Jinja env
         )
+        
         if self.db_conn is not None:
             self.db_conn.add_jinx_call(
                 triggering_message_id=message_id,
@@ -1652,7 +1695,6 @@ class NPC:
                 team_name=team_name,
             )
         return result
-
     def check_llm_command(self,
                             command, 
                             messages=None,
@@ -1722,8 +1764,8 @@ class NPC:
     def to_dict(self):
         """Convert NPC to dictionary representation"""
         jinx_rep = [] 
-        if self.jinxs is not None:
-            jinx_rep = [ jinx.to_dict() if isinstance(jinx, Jinx) else jinx for jinx in self.jinxs]
+        if self.jinxs_dict: # Use jinxs_dict which stores the rendered Jinx objects
+            jinx_rep = [ jinx.to_dict() for jinx in self.jinxs_dict.values()]
         return {
             "name": self.name,
             "primary_directive": self.primary_directive,
@@ -1748,10 +1790,10 @@ class NPC:
     def __str__(self):
         """String representation of NPC"""
         str_rep = f"NPC: {self.name}\nDirective: {self.primary_directive}\nModel: {self.model}\nProvider: {self.provider}\nAPI URL: {self.api_url}\n"
-        if self.jinxs:
+        if self.jinxs_dict:
             str_rep += "Jinxs:\n"
-            for jinx in self.jinxs:
-                str_rep += f"  - {jinx.jinx_name}\n"
+            for jinx_name in self.jinxs_dict.keys():
+                str_rep += f"  - {jinx_name}\n"
         else:
             str_rep += "No jinxs available.\n"
         return str_rep
@@ -1769,13 +1811,11 @@ class NPC:
         
         input_values = extract_jinx_inputs(args, jinx)
 
-        
-        
-
         jinx_output = jinx.execute(
             input_values,
-            jinx.jinx_name,
             npc=self,
+            messages=messages, # Pass messages to Jinx.execute
+            jinja_env=self.jinja_env # Pass the NPC's second-pass Jinja env
         )
 
         return {"messages": messages, "output": jinx_output}
@@ -1956,7 +1996,11 @@ class Team:
         
         self.npcs = {}
         self.sub_teams = {}
-        self.jinxs_dict = jinxs or {}
+        self.jinxs_dict = {} # This will store first-pass rendered Jinx objects
+        self._raw_jinxs_list = [] # Temporary storage for raw Jinx objects
+        
+        self.jinja_env_for_first_pass = Environment(undefined=SilentUndefined) # Env for macro expansion
+
         self.db_conn = db_conn
         self.team_path = os.path.expanduser(team_path) if team_path else None
         self.databases = []
@@ -1976,7 +2020,6 @@ class Team:
             "dataframes": {},
             "memories": {},          
             "execution_history": [],   
-            "npc_messages": {},
             "context":''       
             }
                 
@@ -1986,8 +2029,13 @@ class Team:
         elif npcs:
             for npc in npcs:
                 self.npcs[npc.name] = npc
+        
+        # After loading all raw jinxs, perform the first-pass rendering
+        self._perform_first_pass_jinx_rendering()
 
-        self.jinja_env = Environment(undefined=SilentUndefined)
+        # The team's `jinja_env` for the second pass is not strictly needed here,
+        # as NPCs will use their own `jinja_env` for execution.
+        # self.jinja_env = Environment(undefined=SilentUndefined) 
         
         if db_conn is not None:
             init_db_tables()
@@ -2043,49 +2091,83 @@ class Team:
         for filename in os.listdir(self.team_path):
             if filename.endswith(".npc"):
                 npc_path = os.path.join(self.team_path, filename)
-                npc = NPC(npc_path, db_conn=self.db_conn)
+                npc = NPC(npc_path, db_conn=self.db_conn, team=self) # Pass team to NPC
                 self.npcs[npc.name] = npc
                     
         self.context = self._load_team_context()
         
         jinxs_dir = os.path.join(self.team_path, "jinxs")
         if os.path.exists(jinxs_dir):
-            for jinx in load_jinxs_from_directory(jinxs_dir):
-                self.jinxs_dict[jinx.jinx_name] = jinx
+            for jinx_obj in load_jinxs_from_directory(jinxs_dir):
+                # Load raw Jinx objects here
+                self._raw_jinxs_list.append(jinx_obj)
         
         self._load_sub_teams()
 
+    def _perform_first_pass_jinx_rendering(self):
+        """
+        Performs the first-pass Jinja rendering on all loaded raw Jinxs.
+        This expands nested Jinx calls but preserves runtime variables.
+        """
+        # Create Jinja globals for calling other Jinxs as macros
+        jinx_macro_globals = {}
+        for raw_jinx in self._raw_jinxs_list:
+            def create_jinx_callable(jinx_obj):
+                def callable_jinx(**kwargs):
+                    # This callable will be invoked by the Jinja renderer during the first pass.
+                    # It needs to render the target Jinx's *raw* steps with the provided kwargs.
+                    temp_jinja_env = Environment(undefined=SilentUndefined)
+                    
+                    rendered_target_steps = []
+                    for target_step in jinx_obj._raw_steps:
+                        temp_rendered_step = {}
+                        for k, v in target_step.items():
+                            if isinstance(v, str):
+                                try:
+                                    # Render the string, using kwargs as context.
+                                    # SilentUndefined will ensure {{ var }} that are not in kwargs remain as is.
+                                    temp_rendered_step[k] = temp_jinja_env.from_string(v).render(**kwargs)
+                                except Exception as e:
+                                    print(f"Warning: Error in Jinx macro '{jinx_obj.jinx_name}' rendering step field '{k}': {e}")
+                                    temp_rendered_step[k] = v
+                            else:
+                                temp_rendered_step[k] = v
+                        rendered_target_steps.append(temp_rendered_step)
+                    
+                    # Return the YAML string representation of the rendered steps
+                    return yaml.dump(rendered_target_steps, default_flow_style=False)
+                return callable_jinx
+            
+            jinx_macro_globals[raw_jinx.jinx_name] = create_jinx_callable(raw_jinx)
+        
+        self.jinja_env_for_first_pass.globals['jinxs'] = jinx_macro_globals # Make 'jinxs.jinx_name' callable
+        self.jinja_env_for_first_pass.globals.update(jinx_macro_globals) # Also make 'jinx_name' callable directly
+
+        # Now, iterate through the raw Jinxs and perform the first-pass rendering
+        for raw_jinx in self._raw_jinxs_list:
+            try:
+                # The context for the first pass can be empty or contain global configuration
+                raw_jinx.render_first_pass(self.jinja_env_for_first_pass, {})
+                self.jinxs_dict[raw_jinx.jinx_name] = raw_jinx # Store the first-pass rendered Jinx
+            except Exception as e:
+                print(f"Error performing first-pass rendering for Jinx '{raw_jinx.jinx_name}': {e}")
+        
+        self._raw_jinxs_list = [] # Clear temporary storage
+
+
     def _load_team_context(self):
         """Load team context from .ctx file"""
+        ctx_data = {}
         for fname in os.listdir(self.team_path):
             if fname.endswith('.ctx'):
                 ctx_data = load_yaml_file(os.path.join(self.team_path, fname))                
                 if ctx_data is not None:
-                    if 'model' in ctx_data:
-                        self.model = ctx_data['model']
-                    else:
-                        self.model = None
-                    if 'provider' in ctx_data:
-                        self.provider = ctx_data['provider']
-                    else:
-                        self.provider = None
-                    if 'api_url' in ctx_data:
-                        self.api_url = ctx_data['api_url']
-                    else:
-                        self.api_url = None
-                    if 'env' in ctx_data:
-                        self.env = ctx_data['env']
-                    else:
-                        self.env = None
-                        
-                    if 'mcp_servers' in ctx_data:
-                        self.mcp_servers = ctx_data['mcp_servers']
-                    else:
-                        self.mcp_servers = []
-                    if 'databases' in ctx_data:
-                        self.databases = ctx_data['databases']
-                    else:
-                        self.databases = []
+                    self.model = ctx_data.get('model', self.model)
+                    self.provider = ctx_data.get('provider', self.provider)
+                    self.api_url = ctx_data.get('api_url', self.api_url)
+                    self.env = ctx_data.get('env', self.env if hasattr(self, 'env') else None)
+                    self.mcp_servers = ctx_data.get('mcp_servers', [])
+                    self.databases = ctx_data.get('databases', [])
                     
                     base_context = ctx_data.get('context', '')
                     self.shared_context['context'] = base_context
@@ -2097,11 +2179,13 @@ class Team:
                     else:
                         self.preferences = []
                     if 'forenpc' in ctx_data:
-                        self.forenpc = self.npcs[ctx_data['forenpc']]
+                        # Ensure forenpc is set as string name, will be resolved later
+                        self.forenpc_name = ctx_data['forenpc']
                     else:
-                        self.forenpc = self.npcs[list(self.npcs.keys())[0]] if self.npcs else None
+                        self.forenpc_name = None # Will be set to first NPC if not specified
+                    
                     for key, item in ctx_data.items():
-                        if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns']:
+                        if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns', 'forenpc', 'model', 'provider', 'api_url', 'env']:
                             self.shared_context[key] = item
                 return ctx_data
         return {}
@@ -2125,39 +2209,41 @@ class Team:
         The forenpc is set only if explicitly defined in the context.
                 
         """
-        if isinstance(self.forenpc, NPC):
+        if isinstance(self.forenpc, NPC): # Check if already an NPC object
             return self.forenpc
-        if hasattr(self, 'context') and self.context and 'forenpc' in self.context:
-            forenpc_ref = self.context['forenpc']
-            
-            if '{{ref(' in forenpc_ref:
-                match = re.search(r"{{\s*ref\('([^']+)'\)\s*}}", forenpc_ref)
-                if match:
-                    forenpc_name = match.group(1)
-                    if forenpc_name in self.npcs:
-                        return self.npcs[forenpc_name]
-            elif forenpc_ref in self.npcs:
-                return self.npcs[forenpc_ref]
-        else:
-            forenpc_model=self.context.get('model', 'llama3.2'),
-            forenpc_provider=self.context.get('provider', 'ollama'),
-            forenpc_api_key=self.context.get('api_key', None),
-            forenpc_api_url=self.context.get('api_url', None)
-            
-            forenpc = NPC(name='forenpc', 
-                            primary_directive="""You are the forenpc of the team, coordinating activities 
-                                                between NPCs on the team, verifying that results from 
-                                                NPCs are high quality and can help to adequately answer 
-                                                user requests.""", 
-                            model=forenpc_model,
-                            provider=forenpc_provider,
-                            api_key=forenpc_api_key,
-                            api_url=forenpc_api_url,                            
-                                                )
-            self.forenpc = forenpc
-            self.npcs[forenpc.name] = forenpc
-            return forenpc
-        return None
+
+        # If forenpc_name was loaded from context, try to get it
+        if hasattr(self, 'forenpc_name') and self.forenpc_name:
+            if self.forenpc_name in self.npcs:
+                self.forenpc = self.npcs[self.forenpc_name] # Set it as NPC object
+                return self.forenpc
+        
+        # Fallback to first NPC if forenpc_name not set or not found
+        if self.npcs:
+            first_npc_name = list(self.npcs.keys())[0]
+            self.forenpc = self.npcs[first_npc_name]
+            return self.forenpc
+        
+        # If no NPCs loaded, create a default forenpc
+        forenpc_model = self.model or 'llama3.2'
+        forenpc_provider = self.provider or 'ollama'
+        forenpc_api_key = self.api_key if hasattr(self, 'api_key') else None
+        forenpc_api_url = self.api_url if hasattr(self, 'api_url') else None
+        
+        forenpc = NPC(name='forenpc', 
+                        primary_directive="""You are the forenpc of the team, coordinating activities 
+                                            between NPCs on the team, verifying that results from 
+                                            NPCs are high quality and can help to adequately answer 
+                                            user requests.""", 
+                        model=forenpc_model,
+                        provider=forenpc_provider,
+                        api_key=forenpc_api_key,
+                        api_url=forenpc_api_url,                            
+                        team=self # Pass the team to the forenpc
+                                            )
+        self.forenpc = forenpc
+        self.npcs[forenpc.name] = forenpc
+        return forenpc
 
     def get_npc(self, npc_ref):
         """Get NPC by name or reference with hierarchical lookup capability"""
@@ -2326,7 +2412,7 @@ class Team:
             "name": self.name,
             "npcs": {name: npc.to_dict() for name, npc in self.npcs.items()},
             "sub_teams": {name: team.to_dict() for name, team in self.sub_teams.items()},
-            "jinxs": {name: jinx.to_dict() for name, jinx in self.jinxs.items()},
+            "jinxs": {name: jinx.to_dict() for name, jinx in self.jinxs_dict.items()}, # Use jinxs_dict
             "context": getattr(self, 'context', {})
         }
     
@@ -2350,7 +2436,7 @@ class Team:
         jinxs_dir = os.path.join(directory, "jinxs")
         ensure_dirs_exist(jinxs_dir)
         
-        for jinx in self.jinxs.values():
+        for jinx in self.jinxs_dict.values(): # Use jinxs_dict
             jinx.save(jinxs_dir)
             
         for team_name, team in self.sub_teams.items():
