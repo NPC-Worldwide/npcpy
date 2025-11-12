@@ -11,6 +11,7 @@ import random
 from datetime import datetime
 import hashlib
 import pathlib
+import sys 
 import fnmatch
 import subprocess
 from typing import Any, Dict, List, Optional, Union, Callable, Tuple
@@ -34,6 +35,12 @@ class SilentUndefined(Undefined):
 
 import math
 from PIL import Image
+from jinja2 import Environment, ChainableUndefined
+
+class PreserveUndefined(ChainableUndefined):
+    """Undefined that preserves the original {{ variable }} syntax"""
+    def __str__(self):
+        return f"{{{{ {self._undefined_name} }}}}"
 
 
 def agent_pass_handler(command, extracted_data, **kwargs):
@@ -228,6 +235,7 @@ def write_yaml_file(file_path, data):
         print(f"Error writing YAML file {file_path}: {e}")
         return False
 
+
 class Jinx:
     ''' 
     Jinx represents a workflow template with Jinja-rendered steps.
@@ -252,9 +260,8 @@ class Jinx:
         else:
             raise ValueError("Either jinx_data or jinx_path must be provided")
             
-        # Store the raw steps as loaded from YAML
-        self._raw_steps = list(self.steps) # Make a copy to preserve original
-        self.steps = [] # This will hold the steps after the first Jinja pass
+        self._raw_steps = list(self.steps)
+        self.steps = []
 
     def _load_from_file(self, path):
         jinx_data = load_yaml_file(path)
@@ -273,7 +280,7 @@ class Jinx:
         self.inputs = jinx_data.get("inputs", [])
         self.description = jinx_data.get("description", "")
         self.npc = jinx_data.get("npc")
-        self.steps = jinx_data.get("steps", []) # These are the raw steps initially
+        self.steps = jinx_data.get("steps", [])
 
     def render_first_pass(
         self, 
@@ -301,6 +308,7 @@ class Jinx:
 
             engine_name = raw_step.get('engine')
             
+            # If this step references another jinx via engine, expand it
             if engine_name and engine_name in all_jinx_callables:
                 step_name = raw_step.get('name', f'call_{engine_name}')
                 jinx_args = {
@@ -314,30 +322,7 @@ class Jinx:
                     expanded_steps = yaml.safe_load(expanded_yaml_string)
                     
                     if isinstance(expanded_steps, list):
-                        context_setup_step = {
-                            'name': f'{step_name}_setup',
-                            'engine': 'python',
-                            'code': (
-                                f'# Setup inputs for {engine_name}\n' +
-                                '\n'.join([
-                                    f"context['{k}'] = {repr(v)}"
-                                    for k, v in jinx_args.items()
-                                ])
-                            )
-                        }
-                        rendered_steps_output.append(context_setup_step)
                         rendered_steps_output.extend(expanded_steps)
-                        
-                        context_result_step = {
-                            'name': step_name,
-                            'engine': 'python',
-                            'code': (
-                                f"context['{step_name}'] = "
-                                f"{{'output': context.get('output', None)}}\n"
-                                f"output = context['{step_name}']"
-                            )
-                        }
-                        rendered_steps_output.append(context_result_step)
                         
                     elif expanded_steps is not None:
                         rendered_steps_output.append(expanded_steps)
@@ -349,7 +334,11 @@ class Jinx:
                         f"(declarative): {e}"
                     )
                     rendered_steps_output.append(raw_step)
+            # Skip rendering for python/bash engine steps - preserve runtime variables
+            elif raw_step.get('engine') in ['python', 'bash']:
+                rendered_steps_output.append(raw_step)
             else:
+                # For other steps, do first-pass rendering (inline macro expansion)
                 processed_step = {}
                 for key, value in raw_step.items():
                     if isinstance(value, str):
@@ -384,9 +373,8 @@ class Jinx:
                 npc: Optional[Any] = None,
                 messages: Optional[List[Dict[str, str]]] = None,
                 extra_globals: Optional[Dict[str, Any]] = None,
-                jinja_env: Optional[Environment] = None): # Add jinja_env here for the second pass
+                jinja_env: Optional[Environment] = None):
         
-        # If jinja_env is not provided, create a default one for the second pass
         if jinja_env is None:
             jinja_env = Environment(
                 loader=DictLoader({}),
@@ -395,7 +383,11 @@ class Jinx:
         
         active_npc = self.npc if self.npc else npc
         
-        context = (active_npc.shared_context.copy() if active_npc and hasattr(active_npc, 'shared_context') else {})
+        context = (
+            active_npc.shared_context.copy() 
+            if active_npc and hasattr(active_npc, 'shared_context') 
+            else {}
+        )
         context.update(input_values)
         context.update({
             "llm_response": None,
@@ -404,12 +396,11 @@ class Jinx:
             "npc": active_npc
         })
 
-        # Iterate over self.steps, which are now first-pass rendered
         for i, step in enumerate(self.steps):
             context = self._execute_step(
                 step,
                 context,
-                jinja_env, # This is the second-pass Jinja env
+                jinja_env,
                 npc=active_npc,
                 messages=messages,
                 extra_globals=extra_globals
@@ -420,31 +411,49 @@ class Jinx:
     def _execute_step(self,
                   step: Dict[str, Any],
                   context: Dict[str, Any],
-                  jinja_env: Environment, # This is for the second pass (runtime vars)
+                  jinja_env: Environment,
                   npc: Optional[Any] = None,
                   messages: Optional[List[Dict[str, str]]] = None,
                   extra_globals: Optional[Dict[str, Any]] = None):
         
-        code_content = step.get("code", "") # Get the code content, which might still have {{ runtime_var }}
+        def _log_debug(msg):
+            log_file_path = os.path.expanduser("~/jinx_debug_log.txt")
+            with open(log_file_path, "a") as f:
+                f.write(f"[{datetime.now().isoformat()}] {msg}\n")
+
+        code_content = step.get("code", "")
         step_name = step.get("name", "unnamed_step")
         step_npc = step.get("npc")
         
         active_npc = step_npc if step_npc else npc
         
-        # Second pass rendering: resolve runtime variables in the code content
         try:
             template = jinja_env.from_string(code_content)
             rendered_code = template.render(**context)
         except Exception as e:
-            print(f"Error rendering template for step {step_name} (second pass): {e}")
-            rendered_code = code_content # Fallback to unrendered if error
+            _log_debug(
+                f"Error rendering template for step {step_name} "
+                f"(second pass): {e}"
+            )
+            rendered_code = code_content
         
+        _log_debug(f"rendered jinx code: {rendered_code}")
+        _log_debug(
+            f"DEBUG: Before exec - rendered_code: {rendered_code}"
+        )
+        _log_debug(
+            f"DEBUG: Before exec - context['output'] before step: "
+            f"{context.get('output')}"
+        )
+
         exec_globals = {
             "__builtins__": __builtins__,
             "npc": active_npc,
             "context": context,
             "pd": pd,
             "plt": plt,
+            "sys": sys, 
+            "subprocess": subprocess,
             "np": np,
             "os": os,
             're': re, 
@@ -465,33 +474,56 @@ class Jinx:
         try:
             exec(rendered_code, exec_globals, exec_locals)
         except Exception as e:
-            error_msg = f"Error executing step {step_name}: {type(e).__name__}: {e}"
+            error_msg = (
+                f"Error executing step {step_name}: "
+                f"{type(e).__name__}: {e}"
+            )
             context['output'] = error_msg
-            print(error_msg)
+            _log_debug(error_msg)
             return context
         
+        _log_debug(f"DEBUG: After exec - exec_locals: {exec_locals}")
+        _log_debug(
+            f"DEBUG: After exec - 'output' in exec_locals: "
+            f"{'output' in exec_locals}"
+        )
+
         context.update(exec_locals)
         
+        _log_debug(
+            f"DEBUG: After context.update(exec_locals) - "
+            f"context['output']: {context.get('output')}"
+        )
+        _log_debug(f"context after jinx ex: {context}")
+
         if "output" in exec_locals:
             outp = exec_locals["output"]
             context["output"] = outp
             context[step_name] = outp
+
+            _log_debug(
+                f"DEBUG: Inside 'output' in exec_locals block - "
+                f"context['output']: {context.get('output')}"
+            )
+
             if messages is not None:
                 messages.append({
                     'role':'assistant', 
-                    'content': f'Jinx {self.jinx_name} step {step_name} executed: {outp}'
+                    'content': (
+                        f'Jinx {self.jinx_name} step {step_name} '
+                        f'executed: {outp}'
+                    )
                 })
                 context['messages'] = messages
         
         return context
+        
 
     def to_dict(self):
         result = {
             "jinx_name": self.jinx_name,
             "description": self.description,
             "inputs": self.inputs,
-            # When converting to dict, we should save the *raw* steps
-            # so that when reloaded, the first pass can be done again.
             "steps": self._raw_steps 
         }
         
@@ -517,8 +549,16 @@ class Jinx:
             inputs = []
             for param_name, param in signature.parameters.items():
                 if param_name != 'self':
-                    param_type = param.annotation if param.annotation != inspect.Parameter.empty else None
-                    param_default = None if param.default == inspect.Parameter.empty else param.default
+                    param_type = (
+                        param.annotation 
+                        if param.annotation != inspect.Parameter.empty 
+                        else None
+                    )
+                    param_default = (
+                        None 
+                        if param.default == inspect.Parameter.empty 
+                        else param.default
+                    )
                     
                     inputs.append({
                         "name": param_name,
@@ -536,7 +576,10 @@ class Jinx:
                         "code": f"""
 import {mcp_tool.__module__}
 output = {mcp_tool.__module__}.{name}(
-    {', '.join([f'{inp["name"]}=context.get("{inp["name"]}")' for inp in inputs])}
+    {', '.join([
+        f'{inp["name"]}=context.get("{inp["name"]}")' 
+        for inp in inputs
+    ])}
 )
 """
                     }

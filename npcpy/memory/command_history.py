@@ -825,6 +825,31 @@ class CommandHistory:
             FROM message_attachments WHERE message_id = :message_id
         """
         return self._fetch_all(stmt, {"message_id": message_id})
+    def delete_message(self, conversation_id, message_id):
+        """Delete a specific message from a conversation"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            # Delete from the messages table
+            cursor.execute("""
+                DELETE FROM messages 
+                WHERE conversation_id = ? AND message_id = ?
+            """, (conversation_id, message_id))
+            
+            rows_affected = cursor.rowcount
+            conn.commit()
+            
+            print(f"[DB] Deleted message {message_id} from conversation {conversation_id}. Rows affected: {rows_affected}")
+            
+            return rows_affected
+            
+        except Exception as e:
+            print(f"[DB] Error deleting message: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def get_attachment_data(self, attachment_id) -> Optional[Tuple[bytes, str, str]]:
         stmt = "SELECT attachment_data, attachment_name, attachment_type FROM message_attachments WHERE id = :attachment_id"
