@@ -8,6 +8,7 @@ import sys
 import traceback
 import glob
 import re
+import time
 
 import io
 from flask_cors import CORS
@@ -1142,9 +1143,7 @@ def extract_and_store_memories(
     kg_concepts_to_save = []
     fact_to_concept_links_temp = defaultdict(list)
     
-    # Get the current generation for KG entries
-    current_kg_generation = command_history.get_current_generation()
-
+    
     if facts:
         for i, fact in enumerate(facts):
             # Store memory in memory_lifecycle table
@@ -1170,23 +1169,23 @@ def extract_and_store_memories(
             })
             
             # Collect facts and concepts for the Knowledge Graph
-            if fact.get('type') == 'concept':
-                kg_concepts_to_save.append({
-                    "name": fact.get('statement'),
-                    "generation": current_kg_generation,
-                    "origin": "organic" # Assuming 'organic' for extracted facts
-                })
-            else: # It's a fact (or unknown type, treat as fact for KG)
-                kg_facts_to_save.append({
-                    "statement": fact.get('statement'),
-                    "source_text": fact.get('source_text', conversation_text), # Use source_text if available, else conversation_text
-                    "type": fact.get('type', 'fact'), # Default to 'fact' if type is unknown
-                    "generation": current_kg_generation,
-                    "origin": "organic"
-                })
-                if fact.get('concepts'): # If this fact has related concepts
-                    for concept_name in fact.get('concepts'):
-                        fact_to_concept_links_temp[fact.get('statement')].append(concept_name)
+            #if fact.get('type') == 'concept':
+            #    kg_concepts_to_save.append({
+            #        "name": fact.get('statement'),
+            #        "generation": current_kg_generation,
+            #        "origin": "organic" # Assuming 'organic' for extracted facts
+            #    })
+            #else: # It's a fact (or unknown type, treat as fact for KG)
+            #    kg_facts_to_save.append({
+            #        "statement": fact.get('statement'),
+            #        "source_text": fact.get('source_text', conversation_text), # Use source_text if available, else conversation_text
+            #        "type": fact.get('type', 'fact'), # Default to 'fact' if type is unknown
+            #        "generation": current_kg_generation,
+            #        "origin": "organic"
+            #    })
+            #    if fact.get('concepts'): # If this fact has related concepts
+            #        for concept_name in fact.get('concepts'):
+            #            fact_to_concept_links_temp[fact.get('statement')].append(concept_name)
     
     # After processing all facts, save them to the KG database in one go
     if kg_facts_to_save or kg_concepts_to_save:
@@ -1212,6 +1211,58 @@ def extract_and_store_memories(
         )
     
     return memories_for_approval
+@app.route('/api/finetuned_models', methods=['GET'])
+def get_finetuned_models():
+    current_path = request.args.get("currentPath")
+    
+    # Define a list of potential root directories where fine-tuned models might be saved.
+    # We'll be very generous here, including both 'models' and 'images' directories
+    # at both global and project levels, as the user's logs indicate saving to 'images'.
+    potential_root_paths = [
+        os.path.expanduser('~/.npcsh/models'),  # Standard global models directory
+        os.path.expanduser('~/.npcsh/images'),  # Global images directory (where user's model was saved)
+    ]
+    if current_path:
+        # Add project-specific model directories if a current_path is provided
+        project_models_path = os.path.join(current_path, 'models')
+        project_images_path = os.path.join(current_path, 'images') # Also check project images directory
+        potential_root_paths.extend([project_models_path, project_images_path])
+            
+    finetuned_models = []
+    
+    print(f"🌋 Searching for fine-tuned models in potential root paths: {set(potential_root_paths)}") # Use set for unique paths
+
+    for root_path in set(potential_root_paths): # Iterate through unique potential root paths
+        if not os.path.exists(root_path) or not os.path.isdir(root_path):
+            print(f"🌋 Skipping non-existent or non-directory root path: {root_path}")
+            continue
+
+        print(f"🌋 Scanning root path: {root_path}")
+        for model_dir_name in os.listdir(root_path):
+            full_model_path = os.path.join(root_path, model_dir_name)
+            
+            if not os.path.isdir(full_model_path):
+                print(f"🌋 Skipping {full_model_path}: Not a directory.")
+                continue
+
+            # NEW STRATEGY: Check for user's specific output files
+            # Look for 'model_final.pt' or the 'checkpoints' directory
+            has_model_final_pt = os.path.exists(os.path.join(full_model_path, 'model_final.pt'))
+            has_checkpoints_dir = os.path.isdir(os.path.join(full_model_path, 'checkpoints'))
+
+            if has_model_final_pt or has_checkpoints_dir:
+                print(f"🌋 Identified fine-tuned model: {model_dir_name} at {full_model_path} (found model_final.pt or checkpoints dir)")
+                finetuned_models.append({
+                    "value": full_model_path, # This is the path to the directory containing the .pt files
+                    "provider": "diffusers",   # Provider is still "diffusers"
+                    "display_name": f"{model_dir_name} | Fine-tuned Diffuser"
+                })
+                continue # Move to the next model_dir_name found in this root_path
+
+            print(f"🌋 Skipping {full_model_path}: No model_final.pt or checkpoints directory found at root.")
+    
+    print(f"🌋 Finished scanning. Found {len(finetuned_models)} fine-tuned models.")
+    return jsonify({"models": finetuned_models, "error": None})
 
 @app.route('/api/finetune_diffusers', methods=['POST'])
 def finetune_diffusers():
@@ -1986,11 +2037,62 @@ IMAGE_MODELS = {
         {"value": "runwayml/stable-diffusion-v1-5", "display_name": "Stable Diffusion v1.5"},
     ],
 }
+# In npcpy/serve.py, find the @app.route('/api/finetuned_models', methods=['GET'])
+# and replace the entire function with this:
 
+# This is now an internal helper function, not a Flask route.
+def _get_finetuned_models_internal(current_path=None): # Renamed to indicate internal use
+    
+    # Define a list of potential root directories where fine-tuned models might be saved.
+    potential_root_paths = [
+        os.path.expanduser('~/.npcsh/models'),  # Standard global models directory
+        os.path.expanduser('~/.npcsh/images'),  # Global images directory (where user's model was saved)
+    ]
+    if current_path:
+        # Add project-specific model directories if a current_path is provided
+        project_models_path = os.path.join(current_path, 'models')
+        project_images_path = os.path.join(current_path, 'images') # Also check project images directory
+        potential_root_paths.extend([project_models_path, project_images_path])
+            
+    finetuned_models = []
+    
+    print(f"🌋 (Internal) Searching for fine-tuned models in potential root paths: {set(potential_root_paths)}")
+
+    for root_path in set(potential_root_paths):
+        if not os.path.exists(root_path) or not os.path.isdir(root_path):
+            print(f"🌋 (Internal) Skipping non-existent or non-directory root path: {root_path}")
+            continue
+
+        print(f"🌋 (Internal) Scanning root path: {root_path}")
+        for model_dir_name in os.listdir(root_path):
+            full_model_path = os.path.join(root_path, model_dir_name)
+            
+            if not os.path.isdir(full_model_path):
+                print(f"🌋 (Internal) Skipping {full_model_path}: Not a directory.")
+                continue
+
+            # Check for 'model_final.pt' or the 'checkpoints' directory
+            has_model_final_pt = os.path.exists(os.path.join(full_model_path, 'model_final.pt'))
+            has_checkpoints_dir = os.path.isdir(os.path.join(full_model_path, 'checkpoints'))
+
+            if has_model_final_pt or has_checkpoints_dir:
+                print(f"🌋 (Internal) Identified fine-tuned model: {model_dir_name} at {full_model_path} (found model_final.pt or checkpoints dir)")
+                finetuned_models.append({
+                    "value": full_model_path, # This is the path to the directory containing the .pt files
+                    "provider": "diffusers",   # Provider is still "diffusers"
+                    "display_name": f"{model_dir_name} | Fine-tuned Diffuser"
+                })
+                continue
+
+            print(f"🌋 (Internal) Skipping {full_model_path}: No model_final.pt or checkpoints directory found at root.")
+    
+    print(f"🌋 (Internal) Finished scanning. Found {len(finetuned_models)} fine-tuned models.")
+    # <--- CRITICAL FIX: Directly return the list of models, not a Flask Response
+    return {"models": finetuned_models, "error": None} # Return a dict for consistency
 def get_available_image_models(current_path=None):
     """
     Retrieves available image generation models based on environment variables
-    and predefined configurations.
+    and predefined configurations, including locally fine-tuned Diffusers models.
     """
     
     if current_path:
@@ -1998,7 +2100,7 @@ def get_available_image_models(current_path=None):
     
     all_image_models = []
 
-    
+    # Add models configured via environment variables
     env_image_model = os.getenv("NPCSH_IMAGE_MODEL")
     env_image_provider = os.getenv("NPCSH_IMAGE_PROVIDER")
 
@@ -2009,9 +2111,8 @@ def get_available_image_models(current_path=None):
             "display_name": f"{env_image_model} | {env_image_provider} (Configured)"
         })
 
-    
+    # Add predefined models (OpenAI, Gemini, and standard Diffusers)
     for provider_key, models_list in IMAGE_MODELS.items():
-        
         if provider_key == "openai":
             if os.environ.get("OPENAI_API_KEY"):
                 all_image_models.extend([
@@ -2024,16 +2125,25 @@ def get_available_image_models(current_path=None):
                     {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
                     for model in models_list
                 ])
-        elif provider_key == "diffusers":
-            
-            
+        elif provider_key == "diffusers": # This entry in IMAGE_MODELS is for standard diffusers
             all_image_models.extend([
                 {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
                 for model in models_list
             ])
         
+    # <--- CRITICAL FIX: Directly call the internal helper function for fine-tuned models
+    try:
+        finetuned_data_result = _get_finetuned_models_internal(current_path)
+        if finetuned_data_result and finetuned_data_result.get("models"):
+            all_image_models.extend(finetuned_data_result["models"])
+        else:
+            print(f"No fine-tuned models returned by internal helper or an error occurred internally.")
+            if finetuned_data_result.get("error"):
+                print(f"Internal error in _get_finetuned_models_internal: {finetuned_data_result['error']}")
+    except Exception as e:
+        print(f"Error calling _get_finetuned_models_internal: {e}")
 
-    
+    # Deduplicate models
     seen_models = set()
     unique_models = []
     for model_entry in all_image_models:
@@ -2042,6 +2152,7 @@ def get_available_image_models(current_path=None):
             seen_models.add(key)
             unique_models.append(model_entry)
 
+    # Return the combined, deduplicated list of models as a dictionary with a 'models' key
     return unique_models
 
 @app.route('/api/generative_fill', methods=['POST'])
@@ -2433,6 +2544,7 @@ def get_image_models_api():
     current_path = request.args.get("currentPath")
     try:
         image_models = get_available_image_models(current_path)
+        print('image models', image_models)
         return jsonify({"models": image_models, "error": None})
     except Exception as e:
         print(f"Error getting available image models: {str(e)}")

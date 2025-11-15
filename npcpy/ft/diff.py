@@ -345,7 +345,8 @@ def generate_image(model_path, prompt=None, num_samples=1, image_size=128):
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    checkpoint = torch.load(model_path, map_location=device)
+    # Fix: Load with weights_only=False for your custom checkpoint
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
     if 'config' in checkpoint:
         config = checkpoint['config']
