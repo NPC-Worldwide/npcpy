@@ -262,13 +262,14 @@ class Jinx:
             
         self._raw_steps = list(self.steps)
         self.steps = []
-
     def _load_from_file(self, path):
         jinx_data = load_yaml_file(path)
         if not jinx_data:
             raise ValueError(f"Failed to load jinx from {path}")
+        self._source_path = path
         self._load_from_data(jinx_data)
             
+
     def _load_from_data(self, jinx_data):
         if not jinx_data or not isinstance(jinx_data, dict):
             raise ValueError("Invalid jinx data provided")
@@ -281,6 +282,7 @@ class Jinx:
         self.description = jinx_data.get("description", "")
         self.npc = jinx_data.get("npc")
         self.steps = jinx_data.get("steps", [])
+        self._source_path = jinx_data.get("_source_path", None)
 
     def render_first_pass(
         self, 

@@ -405,9 +405,13 @@ def save_kg_to_db(engine: Engine, kg_data: Dict[str, Any], team_name: str, npc_n
 def generate_message_id() -> str:
     return str(uuid.uuid4())
 
+
+
+from sqlalchemy import event, Table, Column, Integer, String, Text
+from sqlalchemy.orm import mapper
+
 class CommandHistory:
     def __init__(self, db: Union[str, Engine] = "~/npcsh_history.db"):
-        
         if isinstance(db, str):
             self.engine = create_engine_from_path(db)
             self.db_path = db
@@ -415,14 +419,53 @@ class CommandHistory:
             self.engine = db
             self.db_path = str(db.url)
         else:
-            raise TypeError(f"Unsupported type for CommandHistory db parameter: {type(db)}")
+            raise TypeError(f"Unsupported type: {type(db)}")
 
         self._initialize_schema()
-
+        self._setup_execution_triggers()
+        self.backfill_execution_tables()
+    def backfill_execution_tables(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                INSERT OR IGNORE INTO jinx_executions 
+                (message_id, jinx_name, input, timestamp, npc, team, 
+                conversation_id)
+                SELECT 
+                    message_id,
+                    SUBSTR(content, 2, 
+                        CASE 
+                            WHEN INSTR(SUBSTR(content, 2), ' ') > 0 
+                            THEN INSTR(SUBSTR(content, 2), ' ') - 1
+                            ELSE LENGTH(content) - 1
+                        END
+                    ),
+                    content,
+                    timestamp,
+                    npc,
+                    team,
+                    conversation_id
+                FROM conversation_history
+                WHERE role = 'user' AND content LIKE '/%'
+            """))
+            
+            conn.execute(text("""
+                INSERT OR IGNORE INTO npc_executions 
+                (message_id, input, timestamp, npc, team, conversation_id, 
+                model, provider)
+                SELECT 
+                    message_id,
+                    content,
+                    timestamp,
+                    npc,
+                    team,
+                    conversation_id,
+                    model,
+                    provider
+                FROM conversation_history
+                WHERE role = 'user' AND npc IS NOT NULL
+            """))
     def _initialize_schema(self):
-        """Creates all necessary tables."""
         metadata = MetaData()
-        
         
         Table('command_history', metadata,
             Column('id', Integer, primary_key=True, autoincrement=True),
@@ -432,7 +475,6 @@ class CommandHistory:
             Column('output', Text),
             Column('location', Text)
         )
-        
         
         Table('conversation_history', metadata,
             Column('id', Integer, primary_key=True, autoincrement=True),
@@ -448,33 +490,48 @@ class CommandHistory:
             Column('team', String(100))
         )
         
-        
         Table('message_attachments', metadata,
             Column('id', Integer, primary_key=True, autoincrement=True),
-            Column('message_id', String(50), ForeignKey('conversation_history.message_id', ondelete='CASCADE'), nullable=False),
+            Column('message_id', String(50), 
+                   ForeignKey('conversation_history.message_id', 
+                              ondelete='CASCADE'), 
+                   nullable=False),
             Column('attachment_name', String(255)),
             Column('attachment_type', String(100)),
             Column('attachment_data', LargeBinary),
             Column('attachment_size', Integer),
             Column('upload_timestamp', String(50)),
-            Column('file_path', Text) 
+            Column('file_path', Text)
+        )
+
+        Table('labels', metadata,
+            Column('id', Integer, primary_key=True, autoincrement=True),
+            Column('entity_type', String(50), nullable=False),
+            Column('entity_id', String(100), nullable=False),
+            Column('label', String(100), nullable=False),
+            Column('metadata', Text),
+            Column('created_at', DateTime, default=func.now())
+        )
+            
+        Table('jinx_executions', metadata,
+            Column('message_id', String(50), primary_key=True),
+            Column('jinx_name', String(100)),
+            Column('input', Text),
+            Column('timestamp', String(50)),
+            Column('npc', String(100)),
+            Column('team', String(100)),
+            Column('conversation_id', String(100))
         )
         
-        
-        Table('jinx_execution_log', metadata,
-            Column('execution_id', Integer, primary_key=True, autoincrement=True),
-            Column('triggering_message_id', String(50), ForeignKey('conversation_history.message_id', ondelete='CASCADE'), nullable=False),
-            Column('response_message_id', String(50), ForeignKey('conversation_history.message_id', ondelete='SET NULL')),
-            Column('conversation_id', String(100), nullable=False),
-            Column('timestamp', String(50), nullable=False),
-            Column('npc_name', String(100)),
-            Column('team_name', String(100)),
-            Column('jinx_name', String(100), nullable=False),
-            Column('jinx_inputs', Text),
-            Column('jinx_output', Text),
-            Column('status', String(50), nullable=False),
-            Column('error_message', Text),
-            Column('duration_ms', Integer)
+        Table('npc_executions', metadata,
+            Column('message_id', String(50), primary_key=True),
+            Column('input', Text),
+            Column('timestamp', String(50)),
+            Column('npc', String(100)),
+            Column('team', String(100)),
+            Column('conversation_id', String(100)),
+            Column('model', String(100)),
+            Column('provider', String(100))
         )
         
         Table('memory_lifecycle', metadata,
@@ -492,30 +549,137 @@ class CommandHistory:
             Column('provider', String(100)),
             Column('created_at', DateTime, default=func.now())
         )
-                
         
         metadata.create_all(self.engine, checkfirst=True)
-        
-        
-        with self.engine.begin() as conn:
-            
-            index_queries = [
-                "CREATE INDEX IF NOT EXISTS idx_jinx_log_trigger_msg ON jinx_execution_log (triggering_message_id)",
-                "CREATE INDEX IF NOT EXISTS idx_jinx_log_convo_id ON jinx_execution_log (conversation_id)",
-                "CREATE INDEX IF NOT EXISTS idx_jinx_log_jinx_name ON jinx_execution_log (jinx_name)",
-                "CREATE INDEX IF NOT EXISTS idx_jinx_log_timestamp ON jinx_execution_log (timestamp)"
-            ]
-            
-            for idx_query in index_queries:
-                try:
-                    conn.execute(text(idx_query))
-                except SQLAlchemyError:
-                    
-                    pass
-        
-        
         init_kg_schema(self.engine)
 
+    def _setup_execution_triggers(self):
+        if 'sqlite' in str(self.engine.url):
+            with self.engine.begin() as conn:
+                conn.execute(text("""
+                    CREATE TRIGGER IF NOT EXISTS populate_jinx_executions
+                    AFTER INSERT ON conversation_history
+                    WHEN NEW.role = 'user' AND NEW.content LIKE '/%'
+                    BEGIN
+                        INSERT OR IGNORE INTO jinx_executions 
+                        (message_id, jinx_name, input, timestamp, npc, team, 
+                         conversation_id)
+                        VALUES (
+                            NEW.message_id,
+                            SUBSTR(NEW.content, 2, 
+                                CASE 
+                                    WHEN INSTR(SUBSTR(NEW.content, 2), ' ') > 0 
+                                    THEN INSTR(SUBSTR(NEW.content, 2), ' ') - 1
+                                    ELSE LENGTH(NEW.content) - 1
+                                END
+                            ),
+                            NEW.content,
+                            NEW.timestamp,
+                            NEW.npc,
+                            NEW.team,
+                            NEW.conversation_id
+                        );
+                    END
+                """))
+                
+                conn.execute(text("""
+                    CREATE TRIGGER IF NOT EXISTS populate_npc_executions
+                    AFTER INSERT ON conversation_history
+                    WHEN NEW.role = 'user' AND NEW.npc IS NOT NULL
+                    BEGIN
+                        INSERT OR IGNORE INTO npc_executions 
+                        (message_id, input, timestamp, npc, team, 
+                         conversation_id, model, provider)
+                        VALUES (
+                            NEW.message_id,
+                            NEW.content,
+                            NEW.timestamp,
+                            NEW.npc,
+                            NEW.team,
+                            NEW.conversation_id,
+                            NEW.model,
+                            NEW.provider
+                        );
+                    END
+                """))
+
+    def get_jinx_executions(self, jinx_name: str = None, limit: int = 1000) -> List[Dict]:
+        if jinx_name:
+            stmt = """
+                SELECT je.*, l.label
+                FROM jinx_executions je
+                LEFT JOIN labels l ON l.entity_type = 'message' 
+                    AND l.entity_id = je.message_id
+                WHERE je.jinx_name = :jinx_name
+                ORDER BY je.timestamp DESC
+                LIMIT :limit
+            """
+            return self._fetch_all(stmt, {"jinx_name": jinx_name, "limit": limit})
+        
+        stmt = """
+            SELECT je.*, l.label
+            FROM jinx_executions je
+            LEFT JOIN labels l ON l.entity_type = 'message' 
+                AND l.entity_id = je.message_id
+            ORDER BY je.timestamp DESC
+            LIMIT :limit
+        """
+        return self._fetch_all(stmt, {"limit": limit})
+
+    def get_npc_executions(self, npc_name: str, limit: int = 1000) -> List[Dict]:
+        stmt = """
+            SELECT ne.*, l.label
+            FROM npc_executions ne
+            LEFT JOIN labels l ON l.entity_type = 'message' 
+                AND l.entity_id = ne.message_id
+            WHERE ne.npc = :npc_name
+            ORDER BY ne.timestamp DESC
+            LIMIT :limit
+        """
+        return self._fetch_all(stmt, {"npc_name": npc_name, "limit": limit})
+
+    def label_execution(self, message_id: str, label: str):
+        self.add_label('message', message_id, label)
+        
+    def add_label(self, entity_type: str, entity_id: str, label: str, metadata: dict = None):
+        stmt = """
+            INSERT INTO labels (entity_type, entity_id, label, metadata)
+            VALUES (:entity_type, :entity_id, :label, :metadata)
+        """
+        with self.engine.begin() as conn:
+            conn.execute(text(stmt), {
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "label": label,
+                "metadata": json.dumps(metadata) if metadata else None
+            })
+
+    def get_labels(self, entity_type: str = None, label: str = None) -> List[Dict]:
+        conditions = []
+        params = {}
+        
+        if entity_type:
+            conditions.append("entity_type = :entity_type")
+            params["entity_type"] = entity_type
+        if label:
+            conditions.append("label = :label")
+            params["label"] = label
+        
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        stmt = f"SELECT * FROM labels {where} ORDER BY created_at DESC"
+        
+        return self._fetch_all(stmt, params)
+
+    def get_training_data_by_label(self, label: str = 'training') -> List[Dict]:
+        stmt = """
+            SELECT l.entity_type, l.entity_id, l.metadata,
+                ch.content, ch.role, ch.npc, ch.conversation_id
+            FROM labels l
+            LEFT JOIN conversation_history ch ON 
+                (l.entity_type = 'message' AND l.entity_id = ch.message_id)
+            WHERE l.label = :label
+        """
+        return self._fetch_all(stmt, {"label": label})
     def _execute_returning_id(self, stmt: str, params: Dict = None) -> Optional[int]:
         """Execute INSERT and return the generated ID"""
         with self.engine.begin() as conn:
@@ -534,6 +698,7 @@ class CommandHistory:
         with self.engine.connect() as conn:
             result = conn.execute(text(stmt), params or {})
             return [dict(row._mapping) for row in result]
+
 
     def add_command(self, command, subcommands, output, location):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

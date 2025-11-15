@@ -550,58 +550,7 @@ def get_available_jinxs():
         traceback.print_exc()
         return jsonify({'jinxs': [], 'error': str(e)}), 500
 
-@app.route('/api/jinxs/global', methods=['GET'])
-def get_global_jinxs():
-    global_jinxs_dir = os.path.expanduser('~/.npcsh/npc_team/jinxs')
-    
-    # Directories to exclude entirely
-    excluded_dirs = ['core', 'npc_studio']
-    
-    code_jinxs = []
-    mode_jinxs = []
-    util_jinxs = []
-    
-    if os.path.exists(global_jinxs_dir):
-        for root, dirs, files in os.walk(global_jinxs_dir):
-            # Filter out excluded directories
-            dirs[:] = [d for d in dirs if d not in excluded_dirs]
-            
-            for filename in files:
-                if filename.endswith('.jinx'):
-                    try:
-                        jinx_path = os.path.join(root, filename)
-                        with open(jinx_path, 'r') as f:
-                            jinx_data = yaml.safe_load(f)
-                            
-                        if jinx_data:
-                            jinx_name = jinx_data.get('jinx_name', filename[:-5])
-                            
-                            jinx_obj = {
-                                'name': jinx_name,
-                                'display_name': jinx_data.get('description', jinx_name),
-                                'description': jinx_data.get('description', ''),
-                                'inputs': jinx_data.get('inputs', []),
-                                'path': jinx_path
-                            }
-                            
-                            # Categorize based on directory
-                            rel_path = os.path.relpath(root, global_jinxs_dir)
-                            
-                            if rel_path.startswith('code'):
-                                code_jinxs.append(jinx_obj)
-                            elif rel_path.startswith('modes'):
-                                mode_jinxs.append(jinx_obj)
-                            elif rel_path.startswith('utils'):
-                                util_jinxs.append(jinx_obj)
-                            
-                    except Exception as e:
-                        print(f"Error loading jinx {filename}: {e}")
-    
-    return jsonify({
-        'code': code_jinxs,
-        'modes': mode_jinxs,
-        'utils': util_jinxs
-    })
+
 @app.route("/api/jinx/execute", methods=["POST"])
 def execute_jinx():
     """
@@ -1050,8 +999,234 @@ def save_jinx():
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+def serialize_jinx_inputs(inputs):
+    result = []
+    for inp in inputs:
+        if isinstance(inp, str):
+            result.append(inp)
+        elif isinstance(inp, dict):
+            key = list(inp.keys())[0]
+            result.append(key)
+        else:
+            result.append(str(inp))
+    return result
+
+@app.route("/api/jinx/test", methods=["POST"])
+def test_jinx():
+    data = request.json
+    jinx_data = data.get("jinx")
+    test_inputs = data.get("inputs", {})
+    current_path = data.get("currentPath")
+    
+    if current_path:
+        load_project_env(current_path)
+    
+    jinx = Jinx(jinx_data=jinx_data)
+    
+    from jinja2 import Environment
+    temp_env = Environment()
+    jinx.render_first_pass(temp_env, {})
+    
+    conversation_id = f"jinx_test_{uuid.uuid4().hex[:8]}"
+    command_history = CommandHistory(app.config.get('DB_PATH'))
+    
+    result = jinx.execute(
+        input_values=test_inputs,
+        npc=None,
+        messages=[],
+        extra_globals={},
+        jinja_env=temp_env
+    )
+    
+    execution_id = generate_message_id()
+    output = result.get('output', str(result))
+    
+    command_history.save_jinx_execution_record(
+        execution_id=execution_id,
+        jinx_name=jinx.jinx_name,
+        inputs=test_inputs,
+        output=output,
+        conversation_id=conversation_id
+    )
+    
+    return jsonify({
+        "output": output,
+        "conversation_id": conversation_id,
+        "execution_id": execution_id,
+        "error": None
+    })
 
 
+
+@app.route("/api/ml/train", methods=["POST"])
+def train_ml_model():
+    import pickle
+    import numpy as np
+    from sklearn.linear_model import LinearRegression, LogisticRegression
+    from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+    from sklearn.tree import DecisionTreeRegressor
+    from sklearn.cluster import KMeans
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import mean_squared_error, r2_score, accuracy_score
+    
+    data = request.json
+    model_name = data.get("name")
+    model_type = data.get("type")
+    target = data.get("target")
+    features = data.get("features")
+    training_data = data.get("data")
+    hyperparams = data.get("hyperparameters", {})
+    
+    df = pd.DataFrame(training_data)
+    X = df[features].values
+    
+    metrics = {}
+    model = None
+    
+    if model_type == "linear_regression":
+        y = df[target].values
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        metrics = {
+            "r2_score": r2_score(y_test, y_pred),
+            "rmse": np.sqrt(mean_squared_error(y_test, y_pred))
+        }
+    
+    elif model_type == "logistic_regression":
+        y = df[target].values
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        model = LogisticRegression(max_iter=1000)
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        metrics = {"accuracy": accuracy_score(y_test, y_pred)}
+    
+    elif model_type == "random_forest":
+        y = df[target].values
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        model = RandomForestRegressor(n_estimators=100)
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        metrics = {
+            "r2_score": r2_score(y_test, y_pred),
+            "rmse": np.sqrt(mean_squared_error(y_test, y_pred))
+        }
+    
+    elif model_type == "clustering":
+        n_clusters = hyperparams.get("n_clusters", 3)
+        model = KMeans(n_clusters=n_clusters)
+        labels = model.fit_predict(X)
+        metrics = {"inertia": model.inertia_, "n_clusters": n_clusters}
+    
+    elif model_type == "gradient_boost":
+        y = df[target].values
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        model = GradientBoostingRegressor()
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        metrics = {
+            "r2_score": r2_score(y_test, y_pred),
+            "rmse": np.sqrt(mean_squared_error(y_test, y_pred))
+        }
+    
+    model_id = f"{model_name}_{int(time.time())}"
+    model_path = os.path.expanduser(f"~/.npcsh/models/{model_id}.pkl")
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    
+    with open(model_path, 'wb') as f:
+        pickle.dump({
+            "model": model,
+            "features": features,
+            "target": target,
+            "type": model_type
+        }, f)
+    
+    return jsonify({
+        "model_id": model_id,
+        "metrics": metrics,
+        "error": None
+    })
+
+
+@app.route("/api/ml/predict", methods=["POST"])
+def ml_predict():
+    import pickle
+    
+    data = request.json
+    model_name = data.get("model_name")
+    input_data = data.get("input_data")
+    
+    model_dir = os.path.expanduser("~/.npcsh/models/")
+    model_files = [f for f in os.listdir(model_dir) if f.startswith(model_name)]
+    
+    if not model_files:
+        return jsonify({"error": f"Model {model_name} not found"})
+    
+    model_path = os.path.join(model_dir, model_files[0])
+    
+    with open(model_path, 'rb') as f:
+        model_data = pickle.load(f)
+    
+    model = model_data["model"]
+    prediction = model.predict([input_data])
+    
+    return jsonify({
+        "prediction": prediction.tolist(),
+        "error": None
+    })
+@app.route("/api/jinx/executions/label", methods=["POST"])
+def label_jinx_execution():
+    data = request.json
+    execution_id = data.get("executionId")
+    label = data.get("label")
+    
+    command_history = CommandHistory(app.config.get('DB_PATH'))
+    command_history.label_jinx_execution(execution_id, label)
+    
+    return jsonify({"success": True, "error": None})
+
+
+@app.route("/api/npc/executions", methods=["GET"])
+def get_npc_executions():
+    npc_name = request.args.get("npcName")
+
+    
+    command_history = CommandHistory(app.config.get('DB_PATH'))
+    executions = command_history.get_npc_executions(npc_name)
+    
+    return jsonify({"executions": executions, "error": None})
+
+
+@app.route("/api/npc/executions/label", methods=["POST"])
+def label_npc_execution():
+    data = request.json
+    execution_id = data.get("executionId")
+    label = data.get("label")
+    
+    command_history = CommandHistory(app.config.get('DB_PATH'))
+    command_history.label_npc_execution(execution_id, label)
+    
+    return jsonify({"success": True, "error": None})
+
+
+@app.route("/api/training/dataset", methods=["POST"])
+def build_training_dataset():
+    data = request.json
+    filters = data.get("filters", {})
+    
+    command_history = CommandHistory(app.config.get('DB_PATH'))
+    dataset = command_history.get_training_dataset(
+        include_jinxs=filters.get("jinxs", True),
+        include_npcs=filters.get("npcs", True),
+        npc_names=filters.get("npc_names")
+    )
+    
+    return jsonify({
+        "dataset": dataset,
+        "count": len(dataset),
+        "error": None
+    })
 @app.route("/api/save_npc", methods=["POST"])
 def save_npc():
     try:
@@ -1092,137 +1267,147 @@ use_global_jinxs: {str(npc_data.get('use_global_jinxs', True)).lower()}
         print(f"Error saving NPC: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/jinxs/global")
+def get_jinxs_global():
+    global_jinx_directory = os.path.expanduser("~/.npcsh/npc_team/jinxs")
+    jinx_data = []
+
+    if not os.path.exists(global_jinx_directory):
+        return jsonify({"jinxs": [], "error": None})
+
+    for root, dirs, files in os.walk(global_jinx_directory):
+        for file in files:
+            if file.endswith(".jinx"):
+                jinx_path = os.path.join(root, file)
+                with open(jinx_path, 'r') as f:
+                    raw_data = yaml.safe_load(f)
+                
+                inputs = []
+                for inp in raw_data.get("inputs", []):
+                    if isinstance(inp, str):
+                        inputs.append(inp)
+                    elif isinstance(inp, dict):
+                        inputs.append(list(inp.keys())[0])
+                    else:
+                        inputs.append(str(inp))
+                
+                rel_path = os.path.relpath(jinx_path, global_jinx_directory)
+                path_without_ext = rel_path[:-5]
+                
+                jinx_data.append({
+                    "jinx_name": raw_data.get("jinx_name", file[:-5]),
+                    "path": path_without_ext,
+                    "description": raw_data.get("description", ""),
+                    "inputs": inputs,
+                    "steps": raw_data.get("steps", [])
+                })
+
+    return jsonify({"jinxs": jinx_data, "error": None})
+
+@app.route("/api/jinxs/project", methods=["GET"])
+def get_jinxs_project():
+    project_dir = request.args.get("currentPath")
+    if not project_dir:
+        return jsonify({"jinxs": [], "error": "currentPath required"}), 400
+
+    if not project_dir.endswith("jinxs"):
+        project_dir = os.path.join(project_dir, "jinxs")
+
+    jinx_data = []
+    if not os.path.exists(project_dir):
+        return jsonify({"jinxs": [], "error": None})
+
+    for root, dirs, files in os.walk(project_dir):
+        for file in files:
+            if file.endswith(".jinx"):
+                jinx_path = os.path.join(root, file)
+                with open(jinx_path, 'r') as f:
+                    raw_data = yaml.safe_load(f)
+                
+                inputs = []
+                for inp in raw_data.get("inputs", []):
+                    if isinstance(inp, str):
+                        inputs.append(inp)
+                    elif isinstance(inp, dict):
+                        inputs.append(list(inp.keys())[0])
+                    else:
+                        inputs.append(str(inp))
+                
+                rel_path = os.path.relpath(jinx_path, project_dir)
+                path_without_ext = rel_path[:-5]
+                
+                jinx_data.append({
+                    "jinx_name": raw_data.get("jinx_name", file[:-5]),
+                    "path": path_without_ext,
+                    "description": raw_data.get("description", ""),
+                    "inputs": inputs,
+                    "steps": raw_data.get("steps", [])
+                })
+    print(jinx_data)
+    return jsonify({"jinxs": jinx_data, "error": None})
+
 @app.route("/api/npc_team_global")
 def get_npc_team_global():
-    try:
-        db_conn = get_db_connection()
-        global_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
+    global_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
+    npc_data = []
 
-        npc_data = []
+    if not os.path.exists(global_npc_directory):
+        return jsonify({"npcs": [], "error": None})
 
-        # Ensure the directory exists before listing
-        if not os.path.exists(global_npc_directory):
-            print(f"Global NPC directory not found: {global_npc_directory}", file=sys.stderr)
-            return jsonify({"npcs": [], "error": f"Global NPC directory not found: {global_npc_directory}"})
+    for file in os.listdir(global_npc_directory):
+        if file.endswith(".npc"):
+            npc_path = os.path.join(global_npc_directory, file)
+            with open(npc_path, 'r') as f:
+                raw_data = yaml.safe_load(f)
+            
+            npc_data.append({
+                "name": raw_data.get("name", file[:-4]),
+                "primary_directive": raw_data.get("primary_directive", ""),
+                "model": raw_data.get("model", ""),
+                "provider": raw_data.get("provider", ""),
+                "api_url": raw_data.get("api_url", ""),
+                "use_global_jinxs": raw_data.get("use_global_jinxs", True),
+                "jinxs": raw_data.get("jinxs", "*"),
+            })
 
-        for file in os.listdir(global_npc_directory):
-            if file.endswith(".npc"):
-                npc_path = os.path.join(global_npc_directory, file)
-                try:
-                    npc = NPC(file=npc_path, db_conn=db_conn)
-                    
-                    # Ensure jinxs are initialized after NPC creation if not already
-                    # This is crucial for populating npc.jinxs_dict
-                    if not npc.jinxs_dict and hasattr(npc, 'initialize_jinxs'):
-                        npc.initialize_jinxs()
-
-                    serialized_npc = {
-                        "name": npc.name,
-                        "primary_directive": npc.primary_directive,
-                        "model": npc.model,
-                        "provider": npc.provider,
-                        "api_url": npc.api_url,
-                        "use_global_jinxs": npc.use_global_jinxs,
-                        # CRITICAL FIX: Iterate over npc.jinxs_dict.values() which contains Jinx objects
-                        "jinxs": [
-                            {
-                                "jinx_name": jinx.jinx_name,
-                                "inputs": jinx.inputs,
-                                "steps": [
-                                    {
-                                        "name": step.get("name", f"step_{i}"),
-                                        "engine": step.get("engine", "natural"),
-                                        "code": step.get("code", "")
-                                    }
-                                    for i, step in enumerate(jinx.steps)
-                                ]
-                            }
-                            for jinx in npc.jinxs_dict.values() # Use jinxs_dict here
-                        ] if hasattr(npc, 'jinxs_dict') else [], # Defensive check
-                    }
-                    npc_data.append(serialized_npc)
-                except Exception as e:
-                    print(f"Error loading or serializing NPC {file}: {str(e)}", file=sys.stderr)
-                    traceback.print_exc(file=sys.stderr)
-
-
-        return jsonify({"npcs": npc_data, "error": None})
-
-    except Exception as e:
-        print(f"Error fetching global NPC team: {str(e)}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        return jsonify({"npcs": [], "error": str(e)})
+    return jsonify({"npcs": npc_data, "error": None})
 
 
 @app.route("/api/npc_team_project", methods=["GET"])
 def get_npc_team_project():
-    try:
-        db_conn = get_db_connection()
+    project_npc_directory = request.args.get("currentPath")
+    if not project_npc_directory:
+        return jsonify({"npcs": [], "error": "currentPath required"}), 400
 
-        project_npc_directory = request.args.get("currentPath")
-        if not project_npc_directory:
-            return jsonify({"npcs": [], "error": "currentPath is required for project NPCs"}), 400
+    if not project_npc_directory.endswith("npc_team"):
+        project_npc_directory = os.path.join(
+            project_npc_directory, 
+            "npc_team"
+        )
 
-        if not project_npc_directory.endswith("npc_team"):
-            project_npc_directory = os.path.join(project_npc_directory, "npc_team")
+    npc_data = []
 
-        npc_data = []
+    if not os.path.exists(project_npc_directory):
+        return jsonify({"npcs": [], "error": None})
 
-        # Ensure the directory exists before listing
-        if not os.path.exists(project_npc_directory):
-            print(f"Project NPC directory not found: {project_npc_directory}", file=sys.stderr)
-            return jsonify({"npcs": [], "error": f"Project NPC directory not found: {project_npc_directory}"})
+    for file in os.listdir(project_npc_directory):
+        if file.endswith(".npc"):
+            npc_path = os.path.join(project_npc_directory, file)
+            with open(npc_path, 'r') as f:
+                raw_npc_data = yaml.safe_load(f)
+            
+            serialized_npc = {
+                "name": raw_npc_data.get("name", file[:-4]),
+                "primary_directive": raw_npc_data.get("primary_directive", ""),
+                "model": raw_npc_data.get("model", ""),
+                "provider": raw_npc_data.get("provider", ""),
+                "api_url": raw_npc_data.get("api_url", ""),
+                "use_global_jinxs": raw_npc_data.get("use_global_jinxs", True),
+                "jinxs": raw_npc_data.get("jinxs", "*"),
+            }
+            npc_data.append(serialized_npc)
 
-        for file in os.listdir(project_npc_directory):
-            print(f"Processing project NPC file: {file}", file=sys.stderr) # Diagnostic print
-            if file.endswith(".npc"):
-                npc_path = os.path.join(project_npc_directory, file)
-                try:
-                    npc = NPC(file=npc_path, db_conn=db_conn)
-                    
-                    # Ensure jinxs are initialized after NPC creation if not already
-                    # This is crucial for populating npc.jinxs_dict
-                    if not npc.jinxs_dict and hasattr(npc, 'initialize_jinxs'):
-                        npc.initialize_jinxs()
-
-                    serialized_npc = {
-                        "name": npc.name,
-                        "primary_directive": npc.primary_directive,
-                        "model": npc.model,
-                        "provider": npc.provider,
-                        "api_url": npc.api_url,
-                        "use_global_jinxs": npc.use_global_jinxs,
-                        # CRITICAL FIX: Iterate over npc.jinxs_dict.values() which contains Jinx objects
-                        "jinxs": [
-                            {
-                                "jinx_name": jinx.jinx_name,
-                                "inputs": jinx.inputs,
-                                "steps": [
-                                    {
-                                        "name": step.get("name", f"step_{i}"),
-                                        "engine": step.get("engine", "natural"),
-                                        "code": step.get("code", "")
-                                    }
-                                    for i, step in enumerate(jinx.steps)
-                                ]
-                            }
-                            for jinx in npc.jinxs_dict.values() # Use jinxs_dict here
-                        ] if hasattr(npc, 'jinxs_dict') else [], # Defensive check
-                    }
-                    npc_data.append(serialized_npc)
-                except Exception as e:
-                    print(f"Error loading or serializing NPC {file}: {str(e)}", file=sys.stderr)
-                    traceback.print_exc(file=sys.stderr)
-
-
-        print(f"Project NPC data: {npc_data}", file=sys.stderr) # Diagnostic print
-        return jsonify({"npcs": npc_data, "error": None})
-
-    except Exception as e:
-        print(f"Error fetching NPC team: {str(e)}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        return jsonify({"npcs": [], "error": str(e)})
-
+    return jsonify({"npcs": npc_data, "error": None})
         
 def get_last_used_model_and_npc_in_directory(directory_path):
     """
