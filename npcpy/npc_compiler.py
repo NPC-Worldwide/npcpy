@@ -620,8 +620,9 @@ def get_npc_action_space(npc=None, team=None):
     if npc:
         core_tools = [
             npc.think_step_by_step,
-            npc.write_code
         ]
+        if hasattr(npc, "write_code"):
+            core_tools.append(npc.write_code)
         
         if npc.command_history:
             core_tools.extend([

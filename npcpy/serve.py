@@ -1116,8 +1116,8 @@ def extract_and_store_memories(
     provider,
     npc_object=None
 ):
-    from npcpy.memory.fact_extraction import get_facts
-    
+    from npcpy.llm_funcs import get_facts
+    from npcpy.memory.command_history import format_memory_context
     # Your CommandHistory.get_memory_examples_for_context returns a dict with 'approved' and 'rejected'
     memory_examples_dict = command_history.get_memory_examples_for_context(
         npc=npc_name,
@@ -1224,10 +1224,17 @@ def finetune_diffusers():
     learning_rate = data.get('learningRate', 1e-4)
     output_path = data.get('outputPath', '~/.npcsh/models')
     
+    print(f"🌋 Finetune Diffusers Request Received!")
+    print(f"  Images: {len(images)} files")
+    print(f"  Output Name: {output_name}")
+    print(f"  Epochs: {num_epochs}, Batch Size: {batch_size}, Learning Rate: {learning_rate}")
+    
     if not images:
+        print("🌋 Error: No images provided for finetuning.")
         return jsonify({'error': 'No images provided'}), 400
     
     if not captions or len(captions) != len(images):
+        print("🌋 Warning: Captions not provided or mismatching image count. Using empty captions.")
         captions = [''] * len(images)
     
     expanded_images = [os.path.expanduser(p) for p in images]
@@ -1240,32 +1247,52 @@ def finetune_diffusers():
         'status': 'running',
         'output_dir': output_dir,
         'epochs': num_epochs,
-        'current_epoch': 0
+        'current_epoch': 0,
+        'start_time': datetime.datetime.now().isoformat()
     }
+    print(f"🌋 Finetuning job {job_id} initialized. Output directory: {output_dir}")
     
-    def run_training():
-        config = DiffusionConfig(
-            num_epochs=num_epochs,
-            batch_size=batch_size,
-            learning_rate=learning_rate,
-            output_model_path=output_dir
-        )
-        
-        model_path = train_diffusion(
-            expanded_images,
-            captions,
-            config=config
-        )
-        
-        finetune_jobs[job_id]['status'] = 'complete'
-        finetune_jobs[job_id]['model_path'] = model_path
-    
-    thread = threading.Thread(target=run_training)
+    def run_training_async():
+        print(f"🌋 Finetuning job {job_id}: Starting asynchronous training thread...")
+        try:
+            config = DiffusionConfig(
+                num_epochs=num_epochs,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                output_model_path=output_dir
+            )
+            
+            print(f"🌋 Finetuning job {job_id}: Calling train_diffusion with config: {config}")
+            # Assuming train_diffusion might print its own progress or allow callbacks
+            # For more granular logging, you'd need to modify train_diffusion itself
+            model_path = train_diffusion(
+                expanded_images,
+                captions,
+                config=config
+            )
+            
+            finetune_jobs[job_id]['status'] = 'complete'
+            finetune_jobs[job_id]['model_path'] = model_path
+            finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
+            print(f"🌋 Finetuning job {job_id}: Training complete! Model saved to: {model_path}")
+        except Exception as e:
+            finetune_jobs[job_id]['status'] = 'error'
+            finetune_jobs[job_id]['error_msg'] = str(e)
+            finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
+            print(f"🌋 Finetuning job {job_id}: ERROR during training: {e}")
+            traceback.print_exc()
+        print(f"🌋 Finetuning job {job_id}: Asynchronous training thread finished.")
+
+    # Start the training in a separate thread
+    thread = threading.Thread(target=run_training_async)
+    thread.daemon = True # Allow the main program to exit even if this thread is still running
     thread.start()
     
+    print(f"🌋 Finetuning job {job_id} successfully launched in background. Returning initial status.")
     return jsonify({
         'status': 'started',
-        'jobId': job_id
+        'jobId': job_id,
+        'message': f"Finetuning job '{job_id}' started. Check /api/finetune_status/{job_id} for updates."
     })
 
 

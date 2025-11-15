@@ -1257,6 +1257,32 @@ def start_new_conversation(prepend: str = None) -> str:
         prepend = 'npcsh'
     return f"{prepend}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
+
+def format_memory_context(memory_examples):
+    if not memory_examples:
+        return ""
+    
+    context_parts = []
+    
+    approved_examples = memory_examples.get("approved", [])
+    rejected_examples = memory_examples.get("rejected", [])
+    
+    if approved_examples:
+        context_parts.append("EXAMPLES OF GOOD MEMORIES:")
+        for ex in approved_examples[:5]:
+            final = ex.get("final_memory") or ex.get("initial_memory")
+            context_parts.append(f"- {final}")
+    
+    if rejected_examples:
+        context_parts.append("\nEXAMPLES OF POOR MEMORIES TO AVOID:")
+        for ex in rejected_examples[:3]:
+            context_parts.append(f"- {ex.get('initial_memory')}")
+    
+    if context_parts:
+        context_parts.append("\nLearn from these examples to generate similar high-quality memories.")
+        return "\n".join(context_parts)
+    
+    return ""
 def save_conversation_message(
     command_history: CommandHistory,
     conversation_id: str,
