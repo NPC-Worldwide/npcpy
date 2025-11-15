@@ -43,13 +43,14 @@ from npcpy.memory.knowledge_graph import load_kg_from_db
 from npcpy.memory.search import execute_rag_command, execute_brainblast_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
+
 from npcsh._state import get_relevant_memories, search_kg_facts
 
 import base64
 import shutil
 import uuid
 
-from npcpy.llm_funcs import gen_image                                                                                                                                                                      
+from npcpy.llm_funcs import gen_image, breathe                                                                                                                                                                
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -1030,33 +1031,264 @@ def test_jinx():
     conversation_id = f"jinx_test_{uuid.uuid4().hex[:8]}"
     command_history = CommandHistory(app.config.get('DB_PATH'))
     
-    result = jinx.execute(
-        input_values=test_inputs,
+    # 1. Save user's test command to conversation_history to get a message_id
+    user_test_command = f"Testing jinx /{jinx.jinx_name} with inputs: {test_inputs}"
+    user_message_id = generate_message_id()
+    save_conversation_message(
+        command_history,
+        conversation_id,
+        "user",
+        user_test_command,
+        wd=current_path,
+        model=None, # Or appropriate model/provider for the test context
+        provider=None,
         npc=None,
-        messages=[],
-        extra_globals={},
-        jinja_env=temp_env
+        message_id=user_message_id
     )
-    
-    execution_id = generate_message_id()
-    output = result.get('output', str(result))
-    
-    command_history.save_jinx_execution_record(
-        execution_id=execution_id,
-        jinx_name=jinx.jinx_name,
-        inputs=test_inputs,
-        output=output,
-        conversation_id=conversation_id
+
+    # Jinx execution status and output are now part of the assistant's response
+    jinx_execution_status = "success"
+    jinx_error_message = None
+    output = "Jinx execution did not complete." # Default output
+
+    try:
+        result = jinx.execute(
+            input_values=test_inputs,
+            npc=None,
+            messages=[],
+            extra_globals={},
+            jinja_env=temp_env
+        )
+        output = result.get('output', str(result))
+        if result.get('error'): # Assuming jinx.execute might return an 'error' key
+            jinx_execution_status = "failed"
+            jinx_error_message = str(result.get('error'))
+    except Exception as e:
+        jinx_execution_status = "failed"
+        jinx_error_message = str(e)
+        output = f"Jinx execution failed: {e}"
+
+    # The jinx_executions table is populated by a trigger from conversation_history.
+    # The details of the execution (inputs, output, status) are now expected to be
+    # derived by analyzing the user's command and the subsequent assistant's response.
+    # No explicit update to jinx_executions is needed here.
+
+    # 2. Save assistant's response to conversation_history
+    assistant_response_message_id = generate_message_id() # ID for the assistant's response
+    save_conversation_message(
+        command_history,
+        conversation_id,
+        "assistant",
+        output, # The jinx output is the assistant's response for the test
+        wd=current_path,
+        model=None,
+        provider=None,
+        npc=None,
+        message_id=assistant_response_message_id
     )
-    
+
     return jsonify({
         "output": output,
         "conversation_id": conversation_id,
-        "execution_id": execution_id,
-        "error": None
+        "execution_id": user_message_id, # Return the user's message_id as the execution_id
+        "error": jinx_error_message
+    })
+from npcpy.ft.diff import train_diffusion, DiffusionConfig
+import threading
+
+from npcpy.memory.knowledge_graph import (
+    load_kg_from_db,
+    save_kg_to_db # ADD THIS LINE to import the correct function
+)
+
+from collections import defaultdict # ADD THIS LINE for collecting links if not already present
+
+finetune_jobs = {}
+
+def extract_and_store_memories(
+    conversation_text,
+    conversation_id,
+    command_history,
+    npc_name,
+    team_name,
+    current_path,
+    model,
+    provider,
+    npc_object=None
+):
+    from npcpy.memory.fact_extraction import get_facts
+    
+    # Your CommandHistory.get_memory_examples_for_context returns a dict with 'approved' and 'rejected'
+    memory_examples_dict = command_history.get_memory_examples_for_context(
+        npc=npc_name,
+        team=team_name,
+        directory_path=current_path
+    )
+    
+    memory_context = format_memory_context(memory_examples_dict)
+    
+    facts = get_facts(
+        conversation_text,
+        model=npc_object.model if npc_object else model,
+        provider=npc_object.provider if npc_object else provider,
+        npc=npc_object,
+        context=memory_context
+    )
+    
+    memories_for_approval = []
+    
+    # Initialize structures to collect KG data for a single save_kg_to_db call
+    kg_facts_to_save = []
+    kg_concepts_to_save = []
+    fact_to_concept_links_temp = defaultdict(list)
+    
+    # Get the current generation for KG entries
+    current_kg_generation = command_history.get_current_generation()
+
+    if facts:
+        for i, fact in enumerate(facts):
+            # Store memory in memory_lifecycle table
+            memory_id = command_history.add_memory_to_database(
+                message_id=f"{conversation_id}_{datetime.datetime.now().strftime('%H%M%S')}_{i}",
+                conversation_id=conversation_id,
+                npc=npc_name or "default",
+                team=team_name or "default",
+                directory_path=current_path or "/",
+                initial_memory=fact.get('statement', str(fact)),
+                status="pending_approval",
+                model=npc_object.model if npc_object else model,
+                provider=npc_object.provider if npc_object else provider,
+                final_memory=None # Explicitly None for pending memories
+            )
+            
+            memories_for_approval.append({
+                "memory_id": memory_id,
+                "content": fact.get('statement', str(fact)),
+                "type": fact.get('type', 'unknown'),
+                "context": fact.get('source_text', ''),
+                "npc": npc_name or "default"
+            })
+            
+            # Collect facts and concepts for the Knowledge Graph
+            if fact.get('type') == 'concept':
+                kg_concepts_to_save.append({
+                    "name": fact.get('statement'),
+                    "generation": current_kg_generation,
+                    "origin": "organic" # Assuming 'organic' for extracted facts
+                })
+            else: # It's a fact (or unknown type, treat as fact for KG)
+                kg_facts_to_save.append({
+                    "statement": fact.get('statement'),
+                    "source_text": fact.get('source_text', conversation_text), # Use source_text if available, else conversation_text
+                    "type": fact.get('type', 'fact'), # Default to 'fact' if type is unknown
+                    "generation": current_kg_generation,
+                    "origin": "organic"
+                })
+                if fact.get('concepts'): # If this fact has related concepts
+                    for concept_name in fact.get('concepts'):
+                        fact_to_concept_links_temp[fact.get('statement')].append(concept_name)
+    
+    # After processing all facts, save them to the KG database in one go
+    if kg_facts_to_save or kg_concepts_to_save:
+        temp_kg_data = {
+            "facts": kg_facts_to_save,
+            "concepts": kg_concepts_to_save,
+            "generation": current_kg_generation,
+            "fact_to_concept_links": fact_to_concept_links_temp,
+            "concept_links": [], # Assuming no concept-to-concept links from direct extraction
+            "fact_to_fact_links": [] # Assuming no fact-to-fact links from direct extraction
+        }
+        
+        # Get the SQLAlchemy engine using your existing helper function
+        db_engine = get_db_connection(app.config.get('DB_PATH'))
+        
+        # Call the existing save_kg_to_db function
+        save_kg_to_db(
+            engine=db_engine,
+            kg_data=temp_kg_data,
+            team_name=team_name or "default",
+            npc_name=npc_name or "default",
+            directory_path=current_path or "/"
+        )
+    
+    return memories_for_approval
+
+@app.route('/api/finetune_diffusers', methods=['POST'])
+def finetune_diffusers():
+    data = request.json
+    images = data.get('images', [])
+    captions = data.get('captions', [])
+    output_name = data.get('outputName', 'my_diffusion_model')
+    num_epochs = data.get('epochs', 100)
+    batch_size = data.get('batchSize', 4)
+    learning_rate = data.get('learningRate', 1e-4)
+    output_path = data.get('outputPath', '~/.npcsh/models')
+    
+    if not images:
+        return jsonify({'error': 'No images provided'}), 400
+    
+    if not captions or len(captions) != len(images):
+        captions = [''] * len(images)
+    
+    expanded_images = [os.path.expanduser(p) for p in images]
+    output_dir = os.path.expanduser(
+        os.path.join(output_path, output_name)
+    )
+    
+    job_id = f"ft_{int(time.time())}"
+    finetune_jobs[job_id] = {
+        'status': 'running',
+        'output_dir': output_dir,
+        'epochs': num_epochs,
+        'current_epoch': 0
+    }
+    
+    def run_training():
+        config = DiffusionConfig(
+            num_epochs=num_epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            output_model_path=output_dir
+        )
+        
+        model_path = train_diffusion(
+            expanded_images,
+            captions,
+            config=config
+        )
+        
+        finetune_jobs[job_id]['status'] = 'complete'
+        finetune_jobs[job_id]['model_path'] = model_path
+    
+    thread = threading.Thread(target=run_training)
+    thread.start()
+    
+    return jsonify({
+        'status': 'started',
+        'jobId': job_id
     })
 
 
+@app.route('/api/finetune_status/<job_id>', methods=['GET'])
+def finetune_status(job_id):
+    if job_id not in finetune_jobs:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    job = finetune_jobs[job_id]
+    
+    if job['status'] == 'complete':
+        return jsonify({
+            'complete': True,
+            'outputPath': job.get('model_path', job['output_dir'])
+        })
+    elif job['status'] == 'error':
+        return jsonify({'error': job.get('error_msg', 'Unknown error')})
+    
+    return jsonify({
+        'step': job.get('current_epoch', 0),
+        'total': job['epochs'],
+        'status': 'running'
+    })
 
 @app.route("/api/ml/train", methods=["POST"])
 def train_ml_model():
@@ -2185,6 +2417,87 @@ def get_image_models_api():
 
 
 
+def _run_stream_post_processing(
+    conversation_turn_text,
+    conversation_id,
+    command_history,
+    npc_name,
+    team_name,
+    current_path,
+    model,
+    provider,
+    npc_object,
+    messages # For context compression
+):
+    """
+    Runs memory extraction and context compression in a background thread.
+    These operations will not block the main stream.
+    """
+    print(f"🌋 Background task started for conversation {conversation_id}!")
+
+    # Memory extraction and KG fact insertion
+    try:
+        if len(conversation_turn_text) > 50: # Only extract memories if the turn is substantial
+            memories_for_approval = extract_and_store_memories(
+                conversation_turn_text,
+                conversation_id,
+                command_history,
+                npc_name,
+                team_name,
+                current_path,
+                model,
+                provider,
+                npc_object
+            )
+            if memories_for_approval:
+                print(f"🔥 Background: Extracted {len(memories_for_approval)} memories for approval for conversation {conversation_id}. Stored as pending in the database (table: memory_lifecycle).")
+        else:
+            print(f"Background: Conversation turn too short ({len(conversation_turn_text)} chars) for memory extraction. Skipping.")
+    except Exception as e:
+        print(f"🌋 Background: Error during memory extraction and KG insertion for conversation {conversation_id}: {e}")
+        traceback.print_exc()
+
+    # Context compression using breathe from llm_funcs
+    try:
+        if len(messages) > 30: # Use the threshold specified in your request
+            # Directly call breathe for summarization
+            breathe_result = breathe(
+                messages=messages,
+                model=model,
+                provider=provider,
+                npc=npc_object # Pass npc for context if available
+            )
+            compressed_output = breathe_result.get('output', '')
+            
+            if compressed_output:
+                # Save the compressed context as a new system message in conversation_history
+                compressed_message_id = generate_message_id()
+                save_conversation_message(
+                    command_history,
+                    conversation_id,
+                    "system", # Role for compressed context
+                    f"[AUTOMATIC CONTEXT COMPRESSION]: {compressed_output}",
+                    wd=current_path,
+                    model=model, # Use the same model/provider that generated the summary
+                    provider=provider,
+                    npc=npc_name, # Associate with the NPC
+                    team=team_name, # Associate with the team
+                    message_id=compressed_message_id
+                )
+                print(f"💨 Background: Compressed context for conversation {conversation_id} saved as new system message: {compressed_output[:100]}...")
+            else:
+                print(f"Background: Context compression returned no output for conversation {conversation_id}. Skipping saving.")
+        else:
+            print(f"Background: Conversation messages count ({len(messages)}) below threshold for context compression. Skipping.")
+    except Exception as e:
+        print(f"🌋 Background: Error during context compression with breathe for conversation {conversation_id}: {e}")
+        traceback.print_exc()
+
+    print(f"🌋 Background task finished for conversation {conversation_id}!")
+
+
+
+
 
 @app.route("/api/stream", methods=["POST"])
 def stream():
@@ -2579,44 +2892,44 @@ def stream():
             if isinstance(stream_response, str) :
                 print('stream a str and not a gen')
                 chunk_data = {
-                        "id": None, 
-                        "object": None, 
-                        "created": datetime.datetime.now().strftime('YYYY-DD-MM-HHMMSS'), 
+                        "id": None,
+                        "object": None,
+                        "created": datetime.datetime.now().strftime('YYYY-DD-MM-HHMMSS'),
                         "model": model,
                         "choices": [
                             {
-                                "index": 0, 
-                                "delta": 
+                                "index": 0,
+                                "delta":
                                     {
                                         "content": stream_response,
                                         "role": "assistant"
-                                  }, 
+                                  },
                                 "finish_reason": 'done'
                             }
                         ]
                     }
-                yield f"data: {json.dumps(chunk_data)}"
+                yield f"data: {json.dumps(chunk_data)}\n\n"
                 return
             elif isinstance(stream_response, dict) and 'output' in stream_response and isinstance(stream_response.get('output'), str):
-                print('stream a str and not a gen')                
+                print('stream a str and not a gen')
                 chunk_data = {
-                        "id": None, 
-                        "object": None, 
-                        "created": datetime.datetime.now().strftime('YYYY-DD-MM-HHMMSS'), 
+                        "id": None,
+                        "object": None,
+                        "created": datetime.datetime.now().strftime('YYYY-DD-MM-HHMMSS'),
                         "model": model,
                         "choices": [
                             {
-                                "index": 0, 
-                                "delta": 
+                                "index": 0,
+                                "delta":
                                     {
                                         "content": stream_response.get('output') ,
                                         "role": "assistant"
-                                  }, 
+                                  },
                                 "finish_reason": 'done'
                             }
                         ]
                     }
-                yield f"data: {json.dumps(chunk_data)}"
+                yield f"data: {json.dumps(chunk_data)}\n\n"
                 return
             for response_chunk in stream_response.get('response', stream_response.get('output')):
                 with cancellation_lock:
@@ -2644,8 +2957,8 @@ def stream():
                     if chunk_content:
                         complete_response.append(chunk_content)
                     chunk_data = {
-                        "id": None, "object": None, 
-                        "created": response_chunk["created_at"] or datetime.datetime.now(), 
+                        "id": None, "object": None,
+                        "created": response_chunk["created_at"] or datetime.datetime.now(),
                         "model": response_chunk["model"],
                         "choices": [{"index": 0, "delta": {"content": chunk_content, "role": response_chunk["message"]["role"]}, "finish_reason": response_chunk.get("done_reason")}]
                     }
@@ -2679,33 +2992,56 @@ def stream():
             print(f"\nAn exception occurred during streaming for {current_stream_id}: {e}")
             traceback.print_exc()
             interrupted = True
-        
+
         finally:
             print(f"\nStream {current_stream_id} finished. Interrupted: {interrupted}")
             print('\r' + ' ' * dot_count*2 + '\r', end="", flush=True)
 
             final_response_text = ''.join(complete_response)
+
+            # Yield message_stop immediately so the client's stream ends quickly
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
-            
+
+            # Save assistant message to the database
             npc_name_to_save = npc_object.name if npc_object else ''
             save_conversation_message(
-                command_history, 
-                conversation_id, 
-                "assistant", 
+                command_history,
+                conversation_id,
+                "assistant",
                 final_response_text,
-                wd=current_path, 
-                model=model, 
+                wd=current_path,
+                model=model,
                 provider=provider,
-                npc=npc_name_to_save, 
-                team=team, 
+                npc=npc_name_to_save,
+                team=team,
                 message_id=message_id,
             )
+
+            # Start background tasks for memory extraction and context compression
+            # These will run without blocking the main response stream.
+            conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
+            background_thread = threading.Thread(
+                target=_run_stream_post_processing,
+                args=(
+                    conversation_turn_text,
+                    conversation_id,
+                    command_history,
+                    npc_name,
+                    team, # Pass the team variable from the outer scope
+                    current_path,
+                    model,
+                    provider,
+                    npc_object,
+                    messages # Pass messages for context compression
+                )
+            )
+            background_thread.daemon = True # Allow the main program to exit even if this thread is still running
+            background_thread.start()
 
             with cancellation_lock:
                 if current_stream_id in cancellation_flags:
                     del cancellation_flags[current_stream_id]
                     print(f"Cleaned up cancellation flag for stream ID: {current_stream_id}")
-                    
     return Response(event_stream(stream_id), mimetype="text/event-stream")
 
 @app.route('/api/delete_message', methods=['POST'])
@@ -2759,295 +3095,6 @@ def approve_memories():
 
 
 
-@app.route("/api/execute", methods=["POST"])
-def execute():
-    data = request.json
-    
-
-    stream_id = data.get("streamId")
-    if not stream_id:
-        import uuid
-        stream_id = str(uuid.uuid4())
-
-    
-    with cancellation_lock:
-        cancellation_flags[stream_id] = False
-    print(f"Starting execute stream with ID: {stream_id}")
-
-    
-    commandstr = data.get("commandstr")
-    conversation_id = data.get("conversationId")
-    model = data.get("model", 'llama3.2')
-    provider = data.get("provider", 'ollama')
-    if provider is None:
-        provider = available_models.get(model)
-
-        
-    npc_name = data.get("npc", "sibiji")
-    npc_source = data.get("npcSource", "global")
-    team = data.get("team", None)
-    current_path = data.get("currentPath")
-    
-    if current_path:
-        loaded_vars = load_project_env(current_path)
-        print(f"Loaded project env variables for stream request: {list(loaded_vars.keys())}")
-    
-    npc_object = None
-    team_object = None
-    
-    
-    if team:
-        print(team)
-        if hasattr(app, 'registered_teams') and team in app.registered_teams:
-            team_object = app.registered_teams[team]
-            print(f"Using registered team: {team}")
-        else:
-            print(f"Warning: Team {team} not found in registered teams")
-    
-    
-    if npc_name:
-        
-        if team and hasattr(app, 'registered_teams') and team in app.registered_teams:
-            team_object = app.registered_teams[team]
-            print('team', team_object)
-            
-            if hasattr(team_object, 'npcs'):
-                team_npcs = team_object.npcs
-                if isinstance(team_npcs, dict):
-                    if npc_name in team_npcs:
-                        npc_object = team_npcs[npc_name]
-                        print(f"Found NPC {npc_name} in registered team {team}")
-                elif isinstance(team_npcs, list):
-                    for npc in team_npcs:
-                        if hasattr(npc, 'name') and npc.name == npc_name:
-                            npc_object = npc
-                            print(f"Found NPC {npc_name} in registered team {team}")
-                            break
-            
-            if not npc_object and hasattr(team_object, 'forenpc') and hasattr(team_object.forenpc, 'name'):
-                if team_object.forenpc.name == npc_name:
-                    npc_object = team_object.forenpc
-                    print(f"Found NPC {npc_name} as forenpc in team {team}")
-        
-        
-        if not npc_object and hasattr(app, 'registered_npcs') and npc_name in app.registered_npcs:
-            npc_object = app.registered_npcs[npc_name]
-            print(f"Found NPC {npc_name} in registered NPCs")
-        
-        
-        if not npc_object:
-            db_conn = get_db_connection()
-            npc_object = load_npc_by_name_and_source(npc_name, npc_source, db_conn, current_path)
-            
-            if not npc_object and npc_source == 'project':
-                print(f"NPC {npc_name} not found in project directory, trying global...")
-                npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
-                
-            if npc_object:
-                print(f"Successfully loaded NPC {npc_name} from {npc_source} directory")
-            else:
-                print(f"Warning: Could not load NPC {npc_name}")
-
-    attachments = data.get("attachments", [])
-    command_history = CommandHistory(app.config.get('DB_PATH'))
-    images = []
-    attachments_loaded = []
-    
-
-    if attachments:
-        for attachment in attachments:
-            extension = attachment["name"].split(".")[-1]
-            extension_mapped = extension_map.get(extension.upper(), "others")
-            file_path = os.path.expanduser("~/.npcsh/" + extension_mapped + "/" + attachment["name"])
-            if extension_mapped == "images":
-                ImageFile.LOAD_TRUNCATED_IMAGES = True
-                img = Image.open(attachment["path"])
-                img_byte_arr = BytesIO()
-                img.save(img_byte_arr, format="PNG")
-                img_byte_arr.seek(0)
-                img.save(file_path, optimize=True, quality=50)
-                images.append(file_path)
-                attachments_loaded.append({
-                    "name": attachment["name"], "type": extension_mapped,
-                    "data": img_byte_arr.read(), "size": os.path.getsize(file_path)
-                })
-
-    messages = fetch_messages_for_conversation(conversation_id)
-    if len(messages) == 0 and npc_object is not None:
-        messages = [{'role': 'system', 'content': npc_object.get_system_prompt()}]
-    elif len(messages)>0 and messages[0]['role'] != 'system' and npc_object is not None:
-        messages.insert(0, {'role': 'system', 'content': npc_object.get_system_prompt()})
-    elif len(messages) > 0 and npc_object is not None:
-        messages[0]['content'] = npc_object.get_system_prompt()
-    if npc_object is not None and messages and messages[0]['role'] == 'system':
-        messages[0]['content'] = npc_object.get_system_prompt()
-
-    message_id = generate_message_id()
-    save_conversation_message(
-        command_history, conversation_id, "user", commandstr,
-        wd=current_path, model=model, provider=provider, npc=npc_name,
-        team=team, attachments=attachments_loaded, message_id=message_id,
-    )
-    response_gen = check_llm_command(
-        commandstr, messages=messages, images=images, model=model,
-        provider=provider, npc=npc_object, team=team_object, stream=True
-    )
-    print(response_gen)
-    
-    message_id = generate_message_id()
-
-    def event_stream(current_stream_id):
-        complete_response = []
-        dot_count = 0
-        interrupted = False
-        tool_call_data = {"id": None, "function_name": None, "arguments": ""}
-        memory_data = None
-
-        try:
-            for response_chunk in stream_response.get('response', stream_response.get('output')):
-                with cancellation_lock:
-                    if cancellation_flags.get(current_stream_id, False):
-                        print(f"Cancellation flag triggered for {current_stream_id}. Breaking loop.")
-                        interrupted = True
-                        break
-
-                print('.', end="", flush=True)
-                dot_count += 1
-                
-                if "hf.co" in model or provider == 'ollama':
-                    chunk_content = response_chunk["message"]["content"] if "message" in response_chunk and "content" in response_chunk["message"] else ""
-                    if "message" in response_chunk and "tool_calls" in response_chunk["message"]:
-                        for tool_call in response_chunk["message"]["tool_calls"]:
-                            if "id" in tool_call:
-                                tool_call_data["id"] = tool_call["id"]
-                            if "function" in tool_call:
-                                if "name" in tool_call["function"]:
-                                    tool_call_data["function_name"] = tool_call["function"]["name"]
-                                if "arguments" in tool_call["function"]:
-                                    arg_val = tool_call["function"]["arguments"]
-                                    if isinstance(arg_val, dict):
-                                        arg_val = json.dumps(arg_val)
-                                    tool_call_data["arguments"] += arg_val
-                    if chunk_content:
-                        complete_response.append(chunk_content)
-                    chunk_data = {
-                        "id": None, "object": None, "created": response_chunk["created_at"], "model": response_chunk["model"],
-                        "choices": [{"index": 0, "delta": {"content": chunk_content, "role": response_chunk["message"]["role"]}, "finish_reason": response_chunk.get("done_reason")}]
-                    }
-                    yield f"data: {json.dumps(chunk_data)}\n\n"
-                else:
-                    chunk_content = ""
-                    reasoning_content = ""
-                    for choice in response_chunk.choices:
-                        if hasattr(choice.delta, "tool_calls") and choice.delta.tool_calls:
-                            for tool_call in choice.delta.tool_calls:
-                                if tool_call.id:
-                                    tool_call_data["id"] = tool_call.id
-                                if tool_call.function:
-                                    if hasattr(tool_call.function, "name") and tool_call.function.name:
-                                        tool_call_data["function_name"] = tool_call.function.name
-                                    if hasattr(tool_call.function, "arguments") and tool_call.function.arguments:
-                                        tool_call_data["arguments"] += tool_call.function.arguments
-                    for choice in response_chunk.choices:
-                        if hasattr(choice.delta, "reasoning_content"):
-                            reasoning_content += choice.delta.reasoning_content
-                    chunk_content = "".join(choice.delta.content for choice in response_chunk.choices if choice.delta.content is not None)
-                    if chunk_content:
-                        complete_response.append(chunk_content)
-                    chunk_data = {
-                        "id": response_chunk.id, "object": response_chunk.object, "created": response_chunk.created, "model": response_chunk.model,
-                        "choices": [{"index": choice.index, "delta": {"content": choice.delta.content, "role": choice.delta.role, "reasoning_content": reasoning_content if hasattr(choice.delta, "reasoning_content") else None}, "finish_reason": choice.finish_reason} for choice in response_chunk.choices]
-                    }
-                    yield f"data: {json.dumps(chunk_data)}\n\n"
-
-        except Exception as e:
-            print(f"\nAn exception occurred during streaming for {current_stream_id}: {e}")
-            traceback.print_exc()
-            interrupted = True
-        
-        finally:
-            print(f"\nStream {current_stream_id} finished. Interrupted: {interrupted}")
-            print('\r' + ' ' * dot_count*2 + '\r', end="", flush=True)
-
-            final_response_text = ''.join(complete_response)
-            
-            conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
-            
-            try:
-                memory_examples = command_history.get_memory_examples_for_context(
-                    npc=npc_name,
-                    team=team,
-                    directory_path=current_path
-                )
-                
-                memory_context = format_memory_context(memory_examples)
-                
-                facts = get_facts(
-                    conversation_turn_text,
-                    model=npc_object.model if npc_object else model,
-                    provider=npc_object.provider if npc_object else provider,
-                    npc=npc_object,
-                    context=memory_context
-                )
-                
-                if facts:
-                    memories_for_approval = []
-                    for i, fact in enumerate(facts):
-                        memory_id = command_history.add_memory_to_database(
-                            message_id=f"{conversation_id}_{datetime.now().strftime('%H%M%S')}_{i}",
-                            conversation_id=conversation_id,
-                            npc=npc_name or "default",
-                            team=team or "default",
-                            directory_path=current_path or "/",
-                            initial_memory=fact['statement'],
-                            status="pending_approval",
-                            model=npc_object.model if npc_object else model,
-                            provider=npc_object.provider if npc_object else provider
-                        )
-                        
-                        memories_for_approval.append({
-                            "memory_id": memory_id,
-                            "content": fact['statement'],
-                            "context": f"Type: {fact.get('type', 'unknown')}, Source: {fact.get('source_text', '')}",
-                            "npc": npc_name or "default"
-                        })
-                    
-                    memory_data = {
-                        "type": "memory_approval",
-                        "memories": memories_for_approval,
-                        "conversation_id": conversation_id
-                    }
-                    
-            except Exception as e:
-                print(f"Memory generation error: {e}")
-
-            if memory_data:
-                yield f"data: {json.dumps(memory_data)}\n\n"
-
-            yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
-            
-            npc_name_to_save = npc_object.name if npc_object else ''
-            save_conversation_message(
-                command_history, 
-                conversation_id, 
-                "assistant", 
-                final_response_text,
-                wd=current_path, 
-                model=model, 
-                provider=provider,
-                npc=npc_name_to_save, 
-                team=team, 
-                message_id=message_id,
-            )
-
-            with cancellation_lock:
-                if current_stream_id in cancellation_flags:
-                    del cancellation_flags[current_stream_id]
-                    print(f"Cleaned up cancellation flag for stream ID: {current_stream_id}")
-
-
-
-    return Response(event_stream(stream_id), mimetype="text/event-stream")
 
 @app.route("/api/interrupt", methods=["POST"])
 def interrupt_stream():
