@@ -1,7 +1,15 @@
 import os
 import tempfile
 import pandas as pd
-from npcpy.data.load import load_csv, load_json, load_txt, load_excel, load_pdf, load_file_contents
+from npcpy.data.load import (
+    load_audio,
+    load_csv,
+    load_json,
+    load_txt,
+    load_excel,
+    load_pdf,
+    load_file_contents,
+)
 
 
 def test_load_csv():
@@ -45,14 +53,12 @@ def test_load_json():
         with open(json_file, "w") as f:
             json.dump(data, f)
         
-        df = load_json(json_file)
+        data_out = load_json(json_file)
         
-        assert isinstance(df, pd.DataFrame)
-        assert len(df) == 2
-        assert "name" in df.columns
-        assert df.iloc[0]["name"] == "Alice"
+        assert isinstance(data_out, list)
+        assert data_out[0]["name"] == "Alice"
         
-        print(f"Loaded JSON with {len(df)} rows")
+        print(f"Loaded JSON with {len(data_out)} items")
         
     finally:
         import shutil
@@ -70,14 +76,12 @@ def test_load_txt():
         with open(txt_file, "w") as f:
             f.write(test_content)
         
-        df = load_txt(txt_file)
+        text = load_txt(txt_file)
         
-        assert isinstance(df, pd.DataFrame)
-        assert len(df) == 1
-        assert "text" in df.columns
-        assert test_content in df.iloc[0]["text"]
+        assert isinstance(text, str)
+        assert test_content in text
         
-        print(f"Loaded text file with {len(df.iloc[0]['text'])} characters")
+        print(f"Loaded text file with {len(text)} characters")
         
     finally:
         import shutil
@@ -124,7 +128,7 @@ def test_load_file_contents_csv():
         
         assert isinstance(chunks, list)
         assert len(chunks) >= 1
-        assert "Columns:" in chunks[0]  
+        assert "item_0" in chunks[0]
         
         print(f"CSV file processed into {len(chunks)} chunks")
         
@@ -149,6 +153,7 @@ def test_load_file_contents_json():
         
         assert isinstance(chunks, list)
         assert len(chunks) >= 1
+        assert "item_0" in chunks[0]
         
         print(f"JSON file processed into {len(chunks)} chunks")
         
@@ -216,27 +221,25 @@ def test_load_excel():
 def test_load_pdf():
     """Test PDF file loading"""
     try:
-        temp_dir = tempfile.mkdtemp()
-        
-        
-        
-        fake_pdf = os.path.join(temp_dir, "test.pdf")
-        with open(fake_pdf, "w") as f:
-            f.write("fake pdf content")
-        
-        
-        try:
-            df = load_pdf(fake_pdf)
-            print("PDF loading attempted")
-        except Exception as e:
-            print(f"PDF loading failed as expected: {e}")
-        
-    except Exception as e:
-        print(f"PDF test setup failed: {e}")
+        import fitz  # type: ignore
+    except Exception:
+        print("PDF test skipped - fitz not installed")
+        return
+    temp_dir = tempfile.mkdtemp()
+    try:
+        pdf_path = os.path.join(temp_dir, "test.pdf")
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Hello PDF world!")
+        doc.save(pdf_path)
+        doc.close()
+
+        text = load_pdf(pdf_path)
+        assert isinstance(text, str)
+        assert "Hello PDF world" in text
     finally:
         import shutil
-        if 'temp_dir' in locals():
-            shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir)
 
 
 def test_load_file_contents_error_handling():
@@ -259,5 +262,23 @@ def test_extension_map():
     assert extension_map["CSV"] == "documents"
     assert extension_map["PNG"] == "images"
     assert extension_map["MP4"] == "videos"
+    assert extension_map["MP3"] == "audio"
     
     print(f"Extension map contains {len(extension_map)} file types")
+
+
+def test_load_audio_wav(tmp_path):
+    """Ensure audio loader returns text (transcript or fallback) for wav files."""
+    wav_path = tmp_path / "beep.wav"
+    import wave
+    import struct
+
+    with wave.open(str(wav_path), "w") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(struct.pack("<h", 0) * 16000)  # 1 second of silence
+
+    result = load_audio(str(wav_path))
+    assert isinstance(result, str)
+    assert len(result) > 0

@@ -36,7 +36,12 @@ nav:
   - Using npcpy: npcpy.md
     - API:
       - Image: api/image.md
+      - Data Loading: api/data.md
       - LLM Functions: api/llm_funcs.md
+      - Generation: api/gen.md
       - NPC, Team, Jinx: api/npc_compiler.md
       - NPC Sys Env Helpers: api/npc_sysenv.md
+      - Memory & Search: api/memory.md
+      - OCR: api/ocr.md
+      - Tools: api/tools.md
       - Serve: api/serve.md

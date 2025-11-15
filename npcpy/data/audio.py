@@ -175,6 +175,41 @@ def run_transcription(audio_np):
         return None
 
 
+def transcribe_audio_file(file_path: str, language=None) -> str:
+    """
+    File-based transcription helper that prefers the local faster-whisper/whisper
+    setup used elsewhere in this module.
+    """
+    # Try faster-whisper first
+    try:
+        from faster_whisper import WhisperModel  # type: ignore
+        try:
+            import torch  # type: ignore
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            device = "cpu"
+        model = WhisperModel("small", device=device)
+        segments, _ = model.transcribe(file_path, language=language, beam_size=5)
+        text = " ".join(seg.text.strip() for seg in segments if seg.text).strip()
+        if text:
+            return text
+    except Exception:
+        pass
+
+    # Fallback to openai/whisper if available
+    try:
+        import whisper  # type: ignore
+        model = whisper.load_model("small")
+        result = model.transcribe(file_path, language=language)
+        text = result.get("text", "").strip()
+        if text:
+            return text
+    except Exception:
+        pass
+
+    return ""
+
+
 
 def load_history():
     global history
@@ -430,5 +465,4 @@ def process_text_for_tts(text):
     text = re.sub(r"(\w)\.(\w)\.", r"\1 \2 ", text)
     text = re.sub(r"([.!?])(\w)", r"\1 \2", text)
     return text
-
 
