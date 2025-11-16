@@ -443,8 +443,6 @@ def capture():
         return None
 
     return jsonify({"screenshot": screenshot})
-
-
 @app.route("/api/settings/global", methods=["GET", "OPTIONS"])
 def get_global_settings():
     if request.method == "OPTIONS":
@@ -453,22 +451,22 @@ def get_global_settings():
     try:
         npcshrc_path = os.path.expanduser("~/.npcshrc")
 
-        
         global_settings = {
             "model": "llama3.2",
             "provider": "ollama",
             "embedding_model": "nomic-embed-text",
             "embedding_provider": "ollama",
             "search_provider": "perplexity",
-            "NPC_STUDIO_LICENSE_KEY": "",
             "default_folder": os.path.expanduser("~/.npcsh/"),
+            "is_predictive_text_enabled": False, # Default value for the new setting
+            "predictive_text_model": "llama3.2", # Default predictive text model
+            "predictive_text_provider": "ollama", # Default predictive text provider
         }
         global_vars = {}
 
         if os.path.exists(npcshrc_path):
             with open(npcshrc_path, "r") as f:
                 for line in f:
-                    
                     line = line.split("#")[0].strip()
                     if not line:
                         continue
@@ -476,33 +474,35 @@ def get_global_settings():
                     if "=" not in line:
                         continue
 
-                    
                     key, value = line.split("=", 1)
                     key = key.strip()
                     if key.startswith("export "):
                         key = key[7:]
 
-                    
                     value = value.strip()
                     if value.startswith('"') and value.endswith('"'):
                         value = value[1:-1]
                     elif value.startswith("'") and value.endswith("'"):
                         value = value[1:-1]
 
-                    
                     key_mapping = {
                         "NPCSH_MODEL": "model",
                         "NPCSH_PROVIDER": "provider",
                         "NPCSH_EMBEDDING_MODEL": "embedding_model",
                         "NPCSH_EMBEDDING_PROVIDER": "embedding_provider",
                         "NPCSH_SEARCH_PROVIDER": "search_provider",
-                        "NPC_STUDIO_LICENSE_KEY": "NPC_STUDIO_LICENSE_KEY",
                         "NPCSH_STREAM_OUTPUT": "NPCSH_STREAM_OUTPUT",
                         "NPC_STUDIO_DEFAULT_FOLDER": "default_folder",
+                        "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED": "is_predictive_text_enabled", # New mapping
+                        "NPC_STUDIO_PREDICTIVE_TEXT_MODEL": "predictive_text_model",         # New mapping
+                        "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER": "predictive_text_provider",   # New mapping
                     }
 
                     if key in key_mapping:
-                        global_settings[key_mapping[key]] = value
+                        if key == "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED":
+                            global_settings[key_mapping[key]] = value.lower() == 'true'
+                        else:
+                            global_settings[key_mapping[key]] = value
                     else:
                         global_vars[key] = value
 
@@ -519,6 +519,7 @@ def get_global_settings():
     except Exception as e:
         print(f"Error in get_global_settings: {str(e)}")
         return jsonify({"error": str(e)}), 500
+    
 def _get_jinx_files_recursively(directory):
     """Helper to recursively find all .jinx file paths."""
     jinx_paths = []
@@ -774,8 +775,6 @@ def execute_jinx():
         return Response(final_output_string, mimetype="text/html")
     else:
         return Response(final_output_string, mimetype="text/plain")
-    
-
 @app.route("/api/settings/global", methods=["POST", "OPTIONS"])
 def save_global_settings():
     if request.method == "OPTIONS":
@@ -791,35 +790,41 @@ def save_global_settings():
             "embedding_model": "NPCSH_EMBEDDING_MODEL",
             "embedding_provider": "NPCSH_EMBEDDING_PROVIDER",
             "search_provider": "NPCSH_SEARCH_PROVIDER",
-            "NPC_STUDIO_LICENSE_KEY": "NPC_STUDIO_LICENSE_KEY",
             "NPCSH_STREAM_OUTPUT": "NPCSH_STREAM_OUTPUT",
             "default_folder": "NPC_STUDIO_DEFAULT_FOLDER",
+            "is_predictive_text_enabled": "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED", # New mapping
+            "predictive_text_model": "NPC_STUDIO_PREDICTIVE_TEXT_MODEL",         # New mapping
+            "predictive_text_provider": "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER",   # New mapping
         }
 
         os.makedirs(os.path.dirname(npcshrc_path), exist_ok=True)
         print(data)
         with open(npcshrc_path, "w") as f:
-            
-            for key, value in data.get("global_settings", {}).items():
-                if key in key_mapping and value:
-                    
-                    if " " in str(value):
-                        value = f'"{value}"'
-                    f.write(f"export {key_mapping[key]}={value}\n")
 
-            
+            for key, value in data.get("global_settings", {}).items():
+                if key in key_mapping and value is not None: # Check for None explicitly
+                    # Handle boolean conversion for saving
+                    if key == "is_predictive_text_enabled":
+                        value_to_write = str(value).upper()
+                    elif " " in str(value):
+                        value_to_write = f'"{value}"'
+                    else:
+                        value_to_write = str(value)
+                    f.write(f"export {key_mapping[key]}={value_to_write}\n")
+
             for key, value in data.get("global_vars", {}).items():
-                if key and value:
+                if key and value is not None: # Check for None explicitly
                     if " " in str(value):
-                        value = f'"{value}"'
-                    f.write(f"export {key}={value}\n")
+                        value_to_write = f'"{value}"'
+                    else:
+                        value_to_write = str(value)
+                    f.write(f"export {key}={value_to_write}\n")
 
         return jsonify({"message": "Global settings saved successfully", "error": None})
 
     except Exception as e:
         print(f"Error in save_global_settings: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/settings/project", methods=["GET", "OPTIONS"])  
 def get_project_settings():
     if request.method == "OPTIONS":
@@ -2637,6 +2642,114 @@ def _run_stream_post_processing(
 
 
 
+@app.route("/api/text_predict", methods=["POST"])
+def text_predict():
+    data = request.json
+
+    stream_id = data.get("streamId")
+    if not stream_id:
+        stream_id = str(uuid.uuid4())
+
+    with cancellation_lock:
+        cancellation_flags[stream_id] = False
+
+    print(f"Starting text prediction stream with ID: {stream_id}")
+    print('data')
+
+
+    text_content = data.get("text_content", "")
+    cursor_position = data.get("cursor_position", len(text_content))
+    current_path = data.get("currentPath")
+    model = data.get("model")
+    provider = data.get("provider")
+    context_type = data.get("context_type", "general") # e.g., 'code', 'chat', 'general'
+    file_path = data.get("file_path") # Optional: for code context
+
+    if current_path:
+        load_project_env(current_path)
+
+    text_before_cursor = text_content[:cursor_position]
+
+
+    if context_type == 'code':
+        prompt_for_llm = f"You are an AI code completion assistant. Your task is to complete the provided code snippet.\nYou MUST ONLY output the code that directly completes the snippet.\nDO NOT include any explanations, comments, or additional text.\nDO NOT wrap the completion in markdown code blocks.\n\nHere is the code context where the completion should occur (file: {file_path or 'unknown'}):\n\n{text_before_cursor}\n\nPlease provide the completion starting from the end of the last line shown.\n"
+        system_prompt = "You are an AI code completion assistant. Only provide code. Do not add explanations or any other text."
+    elif context_type == 'chat':
+        prompt_for_llm = f"You are an AI chat assistant. Your task is to provide a natural and helpful completion to the user's ongoing message.\nYou MUST ONLY output the text that directly completes the message.\nDO NOT include any explanations or additional text.\n\nHere is the message context where the completion should occur:\n\n{text_before_cursor}\n\nPlease provide the completion starting from the end of the last line shown.\n"
+        system_prompt = "You are an AI chat assistant. Only provide natural language completion. Do not add explanations or any other text."
+    else: # general text prediction
+        prompt_for_llm = f"You are an AI text completion assistant. Your task is to provide a natural and helpful completion to the user's ongoing text.\nYou MUST ONLY output the text that directly completes the snippet.\nDO NOT include any explanations or additional text.\n\nHere is the text context where the completion should occur:\n\n{text_before_cursor}\n\nPlease provide the completion starting from the end of the last line shown.\n"
+        system_prompt = "You are an AI text completion assistant. Only provide natural language completion. Do not add explanations or any other text."
+
+
+    npc_object = None # For prediction, we don't necessarily use a specific NPC
+
+    messages_for_llm = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt_for_llm}
+    ]
+
+    def event_stream_text_predict(current_stream_id):
+        complete_prediction = []
+        try:
+            stream_response_generator = get_llm_response(
+                prompt_for_llm,
+                messages=messages_for_llm,
+                model=model,
+                provider=provider,
+                npc=npc_object,
+                stream=True,
+            )
+
+            # get_llm_response returns a dict with 'response' as a generator when stream=True
+            if isinstance(stream_response_generator, dict) and 'response' in stream_response_generator:
+                stream_generator = stream_response_generator['response']
+            else:
+                # Fallback for non-streaming LLM responses or errors
+                output_content = ""
+                if isinstance(stream_response_generator, dict) and 'output' in stream_response_generator:
+                    output_content = stream_response_generator['output']
+                elif isinstance(stream_response_generator, str):
+                    output_content = stream_response_generator
+
+                yield f"data: {json.dumps({'choices': [{'delta': {'content': output_content}}]})}\n\n"
+                yield f"data: [DONE]\n\n"
+                return
+
+
+            for response_chunk in stream_generator:
+                with cancellation_lock:
+                    if cancellation_flags.get(current_stream_id, False):
+                        print(f"Cancellation flag triggered for {current_stream_id}. Breaking loop.")
+                        break
+
+                chunk_content = ""
+                # Handle different LLM API response formats
+                if "hf.co" in model or (provider == 'ollama' and 'gpt-oss' not in model): # Heuristic for Ollama/HF models
+                    chunk_content = response_chunk["message"]["content"] if "message" in response_chunk and "content" in response_chunk["message"] else ""
+                else: # Assume OpenAI-like streaming format
+                    chunk_content = "".join(choice.delta.content for choice in response_chunk.choices if choice.delta.content is not None)
+
+                print(chunk_content, end='')
+
+                if chunk_content:
+                    complete_prediction.append(chunk_content)
+                    yield f"data: {json.dumps({'choices': [{'delta': {'content': chunk_content}}]})}\n\n"
+
+        except Exception as e:
+            print(f"\nAn exception occurred during text prediction streaming for {current_stream_id}: {e}")
+            traceback.print_exc()
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        finally:
+            print(f"\nText prediction stream {current_stream_id} finished.")
+            yield f"data: [DONE]\n\n" # Signal end of stream
+            with cancellation_lock:
+                if current_stream_id in cancellation_flags:
+                    del cancellation_flags[current_stream_id]
+                    print(f"Cleaned up cancellation flag for stream ID: {current_stream_id}")
+
+    return Response(event_stream_text_predict(stream_id), mimetype="text/event-stream")
 
 @app.route("/api/stream", methods=["POST"])
 def stream():
