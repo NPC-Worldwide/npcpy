@@ -86,6 +86,82 @@ cancellation_flags = {}
 cancellation_lock = threading.Lock()
 
 
+class MCPServerManager:
+    """
+    Simple in-process tracker for launching/stopping MCP servers.
+    Currently uses subprocess.Popen to start a Python stdio MCP server script.
+    """
+
+    def __init__(self):
+        self._procs = {}
+        self._lock = threading.Lock()
+
+    def start(self, server_path: str):
+        server_path = os.path.expanduser(server_path)
+        abs_path = os.path.abspath(server_path)
+        if not os.path.exists(abs_path):
+            raise FileNotFoundError(f"MCP server script not found at {abs_path}")
+
+        with self._lock:
+            existing = self._procs.get(abs_path)
+            if existing and existing.poll() is None:
+                return {"status": "running", "pid": existing.pid, "serverPath": abs_path}
+
+            cmd = [sys.executable, abs_path]
+            proc = subprocess.Popen(
+                cmd,
+                cwd=os.path.dirname(abs_path) or ".",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self._procs[abs_path] = proc
+            return {"status": "started", "pid": proc.pid, "serverPath": abs_path}
+
+    def stop(self, server_path: str):
+        server_path = os.path.expanduser(server_path)
+        abs_path = os.path.abspath(server_path)
+        with self._lock:
+            proc = self._procs.get(abs_path)
+            if not proc:
+                return {"status": "not_found", "serverPath": abs_path}
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            del self._procs[abs_path]
+            return {"status": "stopped", "serverPath": abs_path}
+
+    def status(self, server_path: str):
+        server_path = os.path.expanduser(server_path)
+        abs_path = os.path.abspath(server_path)
+        with self._lock:
+            proc = self._procs.get(abs_path)
+            if not proc:
+                return {"status": "not_started", "serverPath": abs_path}
+            running = proc.poll() is None
+            return {
+                "status": "running" if running else "exited",
+                "serverPath": abs_path,
+                "pid": proc.pid,
+                "returncode": None if running else proc.returncode,
+            }
+
+    def running(self):
+        with self._lock:
+            return {
+                path: {
+                    "pid": proc.pid,
+                    "status": "running" if proc.poll() is None else "exited",
+                    "returncode": None if proc.poll() is None else proc.returncode,
+                }
+                for path, proc in self._procs.items()
+            }
+
+
+mcp_server_manager = MCPServerManager()
+
 def get_project_npc_directory(current_path=None):
     """
     Get the project NPC directory based on the current path
@@ -187,6 +263,34 @@ def get_db_session():
     engine = get_db_connection()
     Session = sessionmaker(bind=engine)
     return Session()
+
+
+def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=False):
+    """
+    Resolve an MCP server path using npcsh.corca's helper when available.
+    Falls back to ~/.npcsh/npc_team/mcp_server.py.
+    """
+    if explicit_path:
+        abs_path = os.path.abspath(os.path.expanduser(explicit_path))
+        if os.path.exists(abs_path):
+            return abs_path
+    try:
+        from npcsh.corca import _resolve_and_copy_mcp_server_path
+        resolved = _resolve_and_copy_mcp_server_path(
+            explicit_path=explicit_path,
+            current_path=current_path,
+            team_ctx_mcp_servers=None,
+            interactive=False,
+            auto_copy_bypass=True,
+            force_global=force_global,
+        )
+        if resolved:
+            return os.path.abspath(resolved)
+    except Exception as e:
+        print(f"resolve_mcp_server_path: fallback path due to error: {e}")
+    
+    fallback = os.path.expanduser("~/.npcsh/npc_team/mcp_server.py")
+    return fallback
 
 extension_map = {
     "PNG": "images",
@@ -2492,14 +2596,24 @@ def get_mcp_tools():
     It will try to use an existing client from corca_states if available and matching,
     otherwise it creates a temporary client.
     """
-    server_path = request.args.get("mcpServerPath")
+    raw_server_path = request.args.get("mcpServerPath")
+    current_path_arg = request.args.get("currentPath")
     conversation_id = request.args.get("conversationId")
     npc_name = request.args.get("npc")
+    selected_filter = request.args.get("selected", "")
+    selected_names = [s.strip() for s in selected_filter.split(",") if s.strip()]
     
-    if not server_path:
+    if not raw_server_path:
         return jsonify({"error": "mcpServerPath parameter is required."}), 400
 
-    
+    # Normalize/expand the provided path so cwd/tilde don't break imports
+    resolved_path = resolve_mcp_server_path(
+        current_path=current_path_arg,
+        explicit_path=raw_server_path,
+        force_global=False
+    )
+    server_path = os.path.abspath(os.path.expanduser(resolved_path))
+
     try:
         from npcsh.corca import MCPClientNPC
     except ImportError:
@@ -2516,13 +2630,19 @@ def get_mcp_tools():
                    and existing_corca_state.mcp_client.server_script_path == server_path:
                     print(f"Using existing MCP client for {state_key} to fetch tools.")
                     temp_mcp_client = existing_corca_state.mcp_client
-                    return jsonify({"tools": temp_mcp_client.available_tools_llm, "error": None})
+                    tools = temp_mcp_client.available_tools_llm
+                    if selected_names:
+                        tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
+                    return jsonify({"tools": tools, "error": None})
 
         
         print(f"Creating a temporary MCP client to fetch tools for {server_path}.")
         temp_mcp_client = MCPClientNPC()
         if temp_mcp_client.connect_sync(server_path):
-            return jsonify({"tools": temp_mcp_client.available_tools_llm, "error": None})
+            tools = temp_mcp_client.available_tools_llm
+            if selected_names:
+                tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
+            return jsonify({"tools": tools, "error": None})
         else:
             return jsonify({"error": f"Failed to connect to MCP server at {server_path}."}), 500
     except FileNotFoundError as e:
@@ -2539,6 +2659,64 @@ def get_mcp_tools():
         ):
             print(f"Disconnecting temporary MCP client for {server_path}.")
             temp_mcp_client.disconnect_sync()
+
+
+@app.route("/api/mcp/server/resolve", methods=["GET"])
+def api_mcp_resolve():
+    current_path = request.args.get("currentPath")
+    explicit = request.args.get("serverPath")
+    try:
+        resolved = resolve_mcp_server_path(current_path=current_path, explicit_path=explicit)
+        return jsonify({"serverPath": resolved, "error": None})
+    except Exception as e:
+        return jsonify({"serverPath": None, "error": str(e)}), 500
+
+
+@app.route("/api/mcp/server/start", methods=["POST"])
+def api_mcp_start():
+    data = request.get_json() or {}
+    current_path = data.get("currentPath")
+    explicit = data.get("serverPath")
+    try:
+        server_path = resolve_mcp_server_path(current_path=current_path, explicit_path=explicit)
+        result = mcp_server_manager.start(server_path)
+        return jsonify({**result, "error": None})
+    except Exception as e:
+        print(f"Error starting MCP server: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/mcp/server/stop", methods=["POST"])
+def api_mcp_stop():
+    data = request.get_json() or {}
+    explicit = data.get("serverPath")
+    if not explicit:
+        return jsonify({"error": "serverPath is required to stop a server."}), 400
+    try:
+        result = mcp_server_manager.stop(explicit)
+        return jsonify({**result, "error": None})
+    except Exception as e:
+        print(f"Error stopping MCP server: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/mcp/server/status", methods=["GET"])
+def api_mcp_status():
+    explicit = request.args.get("serverPath")
+    current_path = request.args.get("currentPath")
+    try:
+        if explicit:
+            result = mcp_server_manager.status(explicit)
+        else:
+            resolved = resolve_mcp_server_path(current_path=current_path, explicit_path=explicit)
+            result = mcp_server_manager.status(resolved)
+        return jsonify({**result, "running": result.get("status") == "running", "all": mcp_server_manager.running(), "error": None})
+    except Exception as e:
+        print(f"Error checking MCP server status: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/image_models", methods=["GET"]) 
@@ -2945,7 +3123,9 @@ def stream():
         if 'tools' in tool_args and tool_args['tools']:
             tool_args['tool_choice'] = {"type": "auto"}
     
-    
+    # Default stream response so closures below always have a value
+    stream_response = {"output": "", "messages": messages}
+
     exe_mode = data.get('executionMode','chat')
     
     if exe_mode == 'chat':
@@ -3020,23 +3200,18 @@ def stream():
         messages = state.messages
         
     elif exe_mode == 'corca':
-        
         try:
             from npcsh.corca import execute_command_corca, create_corca_state_and_mcp_client, MCPClientNPC
             from npcsh._state import initial_state as state
         except ImportError:
-            
             print("ERROR: npcsh.corca or MCPClientNPC not found. Corca mode is disabled.", file=sys.stderr)
-            state = None 
+            state = None
             stream_response = {"output": "Corca mode is not available due to missing dependencies.", "messages": messages}
-            
-        
-        if state is not None: 
-            
+
+        if state is not None:
             mcp_server_path_from_request = data.get("mcpServerPath")
             selected_mcp_tools_from_request = data.get("selectedMcpTools", [])
-            
-            
+
             effective_mcp_server_path = mcp_server_path_from_request
             if not effective_mcp_server_path and team_object and hasattr(team_object, 'team_ctx') and team_object.team_ctx:
                 mcp_servers_list = team_object.team_ctx.get('mcp_servers', [])
@@ -3044,18 +3219,19 @@ def stream():
                     first_server_obj = next((s for s in mcp_servers_list if isinstance(s, dict) and 'value' in s), None)
                     if first_server_obj:
                         effective_mcp_server_path = first_server_obj['value']
-                elif isinstance(team_object.team_ctx.get('mcp_server'), str): 
+                elif isinstance(team_object.team_ctx.get('mcp_server'), str):
                     effective_mcp_server_path = team_object.team_ctx.get('mcp_server')
 
-            
+            if effective_mcp_server_path:
+                effective_mcp_server_path = os.path.abspath(os.path.expanduser(effective_mcp_server_path))
+
             if not hasattr(app, 'corca_states'):
                 app.corca_states = {}
-            
+
             state_key = f"{conversation_id}_{npc_name or 'default'}"
-            
-            corca_state = None
-            if state_key not in app.corca_states:
-                
+            corca_state = app.corca_states.get(state_key)
+
+            if corca_state is None:
                 corca_state = create_corca_state_and_mcp_client(
                     conversation_id=conversation_id,
                     command_history=command_history,
@@ -3066,21 +3242,21 @@ def stream():
                 )
                 app.corca_states[state_key] = corca_state
             else:
-                corca_state = app.corca_states[state_key]
                 corca_state.npc = npc_object
                 corca_state.team = team_object
                 corca_state.current_path = current_path
                 corca_state.messages = messages
                 corca_state.command_history = command_history
 
-                
                 current_mcp_client_path = getattr(corca_state.mcp_client, 'server_script_path', None)
+                if current_mcp_client_path:
+                    current_mcp_client_path = os.path.abspath(os.path.expanduser(current_mcp_client_path))
 
                 if effective_mcp_server_path != current_mcp_client_path:
                     print(f"MCP server path changed/updated for {state_key}. Disconnecting old client (if any) and reconnecting to {effective_mcp_server_path or 'None'}.")
                     if corca_state.mcp_client and corca_state.mcp_client.session:
                         corca_state.mcp_client.disconnect_sync()
-                        corca_state.mcp_client = None 
+                        corca_state.mcp_client = None
 
                     if effective_mcp_server_path:
                         new_mcp_client = MCPClientNPC()
@@ -3090,20 +3266,19 @@ def stream():
                         else:
                             print(f"Failed to reconnect MCP client for {state_key} to {effective_mcp_server_path}. Corca will have no tools.")
                             corca_state.mcp_client = None
-                    
-                
-            
+
             state, stream_response = execute_command_corca(
                 commandstr,
                 corca_state,
                 command_history,
-                selected_mcp_tools_names=selected_mcp_tools_from_request 
+                selected_mcp_tools_names=selected_mcp_tools_from_request
             )
-            
-            
-            app.corca_states[state_key] = state
-            messages = state.messages 
 
+            app.corca_states[state_key] = state
+            messages = state.messages
+
+    else:
+        stream_response = {"output": f"Unsupported execution mode: {exe_mode}", "messages": messages}
 
     user_message_filled = ''
 

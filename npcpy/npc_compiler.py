@@ -20,7 +20,8 @@ from sqlalchemy import create_engine, text
 import npcpy as npy 
 from npcpy.llm_funcs import DEFAULT_ACTION_SPACE
 from npcpy.tools import auto_tools
-
+import math 
+import random
 from npcpy.npc_sysenv import (
     ensure_dirs_exist, 
     init_db_tables,
@@ -259,9 +260,10 @@ class Jinx:
             self._load_from_data(jinx_data)
         else:
             raise ValueError("Either jinx_data or jinx_path must be provided")
-            
+        
+        # Keep a copy for macro expansion, but retain the executable steps by default
         self._raw_steps = list(self.steps)
-        self.steps = []
+        self.steps = list(self._raw_steps)
     def _load_from_file(self, path):
         jinx_data = load_yaml_file(path)
         if not jinx_data:
@@ -452,6 +454,10 @@ class Jinx:
             "__builtins__": __builtins__,
             "npc": active_npc,
             "context": context,
+            "math": math, 
+            "random": random, 
+            "datetime": datetime,
+            "Image": Image,
             "pd": pd,
             "plt": plt,
             "sys": sys, 
