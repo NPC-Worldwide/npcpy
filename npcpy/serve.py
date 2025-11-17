@@ -3199,7 +3199,7 @@ def stream():
         )
         messages = state.messages
         
-    elif exe_mode == 'corca':
+    elif exe_mode in ('corca', 'tool_agent'):
         try:
             from npcsh.corca import execute_command_corca, create_corca_state_and_mcp_client, MCPClientNPC
             from npcsh._state import initial_state as state
