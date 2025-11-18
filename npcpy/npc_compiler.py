@@ -619,6 +619,35 @@ def load_jinxs_from_directory(directory):
                 
     return jinxs
 
+def jinx_to_tool_def(jinx_obj: 'Jinx') -> Dict[str, Any]:
+    """Convert a Jinx instance into an MCP/LLM-compatible tool schema definition."""
+    properties: Dict[str, Any] = {}
+    required: List[str] = []
+    for inp in jinx_obj.inputs:
+        if isinstance(inp, str):
+            properties[inp] = {"type": "string"}
+            required.append(inp)
+        elif isinstance(inp, dict):
+            name = list(inp.keys())[0]
+            properties[name] = {"type": "string", "default": inp.get(name, "")}
+            required.append(name)
+    return {
+        "type": "function",
+        "function": {
+            "name": jinx_obj.jinx_name,
+            "description": jinx_obj.description or f"Jinx: {jinx_obj.jinx_name}",
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required
+            }
+        }
+    }
+
+def build_jinx_tool_catalog(jinxs: Dict[str, 'Jinx']) -> Dict[str, Dict[str, Any]]:
+    """Helper to build a name->tool_def catalog from a dict of Jinx objects."""
+    return {name: jinx_to_tool_def(jinx_obj) for name, jinx_obj in jinxs.items()}
+
 def get_npc_action_space(npc=None, team=None):
     """Get action space for NPC including memory CRUD and core capabilities"""
     actions = DEFAULT_ACTION_SPACE.copy()
@@ -851,6 +880,8 @@ class NPC:
             self.tools_schema = []
         self.plain_system_message = plain_system_message
         self.use_global_jinxs = use_global_jinxs
+        self.jinx_tool_catalog: Dict[str, Dict[str, Any]] = {}
+        self.mcp_servers = []
         
         self.memory_length = 20
         self.memory_strategy = 'recent'
@@ -886,20 +917,20 @@ class NPC:
         # If jinxs are explicitly provided *to the NPC* during its standalone creation, load them.
         # This is for NPCs created *outside* a team context initially.
         if jinxs and jinxs != "*": 
-             for jinx_item in jinxs:
-                 if isinstance(jinx_item, Jinx):
-                     self.jinxs_dict[jinx_item.jinx_name] = jinx_item
-                 elif isinstance(jinx_item, dict):
-                     jinx_obj = Jinx(jinx_data=jinx_item)
-                     self.jinxs_dict[jinx_obj.jinx_name] = jinx_obj
-                 elif isinstance(jinx_item, str):
-                     # Try to load from NPC's own directory first
-                     jinx_path = find_file_path(jinx_item, [self.npc_jinxs_directory], suffix=".jinx")
-                     if jinx_path:
-                         jinx_obj = Jinx(jinx_path=jinx_path)
-                         self.jinxs_dict[jinx_obj.jinx_name] = jinx_obj
-                     else:
-                         print(f"Warning: Jinx '{jinx_item}' not found for NPC '{self.name}' during initial load.")
+            for jinx_item in jinxs:
+                if isinstance(jinx_item, Jinx):
+                    self.jinxs_dict[jinx_item.jinx_name] = jinx_item
+                elif isinstance(jinx_item, dict):
+                    jinx_obj = Jinx(jinx_data=jinx_item)
+                    self.jinxs_dict[jinx_obj.jinx_name] = jinx_obj
+                elif isinstance(jinx_item, str):
+                    # Try to load from NPC's own directory first
+                    jinx_path = find_file_path(jinx_item, [self.npc_jinxs_directory], suffix=".jinx")
+                    if jinx_path:
+                        jinx_obj = Jinx(jinx_path=jinx_path)
+                        self.jinxs_dict[jinx_obj.jinx_name] = jinx_obj
+                    else:
+                        print(f"Warning: Jinx '{jinx_item}' not found for NPC '{self.name}' during initial load.")
         
         self.shared_context = {
             "dataframes": {},
@@ -977,7 +1008,8 @@ class NPC:
                 except Exception as e:
                     print(f"Error performing first-pass rendering for NPC Jinx '{raw_npc_jinx.jinx_name}': {e}")
         
-        print(f"NPC {self.name} loaded {len(self.jinxs_dict)} jinxs.")
+        self.jinx_tool_catalog = build_jinx_tool_catalog(self.jinxs_dict)
+        print(f"NPC {self.name} loaded {len(self.jinxs_dict)} jinxs and built catalog with {len(self.jinx_tool_catalog)} tools.")
 
     def _load_npc_kg(self):
         """Load knowledge graph data for this NPC from database"""
@@ -2004,6 +2036,7 @@ class Team:
         self.sub_teams: Dict[str, 'Team'] = {}
         self.jinxs_dict: Dict[str, 'Jinx'] = {} # This will store first-pass rendered Jinx objects
         self._raw_jinxs_list: List['Jinx'] = [] # Temporary storage for raw Team-level Jinx objects
+        self.jinx_tool_catalog: Dict[str, Dict[str, Any]] = {}  # Jinx-derived tool defs ready for MCP/LLM
         
         self.jinja_env_for_first_pass = Environment(undefined=SilentUndefined) # Env for macro expansion
 
@@ -2059,6 +2092,8 @@ class Team:
 
         # Perform first-pass rendering for team-level jinxs
         self._perform_first_pass_jinx_rendering()
+        self.jinx_tool_catalog = build_jinx_tool_catalog(self.jinxs_dict)
+        print(f"[TEAM] Built Jinx tool catalog with {len(self.jinx_tool_catalog)} entries for team {self.name}")
 
         # Now, initialize jinxs for all NPCs, as team-level jinxs are ready
         for npc_obj in self.npcs.values():
@@ -2236,8 +2271,6 @@ class Team:
                 self.jinxs_dict[raw_jinx.jinx_name] = raw_jinx # Store the first-pass rendered Jinx
             except Exception as e:
                 print(f"Error performing first-pass rendering for Jinx '{raw_jinx.jinx_name}': {e}")
-        
-        self._raw_jinxs_list = [] # Clear temporary storage
 
 
     def update_context(self, messages: list):

@@ -9,6 +9,9 @@ import traceback
 import glob
 import re
 import time
+import asyncio
+from typing import Optional, List, Dict, Callable, Any
+from contextlib import AsyncExitStack
 
 import io
 from flask_cors import CORS
@@ -18,6 +21,8 @@ import json
 from pathlib import Path
 import yaml
 from dotenv import load_dotenv
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from PIL import Image
 from PIL import ImageFile
@@ -62,14 +67,12 @@ from npcpy.memory.command_history import (
     save_conversation_message,
     generate_message_id,
 )
-from npcpy.npc_compiler import  Jinx, NPC, Team 
+from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxs_from_directory, build_jinx_tool_catalog
 
 from npcpy.llm_funcs import (
     get_llm_response, check_llm_command
 )
-from npcpy.npc_compiler import NPC
-import base64
-
+from termcolor import cprint
 from npcpy.tools import auto_tools
 
 import json
@@ -86,6 +89,159 @@ cancellation_flags = {}
 cancellation_lock = threading.Lock()
 
 
+# Minimal MCP client (inlined from npcsh corca to avoid corca import)
+class MCPClientNPC:
+    def __init__(self, debug: bool = True):
+        self.debug = debug
+        self.session: Optional[ClientSession] = None
+        try:
+            self._loop = asyncio.get_event_loop()
+            if self._loop.is_closed():
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
+        except RuntimeError:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+        self._exit_stack = self._loop.run_until_complete(AsyncExitStack().__aenter__())
+        self.available_tools_llm: List[Dict[str, Any]] = []
+        self.tool_map: Dict[str, Callable] = {}
+        self.server_script_path: Optional[str] = None
+
+    def _log(self, message: str, color: str = "cyan") -> None:
+        if self.debug:
+            cprint(f"[MCP Client] {message}", color, file=sys.stderr)
+
+    async def _connect_async(self, server_script_path: str) -> None:
+        self._log(f"Attempting to connect to MCP server: {server_script_path}")
+        self.server_script_path = server_script_path
+        abs_path = os.path.abspath(server_script_path)
+        if not os.path.exists(abs_path):
+            raise FileNotFoundError(f"MCP server script not found: {abs_path}")
+
+        if abs_path.endswith('.py'):
+            cmd_parts = [sys.executable, abs_path]
+        elif os.access(abs_path, os.X_OK):
+            cmd_parts = [abs_path]
+        else:
+            raise ValueError(f"Unsupported MCP server script type or not executable: {abs_path}")
+
+        server_params = StdioServerParameters(
+            command=cmd_parts[0],
+            args=[abs_path],
+            env=os.environ.copy(),
+            cwd=os.path.dirname(abs_path) or "."
+        )
+        if self.session:
+            await self._exit_stack.aclose()
+
+        self._exit_stack = AsyncExitStack()
+
+        stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
+        self.session = await self._exit_stack.enter_async_context(ClientSession(*stdio_transport))
+        await self.session.initialize()
+
+        response = await self.session.list_tools()
+        self.available_tools_llm = []
+        self.tool_map = {}
+
+        if response.tools:
+            for mcp_tool in response.tools:
+                tool_def = {
+                    "type": "function",
+                    "function": {
+                        "name": mcp_tool.name,
+                        "description": mcp_tool.description or f"MCP tool: {mcp_tool.name}",
+                        "parameters": getattr(mcp_tool, "inputSchema", {"type": "object", "properties": {}})
+                    }
+                }
+                self.available_tools_llm.append(tool_def)
+
+                def make_tool_func(tool_name_closure):
+                    async def tool_func(**kwargs):
+                        if not self.session:
+                            return {"error": "No MCP session"}
+                        self._log(f"About to call MCP tool {tool_name_closure}")
+                        try:
+                            cleaned_kwargs = {k: (None if v == 'None' else v) for k, v in kwargs.items()}
+                            result = await asyncio.wait_for(
+                                self.session.call_tool(tool_name_closure, cleaned_kwargs),
+                                timeout=30.0
+                            )
+                            self._log(f"MCP tool {tool_name_closure} returned: {type(result)}")
+                            return result
+                        except asyncio.TimeoutError:
+                            self._log(f"Tool {tool_name_closure} timed out after 30 seconds", "red")
+                            return {"error": f"Tool {tool_name_closure} timed out"}
+                        except Exception as e:
+                            self._log(f"Tool {tool_name_closure} error: {e}", "red")
+                            return {"error": str(e)}
+
+                    def sync_wrapper(**kwargs):
+                        self._log(f"Sync wrapper called for {tool_name_closure}")
+                        return self._loop.run_until_complete(tool_func(**kwargs))
+
+                    return sync_wrapper
+
+                self.tool_map[mcp_tool.name] = make_tool_func(mcp_tool.name)
+        tool_names = list(self.tool_map.keys())
+        self._log(f"Connection successful. Tools: {', '.join(tool_names) if tool_names else 'None'}")
+
+    def connect_sync(self, server_script_path: str) -> bool:
+        loop = self._loop
+        if loop.is_closed():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            loop = self._loop
+        try:
+            loop.run_until_complete(self._connect_async(server_script_path))
+            return True
+        except Exception as e:
+            cprint(f"MCP connection failed: {e}", "red", file=sys.stderr)
+            return False
+
+    def disconnect_sync(self):
+        if self.session:
+            self._log("Disconnecting MCP session.")
+            loop = self._loop
+            if not loop.is_closed():
+                try:
+                    async def close_session():
+                        await self.session.close()
+                        await self._exit_stack.aclose()
+                    loop.run_until_complete(close_session())
+                except RuntimeError:
+                    pass
+                except Exception as e:
+                    print(f"Error during MCP client disconnect: {e}", file=sys.stderr)
+            self.session = None
+            self._exit_stack = None
+
+
+def get_llm_response_with_handling(prompt, npc, messages, tools, stream, team, context=None):
+    """Unified LLM response with basic exception handling (inlined from corca to avoid that dependency)."""
+    try:
+        return get_llm_response(
+            prompt=prompt,
+            npc=npc,
+            messages=messages,
+            tools=tools,
+            auto_process_tool_calls=False,
+            stream=stream,
+            team=team,
+            context=context
+        )
+    except Exception:
+        # Fallback retry without context compression logic to keep it simple here.
+        return get_llm_response(
+            prompt=prompt,
+            npc=npc,
+            messages=messages,
+            tools=tools,
+            auto_process_tool_calls=False,
+            stream=stream,
+            team=team,
+            context=context
+        )
 class MCPServerManager:
     """
     Simple in-process tracker for launching/stopping MCP servers.
@@ -2488,11 +2644,13 @@ def generate_images():
                     if os.path.exists(image_path):
                         try:
                             pil_img = Image.open(image_path)
+                            pil_img = pil_img.convert("RGB")
+                            pil_img.thumbnail((1024, 1024))
                             input_images.append(pil_img)
                             
-                            
-                            with open(image_path, 'rb') as f:
-                                img_data = f.read()
+                            compressed_bytes = BytesIO()
+                            pil_img.save(compressed_bytes, format="JPEG", quality=85, optimize=True)
+                            img_data = compressed_bytes.getvalue()
                             attachments_loaded.append({
                                 "name": os.path.basename(image_path),
                                 "type": "images",
@@ -2620,6 +2778,7 @@ def get_mcp_tools():
         return jsonify({"error": "MCP Client (npcsh.corca) not available. Ensure npcsh.corca is installed and importable."}), 500
 
     temp_mcp_client = None
+    jinx_tools = []
     try:
         
         if conversation_id and npc_name and hasattr(app, 'corca_states'):
@@ -2640,6 +2799,25 @@ def get_mcp_tools():
         temp_mcp_client = MCPClientNPC()
         if temp_mcp_client.connect_sync(server_path):
             tools = temp_mcp_client.available_tools_llm
+            # Append Jinx-derived tools discovered from global/project jinxs
+            try:
+                jinx_dirs = []
+                if current_path_arg:
+                    proj_jinx_dir = os.path.join(os.path.abspath(current_path_arg), "npc_team", "jinxs")
+                    if os.path.isdir(proj_jinx_dir):
+                        jinx_dirs.append(proj_jinx_dir)
+                global_jinx_dir = os.path.expanduser("~/.npcsh/npc_team/jinxs")
+                if os.path.isdir(global_jinx_dir):
+                    jinx_dirs.append(global_jinx_dir)
+                all_jinxs = []
+                for d in jinx_dirs:
+                    all_jinxs.extend(load_jinxs_from_directory(d))
+                if all_jinxs:
+                    jinx_tools = list(build_jinx_tool_catalog({j.jinx_name: j for j in all_jinxs}).values())
+                    print(f"[MCP] Discovered {len(jinx_tools)} Jinx tools for listing.")
+                    tools = tools + jinx_tools
+            except Exception as e:
+                print(f"[MCP] Error discovering Jinx tools for listing: {e}")
             if selected_names:
                 tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
             return jsonify({"tools": tools, "error": None})
@@ -2944,6 +3122,8 @@ def stream():
     
     commandstr = data.get("commandstr")
     conversation_id = data.get("conversationId")
+    if not conversation_id:
+        return jsonify({"error": "conversationId is required"}), 400
     model = data.get("model", None)
     provider = data.get("provider", None)
     if provider is None:
@@ -2961,6 +3141,7 @@ def stream():
     npc_object = None
     team_object = None
     team = None  
+    tool_results_for_db = []
     if npc_name:
         if hasattr(app, 'registered_teams'):
             for team_name, team_object in app.registered_teams.items():
@@ -3199,83 +3380,257 @@ def stream():
         )
         messages = state.messages
         
-    elif exe_mode in ('corca', 'tool_agent'):
-        try:
-            from npcsh.corca import execute_command_corca, create_corca_state_and_mcp_client, MCPClientNPC
-            from npcsh._state import initial_state as state
-        except ImportError:
-            print("ERROR: npcsh.corca or MCPClientNPC not found. Corca mode is disabled.", file=sys.stderr)
-            state = None
-            stream_response = {"output": "Corca mode is not available due to missing dependencies.", "messages": messages}
+    elif exe_mode == 'tool_agent':
+        mcp_server_path_from_request = data.get("mcpServerPath")
+        selected_mcp_tools_from_request = data.get("selectedMcpTools", [])
 
-        if state is not None:
-            mcp_server_path_from_request = data.get("mcpServerPath")
-            selected_mcp_tools_from_request = data.get("selectedMcpTools", [])
+        # Resolve MCP server path (explicit -> team ctx -> default resolver)
+        effective_mcp_server_path = mcp_server_path_from_request
+        if not effective_mcp_server_path and team_object and hasattr(team_object, 'team_ctx') and team_object.team_ctx:
+            mcp_servers_list = team_object.team_ctx.get('mcp_servers', [])
+            if mcp_servers_list and isinstance(mcp_servers_list, list):
+                first_server_obj = next((s for s in mcp_servers_list if isinstance(s, dict) and 'value' in s), None)
+                if first_server_obj:
+                    effective_mcp_server_path = first_server_obj['value']
+            elif isinstance(team_object.team_ctx.get('mcp_server'), str):
+                effective_mcp_server_path = team_object.team_ctx.get('mcp_server')
 
-            effective_mcp_server_path = mcp_server_path_from_request
-            if not effective_mcp_server_path and team_object and hasattr(team_object, 'team_ctx') and team_object.team_ctx:
-                mcp_servers_list = team_object.team_ctx.get('mcp_servers', [])
-                if mcp_servers_list and isinstance(mcp_servers_list, list):
-                    first_server_obj = next((s for s in mcp_servers_list if isinstance(s, dict) and 'value' in s), None)
-                    if first_server_obj:
-                        effective_mcp_server_path = first_server_obj['value']
-                elif isinstance(team_object.team_ctx.get('mcp_server'), str):
-                    effective_mcp_server_path = team_object.team_ctx.get('mcp_server')
+        effective_mcp_server_path = resolve_mcp_server_path(
+            current_path=current_path,
+            explicit_path=effective_mcp_server_path,
+            force_global=False
+        )
+        print(f"[MCP] effective server path: {effective_mcp_server_path}")
 
-            if effective_mcp_server_path:
-                effective_mcp_server_path = os.path.abspath(os.path.expanduser(effective_mcp_server_path))
+        if not hasattr(app, 'mcp_clients'):
+            app.mcp_clients = {}
 
-            if not hasattr(app, 'corca_states'):
-                app.corca_states = {}
+        state_key = f"{conversation_id}_{npc_name or 'default'}"
+        client_entry = app.mcp_clients.get(state_key)
 
-            state_key = f"{conversation_id}_{npc_name or 'default'}"
-            corca_state = app.corca_states.get(state_key)
-
-            if corca_state is None:
-                corca_state = create_corca_state_and_mcp_client(
-                    conversation_id=conversation_id,
-                    command_history=command_history,
-                    npc=npc_object,
-                    team=team_object,
-                    current_path=current_path,
-                    mcp_server_path=effective_mcp_server_path
-                )
-                app.corca_states[state_key] = corca_state
+        if not client_entry or not client_entry.get("client") or not client_entry["client"].session \
+           or client_entry.get("server_path") != effective_mcp_server_path:
+            mcp_client = MCPClientNPC()
+            if effective_mcp_server_path and mcp_client.connect_sync(effective_mcp_server_path):
+                print(f"[MCP] connected client for {state_key} to {effective_mcp_server_path}")
+                app.mcp_clients[state_key] = {
+                    "client": mcp_client,
+                    "server_path": effective_mcp_server_path,
+                    "messages": messages
+                }
             else:
-                corca_state.npc = npc_object
-                corca_state.team = team_object
-                corca_state.current_path = current_path
-                corca_state.messages = messages
-                corca_state.command_history = command_history
+                print(f"[MCP] Failed to connect client for {state_key} to {effective_mcp_server_path}")
+                app.mcp_clients[state_key] = {
+                    "client": None,
+                    "server_path": effective_mcp_server_path,
+                    "messages": messages
+                }
 
-                current_mcp_client_path = getattr(corca_state.mcp_client, 'server_script_path', None)
-                if current_mcp_client_path:
-                    current_mcp_client_path = os.path.abspath(os.path.expanduser(current_mcp_client_path))
+        mcp_client = app.mcp_clients[state_key]["client"]
+        messages = app.mcp_clients[state_key].get("messages", messages)
 
-                if effective_mcp_server_path != current_mcp_client_path:
-                    print(f"MCP server path changed/updated for {state_key}. Disconnecting old client (if any) and reconnecting to {effective_mcp_server_path or 'None'}.")
-                    if corca_state.mcp_client and corca_state.mcp_client.session:
-                        corca_state.mcp_client.disconnect_sync()
-                        corca_state.mcp_client = None
+        def stream_mcp_sse():
+            nonlocal messages
+            iteration = 0
+            prompt = commandstr
+            while iteration < 10:
+                iteration += 1
+                print(f"[MCP] iteration {iteration} prompt len={len(prompt)}")
+                jinx_tool_catalog = {}
+                if npc_object and hasattr(npc_object, "jinx_tool_catalog"):
+                    jinx_tool_catalog = npc_object.jinx_tool_catalog or {}
+                tools_for_llm = []
+                if mcp_client:
+                    tools_for_llm.extend(mcp_client.available_tools_llm)
+                # append Jinx-derived tools
+                tools_for_llm.extend(list(jinx_tool_catalog.values()))
+                if selected_mcp_tools_from_request:
+                    tools_for_llm = [t for t in tools_for_llm if t["function"]["name"] in selected_mcp_tools_from_request]
+                print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
 
-                    if effective_mcp_server_path:
-                        new_mcp_client = MCPClientNPC()
-                        if new_mcp_client.connect_sync(effective_mcp_server_path):
-                            corca_state.mcp_client = new_mcp_client
-                            print(f"Successfully reconnected MCP client for {state_key} to {effective_mcp_server_path}.")
+                llm_response = get_llm_response_with_handling(
+                    prompt=prompt,
+                    npc=npc_object,
+                    messages=messages,
+                    tools=tools_for_llm,
+                    stream=True,
+                    team=team_object,
+                    context=f' The users working directory is {current_path}'
+                )
+
+                stream = llm_response.get("response", [])
+                messages = llm_response.get("messages", messages)
+                collected_content = ""
+                collected_tool_calls = []
+
+                for response_chunk in stream:
+                    with cancellation_lock:
+                        if cancellation_flags.get(stream_id, False):
+                            yield {"type": "interrupt"}
+                            return
+
+                    if hasattr(response_chunk, "choices") and response_chunk.choices:
+                        delta = response_chunk.choices[0].delta
+                        if hasattr(delta, "content") and delta.content:
+                            collected_content += delta.content
+                            chunk_data = {
+                                "id": getattr(response_chunk, "id", None),
+                                "object": getattr(response_chunk, "object", None),
+                                "created": getattr(response_chunk, "created", datetime.datetime.now().strftime('YYYY-DD-MM-HHMMSS')),
+                                "model": getattr(response_chunk, "model", model),
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {
+                                            "content": delta.content,
+                                            "role": "assistant"
+                                        },
+                                        "finish_reason": None
+                                    }
+                                ]
+                            }
+                            yield chunk_data
+
+                        if hasattr(delta, "tool_calls") and delta.tool_calls:
+                            for tool_call_delta in delta.tool_calls:
+                                idx = getattr(tool_call_delta, "index", 0)
+                                while len(collected_tool_calls) <= idx:
+                                    collected_tool_calls.append({
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""}
+                                    })
+                                if getattr(tool_call_delta, "id", None):
+                                    collected_tool_calls[idx]["id"] = tool_call_delta.id
+                                if hasattr(tool_call_delta, "function"):
+                                    fn = tool_call_delta.function
+                                    if getattr(fn, "name", None):
+                                        collected_tool_calls[idx]["function"]["name"] = fn.name
+                                    if getattr(fn, "arguments", None):
+                                        collected_tool_calls[idx]["function"]["arguments"] += fn.arguments
+
+                if not collected_tool_calls:
+                    print("[MCP] no tool calls, finishing streaming loop")
+                    break
+
+                print(f"[MCP] collected tool calls: {[tc['function']['name'] for tc in collected_tool_calls]}")
+                yield {
+                    "type": "tool_execution_start",
+                    "tool_calls": [
+                        {
+                            "name": tc["function"]["name"],
+                            "id": tc["id"],
+                            "function": {
+                                "name": tc["function"]["name"],
+                                "arguments": tc["function"].get("arguments", "")
+                            }
+                        } for tc in collected_tool_calls
+                    ]
+                }
+
+                tool_results = []
+                for tc in collected_tool_calls:
+                    tool_name = tc["function"]["name"]
+                    tool_args = tc["function"]["arguments"]
+                    tool_id = tc["id"]
+
+                    if isinstance(tool_args, str):
+                        try:
+                            tool_args = json.loads(tool_args) if tool_args.strip() else {}
+                        except json.JSONDecodeError:
+                            tool_args = {}
+
+                    print(f"[MCP] tool_start {tool_name} args={tool_args}")
+                    yield {"type": "tool_start", "name": tool_name, "id": tool_id, "args": tool_args}
+                    try:
+                        tool_content = ""
+                        # First, try local Jinx execution
+                        if npc_object and hasattr(npc_object, "jinxs_dict") and tool_name in npc_object.jinxs_dict:
+                            jinx_obj = npc_object.jinxs_dict[tool_name]
+                            try:
+                                jinx_ctx = jinx_obj.execute(
+                                    input_values=tool_args if isinstance(tool_args, dict) else {},
+                                    npc=npc_object,
+                                    messages=messages
+                                )
+                                tool_content = str(jinx_ctx.get("output", jinx_ctx))
+                                print(f"[MCP] jinx tool_complete {tool_name}")
+                            except Exception as e:
+                                raise Exception(f"Jinx execution failed: {e}")
                         else:
-                            print(f"Failed to reconnect MCP client for {state_key} to {effective_mcp_server_path}. Corca will have no tools.")
-                            corca_state.mcp_client = None
+                            try:
+                                loop = asyncio.get_event_loop()
+                            except RuntimeError:
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                            if loop.is_closed():
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                            mcp_result = loop.run_until_complete(
+                                mcp_client.session.call_tool(tool_name, tool_args)
+                            ) if mcp_client else {"error": "No MCP client"}
+                            if hasattr(mcp_result, "content") and mcp_result.content:
+                                for content_item in mcp_result.content:
+                                    if hasattr(content_item, "text"):
+                                        tool_content += content_item.text
+                                    elif hasattr(content_item, "data"):
+                                        tool_content += str(content_item.data)
+                                    else:
+                                        tool_content += str(content_item)
+                            else:
+                                tool_content = str(mcp_result)
 
-            state, stream_response = execute_command_corca(
-                commandstr,
-                corca_state,
-                command_history,
-                selected_mcp_tools_names=selected_mcp_tools_from_request
-            )
+                        tool_results.append({
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "name": tool_name,
+                            "content": tool_content
+                        })
 
-            app.corca_states[state_key] = state
-            messages = state.messages
+                        print(f"[MCP] tool_complete {tool_name}")
+                        yield {"type": "tool_complete", "name": tool_name, "id": tool_id, "result_preview": tool_content[:4000]}
+                    except Exception as e:
+                        err_msg = f"Error executing {tool_name}: {e}"
+                        tool_results.append({
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "name": tool_name,
+                            "content": err_msg
+                        })
+                        print(f"[MCP] tool_error {tool_name}: {e}")
+                        yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": str(e)}
+
+                serialized_tool_calls = []
+                for tc in collected_tool_calls:
+                    parsed_args = tc["function"]["arguments"]
+                    # Gemini/LLM expects arguments as JSON string, not dict
+                    if isinstance(parsed_args, dict):
+                        args_for_message = json.dumps(parsed_args)
+                    else:
+                        args_for_message = str(parsed_args)
+                    serialized_tool_calls.append({
+                        "id": tc["id"],
+                        "type": tc["type"],
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": args_for_message
+                        }
+                    })
+
+                messages.append({
+                    "role": "assistant",
+                    "content": collected_content,
+                    "tool_calls": serialized_tool_calls
+                })
+                messages.extend(tool_results)
+                tool_results_for_db = tool_results
+
+                prompt = ""
+
+            app.mcp_clients[state_key]["messages"] = messages
+            return
+
+        stream_response = stream_mcp_sse()
 
     else:
         stream_response = {"output": f"Unsupported execution mode: {exe_mode}", "messages": messages}
@@ -3316,6 +3671,36 @@ def stream():
         tool_call_data = {"id": None, "function_name": None, "arguments": ""}
 
         try:
+            # New: handle generators (tool_agent streaming)
+            if hasattr(stream_response, "__iter__") and not isinstance(stream_response, (dict, str)):
+                for chunk in stream_response:
+                    with cancellation_lock:
+                        if cancellation_flags.get(current_stream_id, False):
+                            interrupted = True
+                            break
+                    if chunk is None:
+                        continue
+                    if isinstance(chunk, dict):
+                        if chunk.get("type") == "interrupt":
+                            interrupted = True
+                            break
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        if chunk.get("choices"):
+                            for choice in chunk["choices"]:
+                                delta = choice.get("delta", {})
+                                content_piece = delta.get("content")
+                                if content_piece:
+                                    complete_response.append(content_piece)
+                        continue
+                    yield f"data: {json.dumps({'choices':[{'delta':{'content': str(chunk), 'role': 'assistant'},'finish_reason':None}]})}\n\n"
+                # ensure stream termination and cleanup for generator flows
+                yield "data: [DONE]\n\n"
+                with cancellation_lock:
+                    if current_stream_id in cancellation_flags:
+                        del cancellation_flags[current_stream_id]
+                        print(f"Cleaned up cancellation flag for stream ID: {current_stream_id}")
+                return
+
             if isinstance(stream_response, str) :
                 print('stream a str and not a gen')
                 chunk_data = {
@@ -3428,6 +3813,36 @@ def stream():
 
             # Yield message_stop immediately so the client's stream ends quickly
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
+
+            # Persist tool call metadata and results before final assistant content
+            if tool_call_data.get("function_name") or tool_call_data.get("arguments"):
+                save_conversation_message(
+                    command_history,
+                    conversation_id,
+                    "assistant",
+                    {"tool_call": tool_call_data},
+                    wd=current_path,
+                    model=model,
+                    provider=provider,
+                    npc=npc_name,
+                    team=team,
+                    message_id=generate_message_id(),
+                )
+
+            if tool_results_for_db:
+                for tr in tool_results_for_db:
+                    save_conversation_message(
+                        command_history,
+                        conversation_id,
+                        "tool",
+                        {"tool_name": tr.get("name"), "tool_call_id": tr.get("tool_call_id"), "content": tr.get("content")},
+                        wd=current_path,
+                        model=model,
+                        provider=provider,
+                        npc=npc_name,
+                        team=team,
+                        message_id=generate_message_id(),
+                    )
 
             # Save assistant message to the database
             npc_name_to_save = npc_object.name if npc_object else ''
@@ -3680,6 +4095,37 @@ def ollama_status():
     except Exception as e:
         print(f"An unexpected error occurred during Ollama status check: {e}")
         return jsonify({"status": "not_found"})
+
+
+@app.route("/api/ollama/tool_models", methods=["GET"])
+def get_ollama_tool_models():
+    """
+    Best-effort detection of Ollama models whose templates include tool-call support.
+    We scan templates for tool placeholders; if none are found we assume tools are unsupported.
+    """
+    try:
+        detected = []
+        listing = ollama.list()
+        for model in listing.get("models", []):
+            name = getattr(model, "model", None) or model.get("name") if isinstance(model, dict) else None
+            if not name:
+                continue
+            try:
+                details = ollama.show(name)
+                tmpl = details.get("template") or ""
+                if "{{- if .Tools" in tmpl or "{{- range .Tools" in tmpl or "{{- if .ToolCalls" in tmpl:
+                    detected.append(name)
+                    continue
+                metadata = details.get("metadata") or {}
+                if metadata.get("tools") or metadata.get("tool_calls"):
+                    detected.append(name)
+            except Exception as inner_e:
+                print(f"Warning: could not inspect ollama model {name} for tool support: {inner_e}")
+                continue
+        return jsonify({"models": detected, "error": None})
+    except Exception as e:
+        print(f"Error listing Ollama tool-capable models: {e}")
+        return jsonify({"models": [], "error": str(e)}), 500
 
 
 @app.route('/api/ollama/models', methods=['GET'])
