@@ -28,6 +28,7 @@ def gen_image(
     input_images: List[Union[str, bytes, PIL.Image.Image]] = None,
     save = False, 
     filename = '',
+    api_key: str = None,
 ):
     """This function generates an image using the specified provider and model.
     Args:
@@ -37,6 +38,7 @@ def gen_image(
         provider (str): The provider to use for generating the image.
         filename (str): The filename to save the image to.
         npc (Any): The NPC object.
+        api_key (str): The API key for the image generation service.
     Returns:
         str: The filename of the saved image.
     """
@@ -60,6 +62,7 @@ def gen_image(
         width=width, 
         attachments=input_images,
         n_images=n_images, 
+        api_key=api_key,
         
     )
     if save:
