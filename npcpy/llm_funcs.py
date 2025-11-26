@@ -527,8 +527,23 @@ def _execute_jinx(jinx, inputs, npc, team, messages, extra_globals):
         elif team and hasattr(team, 'forenpc') and team.forenpc:
             jinja_env = getattr(team.forenpc, 'jinja_env', None)
 
+        # Merge with default values from jinx definition
+        full_inputs = {}
+        for inp in getattr(jinx, 'inputs', []):
+            if isinstance(inp, dict):
+                key = list(inp.keys())[0]
+                default_val = inp[key]
+                # Expand paths
+                if isinstance(default_val, str) and default_val.startswith("~"):
+                    default_val = os.path.expanduser(default_val)
+                full_inputs[key] = default_val
+            else:
+                full_inputs[inp] = ""
+        # Override with provided inputs
+        full_inputs.update(inputs or {})
+
         result = jinx.execute(
-            input_values=inputs,
+            input_values=full_inputs,
             npc=npc,
             messages=messages,
             extra_globals=extra_globals,
