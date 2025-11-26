@@ -1,7 +1,8 @@
 import os
 import tempfile
 import sqlite3
-from npcpy.npc_compiler import NPC, Jinx, Team, Pipeline
+from pathlib import Path
+from npcpy.npc_compiler import NPC, Jinx, Team, initialize_npc_project
 
 
 def test_npc_creation():
@@ -154,23 +155,31 @@ def test_npc_with_database():
             os.remove(temp_db)
 
 
-def test_pipeline_creation():
-    """Test Pipeline creation"""
-    pipeline_data = {
-        "name": "test_pipeline",
-        "steps": [
-            {
-                "name": "step1",
-                "type": "llm",
-                "npc": "test_npc",
-                "prompt": "Process this data"
-            }
-        ]
-    }
-    
-    pipeline = Pipeline(pipeline_data=pipeline_data)
-    assert pipeline.name == "test_pipeline"
-    print(f"Created Pipeline: {pipeline.name}")
+def test_initialize_project_with_templates(tmp_path):
+    """Ensure template NPC files are copied into a new project"""
+    template_path = Path(__file__).parent / "template_tests" / "npc_team" / "slean.npc"
+    project_dir = tmp_path / "proj_with_templates"
+    msg = initialize_npc_project(directory=project_dir, templates=[template_path])
+
+    expected_npc = project_dir / "npc_team" / "slean.npc"
+    assert expected_npc.exists()
+    assert "npc_team" in msg
+
+
+def test_initialize_project_prefers_custom_ctx(tmp_path):
+    """Custom .ctx from template should be used and default team.ctx skipped"""
+    template_dir = tmp_path / "my_template"
+    template_dir.mkdir()
+    (template_dir / "custom.ctx").write_text("name: custom\ncontext: hello\n")
+    (template_dir / "alpha.npc").write_text("name: alpha\nprimary_directive: test\n")
+
+    project_dir = tmp_path / "proj_custom_ctx"
+    initialize_npc_project(directory=project_dir, templates=[template_dir])
+
+    custom_ctx = project_dir / "npc_team" / "custom.ctx"
+    default_ctx = project_dir / "npc_team" / "team.ctx"
+    assert custom_ctx.exists()
+    assert not default_ctx.exists()
 
 
 def test_jinx_save_and_load():

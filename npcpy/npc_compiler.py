@@ -1,4 +1,5 @@
 import os
+import shutil
 from pyexpat.errors import messages
 import yaml
 import json
@@ -183,6 +184,7 @@ def initialize_npc_project(
     """Initialize an NPC project"""
     if directory is None:
         directory = os.getcwd()
+    directory = os.path.expanduser(os.fspath(directory))
 
     npc_team_dir = os.path.join(directory, "npc_team")
     os.makedirs(npc_team_dir, exist_ok=True)
@@ -191,7 +193,8 @@ def initialize_npc_project(
                    "assembly_lines", 
                    "sql_models", 
                    "jobs", 
-                   "triggers"]:
+                   "triggers",
+                   "tools"]:
         os.makedirs(os.path.join(npc_team_dir, subdir), exist_ok=True)
     
     forenpc_path = os.path.join(npc_team_dir, "forenpc.npc")
@@ -206,20 +209,166 @@ def initialize_npc_project(
         }
         with open(forenpc_path, "w") as f:
             yaml.dump(default_npc, f)
-    ctx_path = os.path.join(npc_team_dir, "team.ctx")
-    if not os.path.exists(ctx_path):
+    parsed_templates: List[str] = []
+    if templates:
+        if isinstance(templates, str):
+            parsed_templates = [
+                t.strip() for t in re.split(r"[,\s]+", templates) if t.strip()
+            ]
+        elif isinstance(templates, (list, tuple, set)):
+            parsed_templates = [str(t).strip() for t in templates if str(t).strip()]
+        else:
+            parsed_templates = [str(templates).strip()]
+
+    ctx_destination: Optional[str] = None
+    preexisting_ctx = [
+        os.path.join(npc_team_dir, f)
+        for f in os.listdir(npc_team_dir)
+        if f.endswith(".ctx")
+    ]
+    if preexisting_ctx:
+        ctx_destination = preexisting_ctx[0]
+        if len(preexisting_ctx) > 1:
+            print(
+                "Warning: Multiple .ctx files already present; using first and ignoring the rest."
+            )
+    
+    def _resolve_template_path(template_name: str) -> Optional[str]:
+        expanded = os.path.expanduser(template_name)
+        if os.path.exists(expanded):
+            return expanded
+
+        embedded_templates = {
+            "slean": """name: slean
+primary_directive: You are slean, the marketing innovator AI. Your responsibility is to create marketing campaigns and manage them effectively, while also thinking creatively to solve marketing challenges. Guide the strategy that drives customer engagement and brand awareness.
+""",
+            "turnic": """name: turnic
+primary_directive: Assist with sales challenges and questions. Opt for straightforward solutions that help sales professionals achieve quick results.
+""",
+            "budgeto": """name: budgeto
+primary_directive: You manage marketing budgets, ensuring resources are allocated efficiently and spend is optimized.
+""",
+            "relatio": """name: relatio
+primary_directive: You manage customer relationships and ensure satisfaction throughout the sales process. Focus on nurturing clients and maintaining long-term connections.
+""",
+            "funnel": """name: funnel
+primary_directive: You oversee the sales pipeline, track progress, and optimize conversion rates to move leads efficiently.
+""",
+        }
+
+        base_dirs = [
+            os.path.expanduser("~/.npcsh/npc_team/templates"),
+            os.path.expanduser("~/.npcpy/npc_team/templates"),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tests", "template_tests", "npc_team")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "examples", "npc_team")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "example_npc_project", "npc_team")),
+        ]
+        base_dirs = [d for d in base_dirs if os.path.isdir(d)]
+
+        for base in base_dirs:
+            direct = os.path.join(base, template_name)
+            if os.path.exists(direct):
+                return direct
+            if not direct.endswith(".npc") and os.path.exists(direct + ".npc"):
+                return direct + ".npc"
+            for root, _, files in os.walk(base):
+                for fname in files:
+                    stem, ext = os.path.splitext(fname)
+                    if ext == ".npc" and stem == template_name:
+                        return os.path.join(root, fname)
+
+        # If no on-disk template found, fall back to embedded definitions
+        if template_name in embedded_templates:
+            embedded_dir = os.path.join(npc_team_dir, "_embedded_templates", template_name)
+            os.makedirs(embedded_dir, exist_ok=True)
+            npc_file = os.path.join(embedded_dir, f"{template_name}.npc")
+            if not os.path.exists(npc_file):
+                with open(npc_file, "w") as f:
+                    f.write(embedded_templates[template_name])
+            return embedded_dir
+        return None
+
+    def _copy_template(src_path: str) -> List[str]:
+        nonlocal ctx_destination
+        copied: List[str] = []
+        src_path = os.path.expanduser(src_path)
+
+        allowed_exts = {".npc", ".tool", ".pipe", ".sql", ".job", ".ctx", ".yaml", ".yml"}
+
+        if os.path.isfile(src_path):
+            if os.path.splitext(src_path)[1] in allowed_exts:
+                if os.path.splitext(src_path)[1] == ".ctx":
+                    if ctx_destination:
+                        print(
+                            f"Warning: Skipping extra context file '{src_path}' because one already exists."
+                        )
+                        return copied
+                    dest_path = os.path.join(npc_team_dir, os.path.basename(src_path))
+                    ctx_destination = dest_path
+                else:
+                    dest_path = os.path.join(npc_team_dir, os.path.basename(src_path))
+                if not os.path.exists(dest_path):
+                    shutil.copy2(src_path, dest_path)
+                copied.append(dest_path)
+            return copied
+
+        for root, _, files in os.walk(src_path):
+            rel_dir = os.path.relpath(root, src_path)
+            dest_dir = npc_team_dir if rel_dir == "." else os.path.join(npc_team_dir, rel_dir)
+            os.makedirs(dest_dir, exist_ok=True)
+            for fname in files:
+                if os.path.splitext(fname)[1] not in allowed_exts:
+                    continue
+                if os.path.splitext(fname)[1] == ".ctx":
+                    if ctx_destination:
+                        print(
+                            f"Warning: Skipping extra context file '{os.path.join(root, fname)}' because one already exists."
+                        )
+                        continue
+                    dest_path = os.path.join(npc_team_dir, fname)
+                    ctx_destination = dest_path
+                else:
+                    dest_path = os.path.join(dest_dir, fname)
+                if not os.path.exists(dest_path):
+                    shutil.copy2(os.path.join(root, fname), dest_path)
+                copied.append(dest_path)
+        return copied
+
+    applied_templates: List[str] = []
+    if parsed_templates:
+        for template_name in parsed_templates:
+            template_path = _resolve_template_path(template_name)
+            if not template_path:
+                print(f"Warning: Template '{template_name}' not found in known template directories.")
+                continue
+            copied = _copy_template(template_path)
+            if copied:
+                applied_templates.append(template_name)
+    
+    if applied_templates:
+        applied_templates = sorted(set(applied_templates))
+    if not ctx_destination:
+        default_ctx_path = os.path.join(npc_team_dir, "team.ctx")
         default_ctx = {
             'name': '',
-            'context' : '', 
+            'context' : context or '', 
             'preferences': '', 
             'mcp_servers': '', 
             'databases':'', 
             'use_global_jinxs': True,
             'forenpc': 'forenpc'
         }
-        with open(ctx_path, "w") as f:
+        if parsed_templates:
+            default_ctx['templates'] = parsed_templates
+        with open(default_ctx_path, "w") as f:
             yaml.dump(default_ctx, f)
-            
+        ctx_destination = default_ctx_path
+
+    if applied_templates:
+        return (
+            f"NPC project initialized in {npc_team_dir} "
+            f"using templates: {', '.join(applied_templates)}"
+        )
     return f"NPC project initialized in {npc_team_dir}"
 
 
@@ -933,10 +1082,29 @@ class NPC:
                         print(f"Warning: Jinx '{jinx_item}' not found for NPC '{self.name}' during initial load.")
         
         self.shared_context = {
+            # Data analysis (guac)
             "dataframes": {},
             "current_data": None,
             "computation_results": [],
-            "memories":{}
+            "locals": {},  # Python exec locals for guac mode
+
+            # Memory
+            "memories": {},
+
+            # MCP tools (corca)
+            "mcp_client": None,
+            "mcp_tools": [],
+            "mcp_tool_map": {},
+
+            # Session tracking
+            "session_input_tokens": 0,
+            "session_output_tokens": 0,
+            "session_cost_usd": 0.0,
+            "turn_count": 0,
+
+            # Mode state
+            "current_mode": "agent",
+            "attachments": [],
         }
         
         for key, value in kwargs.items():

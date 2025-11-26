@@ -19,8 +19,51 @@ try:
 except ImportError:
     pass
 except OSError:
-    
     pass
+
+# Token costs per 1M tokens (input, output)
+TOKEN_COSTS = {
+    # OpenAI
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4-turbo": (10.00, 30.00),
+    "gpt-3.5-turbo": (0.50, 1.50),
+    "o1": (15.00, 60.00),
+    "o1-mini": (3.00, 12.00),
+    # Anthropic
+    "claude-3-5-sonnet": (3.00, 15.00),
+    "claude-3-opus": (15.00, 75.00),
+    "claude-3-haiku": (0.25, 1.25),
+    "claude-sonnet-4": (3.00, 15.00),
+    # Google
+    "gemini-1.5-pro": (1.25, 5.00),
+    "gemini-1.5-flash": (0.075, 0.30),
+    "gemini-2.0-flash": (0.10, 0.40),
+    # Groq (free tier limits, paid is cheap)
+    "llama-3": (0.05, 0.08),
+    "mixtral": (0.24, 0.24),
+}
+
+def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Calculate cost in USD for a response."""
+    if not model:
+        return 0.0
+
+    # Normalize model name - strip provider prefix and lowercase
+    model_key = model.split("/")[-1].lower()
+
+    # Check for exact or partial match
+    costs = None
+    for key, cost in TOKEN_COSTS.items():
+        if key in model_key or model_key in key:
+            costs = cost
+            break
+
+    if not costs:
+        return 0.0  # Unknown/local model, assume free
+
+    input_cost, output_cost = costs
+    return (input_tokens * input_cost / 1_000_000) + (output_tokens * output_cost / 1_000_000)
 
 def handle_streaming_json(api_params):
     """
@@ -624,7 +667,14 @@ def get_litellm_response(
         api_params["stream"] = stream
         resp = completion(**api_params)
         result["raw_response"] = resp
-        
+
+        # Extract usage if available
+        if hasattr(resp, 'usage') and resp.usage:
+            result["usage"] = {
+                "input_tokens": getattr(resp.usage, 'prompt_tokens', 0) or 0,
+                "output_tokens": getattr(resp.usage, 'completion_tokens', 0) or 0,
+            }
+
         if stream:
             result["response"] = resp  
             return result
@@ -691,8 +741,14 @@ def get_litellm_response(
     
     resp = completion(**initial_api_params)
     result["raw_response"] = resp
-    
-    
+
+    # Extract usage if available
+    if hasattr(resp, 'usage') and resp.usage:
+        result["usage"] = {
+            "input_tokens": getattr(resp.usage, 'prompt_tokens', 0) or 0,
+            "output_tokens": getattr(resp.usage, 'completion_tokens', 0) or 0,
+        }
+
     has_tool_calls = hasattr(resp.choices[0].message, 'tool_calls') and resp.choices[0].message.tool_calls
     
     if has_tool_calls:
