@@ -441,259 +441,6 @@ def execute_llm_command(
         "output": "Max attempts reached. Unable to execute the command successfully.",
     }
 
-# --- START OF CORRECTED handle_jinx_call ---
-def handle_jinx_call(
-    command: str,
-    jinx_name: str,
-    model: str = None,
-    provider: str = None,
-    messages: List[Dict[str, str]] = None,
-    npc: Any = None,
-    team: Any = None,
-    stream=False,
-    n_attempts=3,
-    attempt=0,
-    context=None,
-    extra_globals=None,
-    **kwargs
-) -> Union[str, Dict[str, Any]]:
-    """This function handles a jinx call.
-    Args:
-        command (str): The command.
-        jinx_name (str): The jinx name.
-    Keyword Args:
-        model (str): The model to use for handling the jinx call.
-        provider (str): The provider to use for handling the jinx call.
-        messages (List[Dict[str, str]]): The list of messages.
-        npc (Any): The NPC object.
-    Returns:
-        Union[str, Dict[str, Any]]: The result of handling
-        the jinx call.
-
-    """
-    if npc is None and team is None:
-        return f"No jinxs are available. "
-    else:
-        jinx = None
-        if npc and hasattr(npc, 'jinxs_dict') and jinx_name in npc.jinxs_dict:
-            jinx = npc.jinxs_dict[jinx_name]
-        elif team and hasattr(team, 'jinxs_dict') and jinx_name in team.jinxs_dict:
-            jinx = team.jinxs_dict[jinx_name]
-
-        if not jinx:
-            print(f"Jinx {jinx_name} not available")
-            if attempt < n_attempts:
-                print(f"attempt {attempt+1} to generate jinx name failed, trying again")                
-                return check_llm_command(
-                                        f'''
-                    In the previous attempt, the jinx name was: {jinx_name}.
-
-                    That jinx was not available, only select those that are available.
-                
-                    If there are no available jinxs choose an alternative action. Do not invoke the jinx action. 
-
-
-                    Here was the original command: BEGIN ORIGINAL COMMAND 
-                    '''+ command +' END ORIGINAL COMMAND',
-                    model=model,
-                    provider=provider,
-                    messages=messages,
-                    npc=npc,
-                    team=team,
-                    stream=stream,
-                    context=context
-                )
-            return {
-                "output": f"Incorrect jinx name supplied and n_attempts reached.",
-                "messages": messages,
-            }
-
-        render_markdown(f"jinx found: {jinx.jinx_name}")
-        
-        # This jinja_env is for parsing the Jinx's *inputs* from the LLM response, not for Jinx.execute's second pass.
-        local_jinja_env_for_input_parsing = Environment(loader=FileSystemLoader("."), undefined=Undefined)
-        
-        example_format = {}
-        for inp in jinx.inputs:
-            if isinstance(inp, str):
-                example_format[inp] = f"<value for {inp}>"
-            elif isinstance(inp, dict):
-                key = list(inp.keys())[0]
-                example_format[key] = f"<value for {key}>"
-        
-        json_format_str = json.dumps(example_format, indent=4)
-        
-
-        prompt = f"""
-        The user wants to use the jinx '{jinx_name}' with the following request:
-        '{command}'"""
-
-
-        prompt += f'Here were the previous 5 messages in the conversation: {messages[-5:]}'
-
-
-        prompt+=f"""Here is the jinx file:
-        ```
-        {jinx.to_dict()}
-        ```
-
-        Please determine the required inputs for the jinx as a JSON object.
-        
-        They must be exactly as they are named in the jinx.
-        For example, if the jinx has three inputs, you should respond with a list of three values that will pass for those args.
-        
-        If the jinx requires a file path, you must include an absolute path to the file including an extension.
-        If the jinx requires code to be generated, you must generate it exactly according to the instructions.
-        Your inputs must satisfy the jinx's requirements.
-
-
-
-
-        Return only the JSON object without any markdown formatting.
-
-        The format of the JSON object is: 
-        
-        """+"{"+json_format_str+"}"
-
-        if npc and hasattr(npc, "shared_context"):
-            if npc.shared_context.get("dataframes"):
-                context_info = "\nAvailable dataframes:\n"
-                for df_name in npc.shared_context["dataframes"].keys():
-                    context_info += f"- {df_name}\n"
-                prompt += f"""Here is contextual info that may affect your choice: {context_info}
-                """                
-        response = get_llm_response(
-            prompt,
-            format="json",
-            model=model,
-            provider=provider,
-            messages=messages[-10:], 
-            npc=npc,
-            context=context
-        )
-
-        try:
-            response_text = response.get("response", "{}")
-            if isinstance(response_text, str):
-                response_text = (
-                    response_text.replace("```json", "").replace("```", "").strip()
-                )
-
-           
-            if isinstance(response_text, dict):
-                input_values = response_text
-            else:
-                input_values = json.loads(response_text)
-           
-        except json.JSONDecodeError as e:
-            print(f"Error decoding input values: {e}. Raw response: {response}")
-            return f"Error extracting inputs for jinx '{jinx_name}'"
-       
-        required_inputs = jinx.inputs
-        missing_inputs = []
-        for inp in required_inputs:
-            if not isinstance(inp, dict):
-               
-                if inp not in input_values or input_values[inp] == "":
-                    missing_inputs.append(inp)
-        if len(missing_inputs) > 0:
-           
-            if attempt < n_attempts:
-                print(f"attempt {attempt+1} to generate inputs failed, trying again")
-                print("missing inputs", missing_inputs)
-                print("llm response", response)
-                print("input values", input_values)
-                return handle_jinx_call(
-                    command +' . In the previous attempt, the inputs were: ' + str(input_values) + ' and the missing inputs were: ' + str(missing_inputs) +' . Please ensure to not make this mistake again.',
-                    jinx_name,
-                    model=model,
-                    provider=provider,
-                    messages=messages,
-                    npc=npc,
-                    team=team,
-                    stream=stream,
-                    attempt=attempt + 1,
-                    n_attempts=n_attempts,
-                    context=context
-                )
-            return {
-                "output": f"Missing inputs for jinx '{jinx_name}': {missing_inputs}",
-                "messages": messages,
-            }
-
-        
-        render_markdown( "\n".join(['\n - ' + str(key) + ': ' +str(val) for key, val in input_values.items()]))
-
-        # Initialize jinx_output before the try block to prevent UnboundLocalError
-        jinx_output = {"output": "Jinx execution did not complete."} 
-        
-        try:
-            # --- CRITICAL FIX HERE ---
-            # Pass arguments as keyword arguments to avoid positional confusion
-            # Use npc.jinja_env for the second-pass rendering
-            jinx_output = jinx.execute(
-                input_values=input_values,
-                npc=npc, # This is the orchestrating NPC
-                messages=messages,
-                extra_globals=extra_globals,
-                jinja_env=npc.jinja_env if npc else (team.forenpc.jinja_env if team and team.forenpc else None) # Use NPC's or Team's forenpc's jinja_env
-            )
-            # Ensure jinx_output is a dict with an 'output' key
-            if jinx_output is None:
-                jinx_output = {"output": "Jinx executed, but returned no explicit output."}
-            elif not isinstance(jinx_output, dict):
-                jinx_output = {"output": str(jinx_output)}
-
-        except Exception as e:
-            print(f"An error occurred while executing the jinx: {e}")
-            print(f"trying again, attempt {attempt+1}")
-            print('command', command)
-            if attempt < n_attempts:
-                # Recursively call handle_jinx_call for retry
-                jinx_output = handle_jinx_call(
-                    command,
-                    jinx_name,
-                    model=model,
-                    provider=provider,
-                    messages=messages,
-                    npc=npc,
-                    team=team,
-                    stream=stream,
-                    attempt=attempt + 1,
-                    n_attempts=n_attempts,
-                    context=f""" \n \n \n "jinx failed: {e}  \n \n \n here was the previous attempt: {input_values}""",
-                    extra_globals=extra_globals
-                )
-            else:
-                # If max attempts reached, set a clear error output
-                jinx_output = {"output": f"Jinx '{jinx_name}' failed after {n_attempts} attempts: {e}", "error": True}
-
-
-        if not stream and len(messages) > 0 :            
-            render_markdown(f""" ## jinx OUTPUT FROM CALLING {jinx_name} \n \n output:{jinx_output.get('output', 'No output.')}""" )            
-            response = get_llm_response(f"""
-                The user had the following request: {command}. 
-                Here were the jinx outputs from calling {jinx_name}: {jinx_output.get('output', '')}
-                
-                Given the jinx outputs and the user request, please format a simple answer that 
-                provides the answer without requiring the user to carry out any further steps.
-                """,
-                model=model,
-                provider=provider,
-                npc=npc,
-                messages=messages[-10:],
-                context=context, 
-                stream=stream,
-            )
-            messages = response['messages']
-            response = response.get("response", {})
-            return {'messages':messages, 'output':response}
-        
-        return {'messages': messages, 'output': jinx_output.get('output', 'No output.')} # Ensure 'output' key exists
-
-# --- END OF CORRECTED handle_jinx_call ---
-
-
 def handle_request_input(
     context: str,
     model: str ,
@@ -738,53 +485,64 @@ def handle_request_input(
 
 
 
-def jinx_handler(command, extracted_data, **kwargs):
-    return handle_jinx_call(
-        command, 
-        extracted_data.get('jinx_name'),
-        model=kwargs.get('model'),
-        provider=kwargs.get('provider'),
-        api_url=kwargs.get('api_url'),
-        api_key=kwargs.get('api_key'),
-        messages=kwargs.get('messages'),
-        npc=kwargs.get('npc'),
-        team=kwargs.get('team'),
-        stream=kwargs.get('stream'),
-        context=kwargs.get('context'),
-        extra_globals=kwargs.get('extra_globals')
-    )
+def _get_jinxs(npc, team):
+    """Get available jinxs from npc and team."""
+    jinxs = {}
+    if npc and hasattr(npc, 'jinxs_dict'):
+        jinxs.update(npc.jinxs_dict)
+    if team and hasattr(team, 'jinxs_dict'):
+        jinxs.update(team.jinxs_dict)
+    return jinxs
 
-def answer_handler(command, extracted_data, **kwargs):
 
-    response =  get_llm_response(
-        f"""
-        
-        Here is the user question: {command}
-        
-        
-        Do not needlessly reference the user's files or provided context.
-        
-        Simply provide the answer to the user's question. Avoid
-        appearing zany or unnecessarily forthcoming about the fact that you have received such information. You know it
-        and the user knows it. there is no need to constantly mention the facts that are aware to both.
-        
-        Your previous commnets on this topic: {extracted_data.get('explanation', '')}
-        
-        """,
-        model=kwargs.get('model'),
-        provider=kwargs.get('provider'),
-        api_url=kwargs.get('api_url'),
-        api_key=kwargs.get('api_key'),
-        messages=kwargs.get('messages',)[-10:],
-        npc=kwargs.get('npc'),
-        team=kwargs.get('team'), 
-        stream=kwargs.get('stream', False),
-        images=kwargs.get('images'), 
-        context=kwargs.get('context')
-    )
- 
-    return response
-    
+def _jinxs_to_tools(jinxs):
+    """Convert jinxs to OpenAI-style tool definitions."""
+    tools = []
+    for name, jinx in jinxs.items():
+        params = {"type": "object", "properties": {}, "required": []}
+        for inp in getattr(jinx, 'inputs', []):
+            if isinstance(inp, str):
+                params["properties"][inp] = {"type": "string", "description": f"Input: {inp}"}
+                params["required"].append(inp)
+            elif isinstance(inp, dict):
+                key = list(inp.keys())[0]
+                params["properties"][key] = {"type": "string", "description": inp.get(key, f"Input: {key}")}
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": getattr(jinx, 'description', f"Execute {name}"),
+                "parameters": params
+            }
+        })
+    return tools
+
+
+def _execute_jinx(jinx, inputs, npc, team, messages, extra_globals):
+    """Execute a jinx and return output."""
+    try:
+        jinja_env = None
+        if npc and hasattr(npc, 'jinja_env'):
+            jinja_env = npc.jinja_env
+        elif team and hasattr(team, 'forenpc') and team.forenpc:
+            jinja_env = getattr(team.forenpc, 'jinja_env', None)
+
+        result = jinx.execute(
+            input_values=inputs,
+            npc=npc,
+            messages=messages,
+            extra_globals=extra_globals,
+            jinja_env=jinja_env
+        )
+        if result is None:
+            return "Executed with no output."
+        if not isinstance(result, dict):
+            return str(result)
+        return result.get("output", str(result))
+    except Exception as e:
+        return f"Error: {e}"
+
+
 def check_llm_command(
     command: str,
     model: str = None,
@@ -797,16 +555,127 @@ def check_llm_command(
     images: list = None,
     stream=False,
     context=None,
-    actions: Dict[str, Dict] = None,
+    actions: Dict[str, Dict] = None,  # backwards compat, ignored
     extra_globals=None,
+    max_iterations: int = 5,
 ):
-    """This function checks an LLM command and returns sequences of steps with parallel actions."""
+    """
+    Simple agent loop: try tool calling first, fall back to ReAct if unsupported.
+    """
     if messages is None:
         messages = []
 
-    if actions is None:
-        actions = DEFAULT_ACTION_SPACE.copy()
-    exec =  execute_multi_step_plan(
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
+    jinxs = _get_jinxs(npc, team)
+    tools = _jinxs_to_tools(jinxs) if jinxs else None
+
+    # Try with native tool calling first
+    try:
+        response = get_llm_response(
+            command,
+            model=model,
+            provider=provider,
+            api_url=api_url,
+            api_key=api_key,
+            messages=messages[-10:],
+            npc=npc,
+            team=team,
+            images=images,
+            stream=stream,
+            context=context,
+            tools=tools,
+        )
+
+        if response.get("usage"):
+            total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
+            total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
+
+        # Check if tool calls were made
+        tool_calls = response.get("tool_calls", [])
+        if not tool_calls:
+            # Direct answer
+            return {
+                "messages": response.get("messages", messages),
+                "output": response.get("response", ""),
+                "usage": total_usage,
+            }
+
+        # Execute tool calls in a loop
+        current_messages = response.get("messages", messages)
+        for iteration in range(max_iterations):
+            for tc in tool_calls:
+                # Handle both dict and object formats
+                if hasattr(tc, 'function'):
+                    func = tc.function
+                    jinx_name = func.name if hasattr(func, 'name') else func.get('name')
+                    args_str = func.arguments if hasattr(func, 'arguments') else func.get('arguments', '{}')
+                    tc_id = tc.id if hasattr(tc, 'id') else tc.get('id', '')
+                else:
+                    func = tc.get("function", {})
+                    jinx_name = func.get("name")
+                    args_str = func.get("arguments", "{}")
+                    tc_id = tc.get("id", "")
+
+                try:
+                    inputs = json.loads(args_str) if isinstance(args_str, str) else args_str
+                except:
+                    inputs = {}
+
+                if jinx_name in jinxs:
+                    render_markdown(f"Executing: {jinx_name}")
+                    output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
+                    render_markdown(f"Output: {str(output)[:500]}")
+
+                    # Add tool result to messages
+                    current_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": str(output)
+                    })
+
+            # Get next response
+            response = get_llm_response(
+                "",  # continuation
+                model=model,
+                provider=provider,
+                api_url=api_url,
+                api_key=api_key,
+                messages=current_messages[-15:],
+                npc=npc,
+                team=team,
+                stream=stream,
+                context=context,
+                tools=tools,
+            )
+
+            if response.get("usage"):
+                total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
+                total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
+
+            tool_calls = response.get("tool_calls", [])
+            current_messages = response.get("messages", current_messages)
+
+            if not tool_calls:
+                # Done
+                return {
+                    "messages": current_messages,
+                    "output": response.get("response", ""),
+                    "usage": total_usage,
+                }
+
+        return {
+            "messages": current_messages,
+            "output": response.get("response", "Max iterations reached"),
+            "usage": total_usage,
+        }
+
+    except Exception as e:
+        # Tool calling not supported - fall back to ReAct
+        if "tool" not in str(e).lower() and "function" not in str(e).lower():
+            raise  # Re-raise if not a tool-related error
+
+    # ReAct fallback for models without tool support
+    return _react_fallback(
         command=command,
         model=model,
         provider=provider,
@@ -818,489 +687,85 @@ def check_llm_command(
         images=images,
         stream=stream,
         context=context,
-        actions=actions,
+        jinxs=jinxs,
         extra_globals=extra_globals,
-
+        max_iterations=max_iterations,
     )
-    return exec
 
 
-
-
-def jinx_context_filler(npc, team):
-    """
-    Generate context information about available jinxs for NPCs and teams.
-    
-    Args:
-        npc: The NPC object
-        team: The team object
-    
-    Returns:
-        str: Formatted string containing jinx information and usage guidelines
-    """
-  
-    npc_jinxs = "\nNPC Jinxs:\n" + (
-        "\n".join(
-            f"- {name}: {jinx.description}"
-            for name, jinx in getattr(npc, "jinxs_dict", {}).items()
-        )
-        if getattr(npc, "jinxs_dict", None)
-        else ''
-    )
-    
-  
-    team_jinxs = "\n\nTeam Jinxs:\n" + (
-        "\n".join(
-            f"- {name}: {jinx.description}"
-            for name, jinx in getattr(team, "jinxs_dict", {}).items()
-        )
-        if team and getattr(team, "jinxs_dict", None)
-        else ''
-    )
-    
-  
-    usage_guidelines = """
-Use jinxs when appropriate. For example:
-
-- If you are asked about something up-to-date or dynamic (e.g., latest exchange rates)
-- If the user asks you to read or edit a file
-- If the user asks for code that should be executed
-- If the user requests to open, search, download or scrape, which involve actual system or web actions
-- If they request a screenshot, audio, or image manipulation
-- Situations requiring file parsing (e.g., CSV or JSON loading)
-- Scripted workflows or pipelines, e.g., generate a chart, fetch data, summarize from source, etc.
-
-You MUST use a jinx if the request directly refers to a tool the AI cannot handle directly (e.g., 'run', 'open', 'search', etc).
-
-You must NOT use a jinx if:
-- The user asks you to write them a story (unless they specify saving it to a file)
-- To answer simple questions
-- To determine general information that does not require up-to-date details
-- To answer questions that can be answered with existing knowledge
-
-To invoke a jinx, return the action 'invoke_jinx' along with the jinx specific name. 
-An example for a jinx-specific return would be:
-{
-    "action": "invoke_jinx",
-    "jinx_name": "file_reader",
-    "explanation": "Read the contents of <full_filename_path_from_user_request> and <detailed explanation of how to accomplish the problem outlined in the request>."
-}
-
-Do not use the jinx names as the action keys. You must use the action 'invoke_jinx' to invoke a jinx!
-Do not invent jinx names. Use only those provided.
-
-Here are the currently available jinxs:"""
-
-
-    
-
-    if not npc_jinxs and not team_jinxs:
-        return "No jinxs are available."
-    else:    
-        output = usage_guidelines
-        if npc_jinxs:
-            output += npc_jinxs
-        if team_jinxs:
-            output += team_jinxs
-        return output
-            
-            
-            
-DEFAULT_ACTION_SPACE = {
-    "invoke_jinx": {
-        "description": "Invoke a jinx (jinja-template execution script)",
-        "handler": jinx_handler,
-        "context": lambda npc=None, team=None, **_: jinx_context_filler(npc, team),
-        "output_keys": {
-            "jinx_name": {
-                "description": "The name of the jinx to invoke. must be from the provided list verbatim",
-                "type": "string"
-            }
-        }
-    },
-    "answer": {
-        "description": "Provide a direct informative answer",
-        "handler": answer_handler,
-        "context": """For general questions, use existing knowledge. For most queries a single action to answer a question will be sufficient.
-e.g.
-
-{
-    "actions": [
-        {
-            "action": "answer",
-            "explanation": "Provide a direct answer to the user's question based on existing knowledge."
-            
-    
-        }
-    ]
-}
-
-This should be preferred for more than half of requests. Do not overcomplicate the process.
-Starting dialogue is usually more useful than using tools willynilly. Think carefully about 
-the user's intent and use this action as an opportunity to clear up potential ambiguities before
-proceeding to more complex actions.
-For example, if a user requests to write a story, 
-it is better to respond with 'answer'  and to write them a story rather than to invoke some tool.
-Indeed, it might be even better to respond and to request clarification about what other elements they would liek to specify with the story.
-Natural language is highly ambiguous and it is important to establish common ground and priorities before proceeding to more complex actions.
-
-""",
-        "output_keys": {}
-    }
-}
-def plan_multi_step_actions(
-   command: str,
-   actions: Dict[str, Dict],
-   npc: Any = None,
-   team: Any = None,
-   model: str = None,
-   provider: str = None,
-   api_url: str = None,
-   api_key: str = None,
-   context: str = None,
-   messages: List[Dict[str, str]] = None,
-   
-
+def _react_fallback(
+    command, model, provider, api_url, api_key, npc, team,
+    messages, images, stream, context, jinxs, extra_globals, max_iterations
 ):
-    """
-    Analyzes the user's command and creates a complete, sequential plan of actions
-    by dynamically building a prompt from the provided action space.
-    """
-    
-    
-    prompt = f"""
-Analyze the user's request: "{command}"
+    """ReAct-style fallback for models without tool calling."""
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
+    current_messages = messages.copy() if messages else []
 
-Your task is to create a complete, sequential JSON plan to fulfill the entire request.
-Use the following context about available actions and tools to construct the plan.
+    jinx_list = "\n".join(f"- {n}: {j.description}" for n, j in jinxs.items()) if jinxs else "None"
 
-"""
-    if messages == None:
-        messages = list()
-    for action_name, action_info in actions.items():
-        ctx = action_info.get("context")
-        if callable(ctx):
+    for iteration in range(max_iterations):
+        prompt = f"""Request: {command}
+
+Tools: {jinx_list}
+
+Return JSON: {{"action": "answer", "response": "..."}} OR {{"action": "jinx", "jinx_name": "...", "inputs": {{...}}}}"""
+
+        if context:
+            prompt += f"\nContext: {context}"
+
+        response = get_llm_response(
+            prompt,
+            model=model,
+            provider=provider,
+            api_url=api_url,
+            api_key=api_key,
+            messages=current_messages[-10:],
+            npc=npc,
+            team=team,
+            images=images if iteration == 0 else None,
+            format="json",
+            context=context,
+        )
+
+        if response.get("usage"):
+            total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
+            total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
+
+        decision = response.get("response", {})
+        if isinstance(decision, str):
             try:
-              
-                ctx = ctx(npc=npc, team=team)
-            except Exception as e:
-                print( actions)
-                print(f"[WARN] Failed to render context for action '{action_name}': {e}")
-                ctx = None
-        
-        if ctx:
-            prompt += f"\n--- Context for action '{action_name}' ---\n{ctx}\n"
-    if len(messages) >0:
-        prompt += f'Here were the previous 5 messages in the conversation: {messages[-5:]}'
+                decision = json.loads(decision)
+            except:
+                return {"messages": current_messages, "output": decision, "usage": total_usage}
 
-    prompt += f"""
---- Instructions ---
-Based on the user's request and the context provided above, create a plan.
+        if decision.get("action") == "answer":
+            output = decision.get("response", "")
+            if stream:
+                final = get_llm_response(command, model=model, provider=provider, messages=current_messages[-10:], npc=npc, team=team, stream=True, context=context)
+                if final.get("usage"):
+                    total_usage["input_tokens"] += final["usage"].get("input_tokens", 0)
+                    total_usage["output_tokens"] += final["usage"].get("output_tokens", 0)
+                return {"messages": final.get("messages", current_messages), "output": final.get("response", output), "usage": total_usage}
+            return {"messages": response.get("messages", current_messages), "output": output, "usage": total_usage}
 
-The plan must be a JSON object with a single key, "actions". Each action must include:
-- "action": The name of the action to take.
-- "explanation": A clear description of the goal for this specific step.
- 
-An Example Plan might look like this depending on the available actions:
-""" + """
-{
-  "actions": [
-    {
-      "action": "<action_name_1>",
-      "<action_specific_key_1..>": "<action_specific_value_1>",
-      <...> : ...,      
-      "explanation": "Identify the current CEO of Microsoft."
-    },
-    {
-      "action": "<action_name_2>",
-        "<action_specific_key_1..>": "<action_specific_value_1>",
-        "explanation": "Find the <action-specific> information identified in the previous step."
-    }
-  ]
-}
+        elif decision.get("action") == "jinx":
+            jinx_name = decision.get("jinx_name")
+            inputs = decision.get("inputs", {})
 
-The plans should mostly be 1-2 actions and usually never more than 3 actions at a time.
-Interactivity is important, unless a user specifies a usage of a specific action, it is generally best to
-assume just to respond in the simplest way possible rather than trying to assume certain actions have been requested.
+            if jinx_name not in jinxs:
+                context = f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}"
+                continue
 
-"""+f"""
-Now, create the plan for the user's query: "{command}"
-Respond ONLY with the plan.
-"""
+            render_markdown(f"Executing: {jinx_name}")
+            output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
+            render_markdown(f"Output: {str(output)[:500]}")
+            context = f"Tool '{jinx_name}' returned: {output}"
+            command = f"{command}\n\nPrevious: {context}"
 
-    action_response = get_llm_response(
-        prompt,
-        model=model, 
-        provider=provider,
-        api_url=api_url, 
-        api_key=api_key,
-        npc=npc,
-        team=team,
-        format="json", 
-        messages=[], 
-        context=context,
-    )
-    response_content = action_response.get("response", {})
-  
-  
-    return response_content.get("actions", [])
+        else:
+            return {"messages": current_messages, "output": str(decision), "usage": total_usage}
 
-def execute_multi_step_plan(
-   command: str,
-   model: str = None,
-   provider: str = None,
-   api_url: str = None,
-   api_key: str = None,
-   npc: Any = None,
-   team: Any = None,
-   messages: List[Dict[str, str]] = None,
-   images: list = None,
-   stream=False,
-   context=None,
-   actions: Dict[str, Dict] = None,
-   extra_globals=None,
-   **kwargs, 
-):
-    """
-    Creates a comprehensive plan and executes it sequentially, passing context
-    between steps for adaptive behavior.
-    """
-    
-  
-    planned_actions = plan_multi_step_actions(
-        command=command,
-        actions=actions,
-        npc=npc,
-        model=model,
-        provider=provider,
-        api_url=api_url,
-        api_key=api_key,
-        context=context,
-        messages=messages,
-        team=team, 
-        
-        
-    )
-    
-    if not planned_actions:
-        print("Could not generate a multi-step plan. Answering directly.")
-        result = answer_handler(command=command, 
-                                extracted_data={"explanation": "Answering the user's query directly."}, 
-                                model=model,
-                                provider=provider,
-                                api_url=api_url,
-                                api_key=api_key, 
-                                messages=messages,
-                                npc=npc,
-                                stream=stream,
-                                team = team, 
-                                images=images, 
-                                context=context
-                                )
-        return {"messages": result.get('messages',
-                                       messages), 
-                "output": result.get('response')}
-
-
-    step_outputs = []
-    current_messages = messages.copy()
-    render_markdown(f"### Plan for Command: {command[:100]}")
-    for action in planned_actions:
-        step_info = json.dumps({'action': action.get('action', ''), 
-                                'explanation': str(action.get('explanation',''))[0:10]+'...'})
-        render_markdown(f'- {step_info}')
-
-
-    
-    for i, action_data in enumerate(planned_actions):
-        render_markdown(f"--- Executing Step {i + 1} of {len(planned_actions)} ---")
-        action_name = action_data["action"]
-      
-          
-        try:
-            handler = actions[action_name]["handler"]
-
-
-          
-            step_context = f"Context from previous steps: {json.dumps(step_outputs)}" if step_outputs else ""
-            render_markdown(
-                f"- Executing Action: {action_name} \n- Explanation: {action_data.get('explanation')}\n "
-            )
-                                        
-            result = handler(
-                command=command, 
-                extracted_data=action_data,
-                model=model,
-                provider=provider, 
-                api_url=api_url,
-                api_key=api_key, 
-                messages=current_messages, 
-                npc=npc,
-                team=team,
-                stream=stream, 
-                context=context+step_context, 
-                images=images,
-                extra_globals=extra_globals
-            )
-        except KeyError as e:
-          
-            return execute_multi_step_plan(
-                                            command=command + 'This error occurred: '+str(e)+'\n Do not make the same mistake again. If you are intending to use a jinx, you must `invoke_jinx`. If you just need to answer, choose `answer`.',
-                                            model= model,
-                                            provider = provider,
-                                            api_url = api_url,
-                                            api_key = api_key,
-                                            npc = npc,
-                                            team = team,
-                                            messages = messages,
-                                            images = images,
-                                            stream=stream,
-                                            context=context,
-                                            actions=actions,
-                                            
-                                            **kwargs, 
-            )
-
-        action_output = result.get('output') or result.get('response')
-        
-        if stream and len(planned_actions) > 1:
-          
-            action_output = print_and_process_stream_with_markdown(action_output, model, provider)
-        elif len(planned_actions) == 1:
-          
-          
-            return {"messages": result.get('messages', 
-                                           current_messages), 
-                    "output": action_output}
-        step_outputs.append(action_output)        
-        current_messages = result.get('messages', 
-                                      current_messages)
-
-  
-  
-    final_output = compile_sequence_results(
-       original_command=command,
-       outputs=step_outputs,
-       model=model, 
-       provider=provider,
-       npc=npc, 
-       stream=stream, 
-       context=context,
-       **kwargs
-    )
-    
-    return {"messages": current_messages, 
-            "output": final_output}
-
-def compile_sequence_results(original_command: str, 
-                             outputs: List[str], 
-                             model: str = None, 
-                             provider: str = None, 
-                             npc: Any = None, 
-                             team: Any = None,
-                             context: str = None,
-                             stream: bool = False,
-                             **kwargs) -> str:
-    """
-    Synthesizes a list of outputs from sequential steps into a single,
-    coherent final response, framed as an answer to the original query.
-    """
-    if not outputs:
-        return "The process completed, but produced no output."    
-    synthesis_prompt = f"""
-A user asked the following question:
-"{original_command}"
-
-To answer this, the following information was gathered in sequential steps:
-{json.dumps(outputs, indent=2)}
-
-Based *directly on the user's original question* and the information gathered, please
-provide a single, final, and coherent response. Answer the user's question directly.
-Do not mention the steps taken.
-
-Final Synthesized Response that addresses the user in a polite and informative manner:
-"""
-
-    response = get_llm_response(
-        synthesis_prompt,
-        model=model, 
-        provider=provider, 
-        npc=npc, 
-        team=team,
-        messages=[], 
-        stream=stream,
-        context=context,
-        **kwargs
-    )
-    synthesized = response.get("response", "")
-    if synthesized:
-        return synthesized    
-    return '\n'.join(outputs)
-
-
-
-def should_continue_with_more_actions(
-    original_command: str,
-    completed_actions: List[Dict[str, Any]],
-    current_messages: List[Dict[str, str]],
-    model: str = None,
-    provider: str = None,
-    npc: Any = None,
-    team: Any = None,
-    context: str = None,
-    **kwargs: Any
-    
-) -> Dict:
-    """Decide if more action sequences are needed."""
-    
-    results_summary = ""
-    for idx, action_result in enumerate(completed_actions):
-        action_name = action_result.get("action", "Unknown Action")
-        output = action_result.get('output', 'No Output')
-        output_preview = output[:100] + "..." if isinstance(output, str) and len(output) > 100 else output
-        results_summary += f"{idx + 1}. {action_name}: {output_preview}\n"
-
-    prompt = f"""
-Original user request: "{original_command}"
-
-This request asks for multiple things. Analyze if ALL parts have been addressed.
-Look for keywords like "and then", "use that to", "after that" which indicate multiple tasks.
-
-Completed actions so far:
-{results_summary}
-
-For the request "{original_command}", identify:
-1. What parts have been completed
-2. What parts still need to be done
-
-JSON response:
-{{
-    "needs_more_actions": true/false,
-    "reasoning": "explain what's been done and what's still needed",
-    "next_focus": "if more actions needed, what specific task should be done next"
-}}
-"""
-
-    response = get_llm_response(
-        prompt,
-        model=model,
-        provider=provider,
-        npc=npc,
-        team=team,
-        format="json",
-        messages=[],
-        
-        context=context,
-        **kwargs
-    )
-    
-    response_dict = response.get("response", {})
-    if not isinstance(response_dict, dict):
-        return {"needs_more_actions": False, "reasoning": "Error", "next_focus": ""}
-        
-    return response_dict
-
-
+    return {"messages": current_messages, "output": f"Max iterations reached. Last: {context}", "usage": total_usage}
 
 
 

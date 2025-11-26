@@ -321,12 +321,21 @@ def get_ollama_response(
     if not auto_process_tool_calls or not (tools and tool_map):
         res = ollama.chat(**api_params, options=options)
         result["raw_response"] = res
-        
+
+        # Extract usage from ollama response
+        if hasattr(res, 'prompt_eval_count') or 'prompt_eval_count' in res:
+            input_tokens = getattr(res, 'prompt_eval_count', None) or res.get('prompt_eval_count', 0) or 0
+            output_tokens = getattr(res, 'eval_count', None) or res.get('eval_count', 0) or 0
+            result["usage"] = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+
         if stream:
-            result["response"] = res  
+            result["response"] = res
             return result
         else:
-            
+
             message = res.get("message", {})
             response_content = message.get("content", "")
             result["response"] = response_content
@@ -668,11 +677,17 @@ def get_litellm_response(
         resp = completion(**api_params)
         result["raw_response"] = resp
 
-        # Extract usage if available
+        # Extract usage if available (handles both standard litellm and ollama formats)
         if hasattr(resp, 'usage') and resp.usage:
             result["usage"] = {
                 "input_tokens": getattr(resp.usage, 'prompt_tokens', 0) or 0,
                 "output_tokens": getattr(resp.usage, 'completion_tokens', 0) or 0,
+            }
+        elif hasattr(resp, 'prompt_eval_count'):
+            # Ollama format
+            result["usage"] = {
+                "input_tokens": getattr(resp, 'prompt_eval_count', 0) or 0,
+                "output_tokens": getattr(resp, 'eval_count', 0) or 0,
             }
 
         if stream:
