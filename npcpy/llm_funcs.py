@@ -701,14 +701,22 @@ def _react_fallback(
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     current_messages = messages.copy() if messages else []
 
-    jinx_list = "\n".join(f"- {n}: {j.description}" for n, j in jinxs.items()) if jinxs else "None"
+    # Build jinx list with input parameters
+    def _jinx_info(name, jinx):
+        inputs = getattr(jinx, 'inputs', [])
+        input_names = [i if isinstance(i, str) else list(i.keys())[0] for i in inputs]
+        return f"- {name}({', '.join(input_names)}): {jinx.description}"
+
+    jinx_list = "\n".join(_jinx_info(n, j) for n, j in jinxs.items()) if jinxs else "None"
 
     for iteration in range(max_iterations):
         prompt = f"""Request: {command}
 
-Tools: {jinx_list}
+Tools:
+{jinx_list}
 
-Return JSON: {{"action": "answer", "response": "..."}} OR {{"action": "jinx", "jinx_name": "...", "inputs": {{...}}}}"""
+Return JSON: {{"action": "answer", "response": "..."}} OR {{"action": "jinx", "jinx_name": "...", "inputs": {{"param_name": "value"}}}}
+Use EXACT parameter names from the tool definitions above."""
 
         if context:
             prompt += f"\nContext: {context}"

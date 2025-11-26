@@ -19,7 +19,6 @@ from typing import Any, Dict, List, Optional, Union, Callable, Tuple
 from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoader
 from sqlalchemy import create_engine, text
 import npcpy as npy 
-from npcpy.llm_funcs import DEFAULT_ACTION_SPACE
 from npcpy.tools import auto_tools
 import math 
 import random
@@ -797,73 +796,6 @@ def build_jinx_tool_catalog(jinxs: Dict[str, 'Jinx']) -> Dict[str, Dict[str, Any
     """Helper to build a name->tool_def catalog from a dict of Jinx objects."""
     return {name: jinx_to_tool_def(jinx_obj) for name, jinx_obj in jinxs.items()}
 
-def get_npc_action_space(npc=None, team=None):
-    """Get action space for NPC including memory CRUD and core capabilities"""
-    actions = DEFAULT_ACTION_SPACE.copy()
-    
-    if npc:
-        core_tools = [
-            npc.think_step_by_step,
-        ]
-        if hasattr(npc, "write_code"):
-            core_tools.append(npc.write_code)
-        
-        if npc.command_history:
-            core_tools.extend([
-                npc.search_my_conversations,
-                npc.search_my_memories,
-                npc.create_memory,
-                npc.read_memory,
-                npc.update_memory,
-                npc.delete_memory,
-                npc.search_memories,
-                npc.get_all_memories,
-                npc.archive_old_memories,
-                npc.get_memory_stats
-            ])
-        
-        if npc.db_conn:
-            core_tools.append(npc.query_database)
-        
-        if hasattr(npc, 'tools') and npc.tools:
-            core_tools.extend([func for func in npc.tool_map.values() if callable(func)])
-        
-        if core_tools:
-            tools_schema, tool_map = auto_tools(core_tools)
-            actions.update({
-                f"use_{tool.__name__}": {
-                    "description": f"Use {tool.__name__} capability",
-                    "handler": tool,
-                    "context": lambda **_: f"Available as automated capability",
-                    "output_keys": {"result": {"description": "Tool execution result", "type": "string"}}
-                }
-                for tool in core_tools
-            })
-    
-    if team and hasattr(team, 'npcs') and len(team.npcs) > 1:
-        available_npcs = [name for name in team.npcs.keys() if name != (npc.name if npc else None)]
-        
-        def team_aware_handler(command, extracted_data, **kwargs):
-            if 'team' not in kwargs or kwargs['team'] is None:
-                kwargs['team'] = team
-            return agent_pass_handler(command, extracted_data, **kwargs)
-        
-        actions["pass_to_npc"] = {
-            "description": "Pass request to another NPC - only when task requires their specific expertise",
-            "handler": team_aware_handler,
-            "context": lambda npc=npc, team=team, **_: (
-                f"Available NPCs: {', '.join(available_npcs)}. "
-                f"Only pass when you genuinely cannot complete the task."
-            ),
-            "output_keys": {
-                "target_npc": {
-                    "description": "Name of the NPC to pass the request to",
-                    "type": "string"
-                }
-            }
-        }
-    
-    return actions
 def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
     print(f"DEBUG extract_jinx_inputs called with args: {args}")
     print(f"DEBUG jinx.inputs: {jinx.inputs}")
@@ -1909,9 +1841,7 @@ class NPC:
         
         if team:
             self._current_team = team
-        
-        actions = get_npc_action_space(npc=self, team=team)
-        
+
         return npy.llm_funcs.check_llm_command(
             command,
             model=self.model,
@@ -1921,7 +1851,6 @@ class NPC:
             messages=self.memory if messages is None else messages,
             context=context,
             stream=stream,
-            actions=actions  
         )
     
     def handle_agent_pass(self, 
