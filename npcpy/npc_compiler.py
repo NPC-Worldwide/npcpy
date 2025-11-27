@@ -1815,19 +1815,23 @@ class NPC:
             jinja_env=self.jinja_env # Pass the NPC's second-pass Jinja env
         )
         
-        if self.db_conn is not None:
-            self.db_conn.add_jinx_call(
-                triggering_message_id=message_id,
-                conversation_id=conversation_id,
-                jinx_name=jinx_name,
-                jinx_inputs=inputs,
-                jinx_output=result,
-                status="success",
-                error_message=None,
-                duration_ms=None,
-                npc_name=self.name,
-                team_name=team_name,
-            )
+        # Log jinx call if we have a command_history with add_jinx_call method
+        if self.command_history is not None and hasattr(self.command_history, 'add_jinx_call'):
+            try:
+                self.command_history.add_jinx_call(
+                    triggering_message_id=message_id,
+                    conversation_id=conversation_id,
+                    jinx_name=jinx_name,
+                    jinx_inputs=inputs,
+                    jinx_output=result,
+                    status="success",
+                    error_message=None,
+                    duration_ms=None,
+                    npc_name=self.name,
+                    team_name=team_name,
+                )
+            except Exception:
+                pass  # Don't fail jinx execution due to logging error
         return result
     def check_llm_command(self,
                             command, 

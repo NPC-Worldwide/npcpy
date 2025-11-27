@@ -28,20 +28,44 @@ TOKEN_COSTS = {
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4-turbo": (10.00, 30.00),
     "gpt-3.5-turbo": (0.50, 1.50),
+    "gpt-5": (1.25, 10.00),
+    "gpt-5-mini": (0.25, 2.00),
     "o1": (15.00, 60.00),
     "o1-mini": (3.00, 12.00),
+    "o3": (10.00, 40.00),
+    "o3-mini": (1.10, 4.40),
+    "o4-mini": (1.10, 4.40),
     # Anthropic
     "claude-3-5-sonnet": (3.00, 15.00),
     "claude-3-opus": (15.00, 75.00),
     "claude-3-haiku": (0.25, 1.25),
     "claude-sonnet-4": (3.00, 15.00),
+    "claude-opus-4": (15.00, 75.00),
+    "claude-opus-4-5": (5.00, 25.00),
+    "claude-sonnet-4-5": (3.00, 15.00),
+    "claude-haiku-4": (0.80, 4.00),
     # Google
     "gemini-1.5-pro": (1.25, 5.00),
     "gemini-1.5-flash": (0.075, 0.30),
     "gemini-2.0-flash": (0.10, 0.40),
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-2.5-flash": (0.15, 0.60),
+    "gemini-3-pro": (2.00, 12.00),
     # Groq (free tier limits, paid is cheap)
     "llama-3": (0.05, 0.08),
+    "llama-3.1": (0.05, 0.08),
+    "llama-3.2": (0.05, 0.08),
+    "llama-4": (0.05, 0.10),
     "mixtral": (0.24, 0.24),
+    # DeepSeek
+    "deepseek-v3": (0.27, 1.10),
+    "deepseek-r1": (0.55, 2.19),
+    # Mistral
+    "mistral-large": (2.00, 6.00),
+    "mistral-small": (0.20, 0.60),
+    # xAI
+    "grok-2": (2.00, 10.00),
+    "grok-3": (3.00, 15.00),
 }
 
 def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
@@ -767,50 +791,72 @@ def get_litellm_response(
     has_tool_calls = hasattr(resp.choices[0].message, 'tool_calls') and resp.choices[0].message.tool_calls
     
     if has_tool_calls:
-
-        
         result["tool_calls"] = resp.choices[0].message.tool_calls
-        
-        
-        processed_result = process_tool_calls(result, 
-                                              tool_map, 
-                                              model, 
-                                              provider, 
-                                              result["messages"], 
+
+        processed_result = process_tool_calls(result,
+                                              tool_map,
+                                              model,
+                                              provider,
+                                              result["messages"],
                                               stream=False)
-        
-        
+
+        # Always do a follow-up call to get a proper response after tool execution
+        # Convert tool interactions to a clean format for the follow-up call
+        clean_messages = []
+        tool_results_summary = []
+
+        for msg in processed_result["messages"]:
+            role = msg.get('role', '')
+            if role == 'assistant' and 'tool_calls' in msg:
+                # Skip the tool_calls message - we'll summarize results instead
+                continue
+            elif role == 'tool':
+                # Collect tool results for summary
+                content = msg.get('content', '')
+                # Truncate very long results
+                if len(content) > 2000:
+                    content = content[:2000] + "... (truncated)"
+                tool_results_summary.append(content)
+            else:
+                clean_messages.append(msg)
+
+        # Add tool results as an assistant message summarizing what was done
+        if tool_results_summary:
+            clean_messages.append({
+                "role": "assistant",
+                "content": "I executed the requested tools. Here are the results:\n\n" + "\n\n".join(tool_results_summary)
+            })
+
+        # Add instruction for the LLM to provide a helpful response
+        clean_messages.append({
+            "role": "user",
+            "content": "Based on the tool results above, provide a brief summary of what happened. Do NOT output any code - the tool has already executed. Just describe the results concisely."
+        })
+
+        final_api_params = api_params.copy()
+        final_api_params["messages"] = clean_messages
+        final_api_params["stream"] = stream
+        if "tools" in final_api_params:
+            del final_api_params["tools"]
+        if "tool_choice" in final_api_params:
+            del final_api_params["tool_choice"]
+
+        final_resp = completion(**final_api_params)
+
         if stream:
-
-            
-
-            clean_messages = []
-            for msg in processed_result["messages"]:
-                if msg.get('role') == 'assistant' and 'tool_calls' in msg:
-                    continue  
-                                
+            processed_result["response"] = final_resp
+        else:
+            if final_resp.choices:
+                final_content = final_resp.choices[0].message.content
+                processed_result["response"] = final_content
+                processed_result["messages"].append({"role": "assistant", "content": final_content})
+            else:
+                # No choices returned, use the tool results summary directly
+                if tool_results_summary:
+                    processed_result["response"] = "\n\n".join(tool_results_summary)
                 else:
-                    clean_messages.append(msg)
-            
-            final_api_params = api_params.copy()
-            final_api_params["messages"] = clean_messages
-            final_api_params["stream"] = True
+                    processed_result["response"] = "Tool executed successfully."
 
-
-            final_api_params = api_params.copy()
-            final_api_params["messages"] = clean_messages
-            final_api_params["stream"] = True
-            if "tools" in final_api_params:
-                del final_api_params["tools"]
-            if "tool_choice" in final_api_params:
-                del final_api_params["tool_choice"]
-
-            final_stream = completion(**final_api_params)
-
-            
-            final_stream = completion(**final_api_params)
-            processed_result["response"] = final_stream
-            
         return processed_result
         
         
@@ -844,15 +890,38 @@ def get_litellm_response(
 def process_tool_calls(response_dict, tool_map, model, provider, messages, stream=False):
     result = response_dict.copy()
     result["tool_results"] = []
-    
+
     if "messages" not in result:
         result["messages"] = messages if messages else []
-    
+
     tool_calls = result.get("tool_calls", [])
-    
+
     if not tool_calls:
         return result
-    
+
+    # First, add the assistant message with tool_calls (required by Gemini and other providers)
+    # This must come BEFORE the tool results
+    tool_calls_for_message = []
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            tool_calls_for_message.append(tc)
+        else:
+            # Convert object to dict format
+            tool_calls_for_message.append({
+                "id": getattr(tc, "id", str(uuid.uuid4())),
+                "type": "function",
+                "function": {
+                    "name": getattr(tc.function, "name", "") if hasattr(tc, "function") else "",
+                    "arguments": getattr(tc.function, "arguments", "{}") if hasattr(tc, "function") else "{}"
+                }
+            })
+
+    result["messages"].append({
+        "role": "assistant",
+        "content": None,
+        "tool_calls": tool_calls_for_message
+    })
+
     for tool_call in tool_calls:
         tool_id = str(uuid.uuid4())
         tool_name = None
@@ -883,10 +952,42 @@ def process_tool_calls(response_dict, tool_map, model, provider, messages, strea
             tool_result_str = ""
             serializable_result = None
 
+            # Show tool execution indicator with truncated args
+            try:
+                from termcolor import colored
+                # Format arguments nicely - show key=value pairs
+                if arguments:
+                    arg_parts = []
+                    for k, v in arguments.items():
+                        v_str = str(v)
+                        if len(v_str) > 40:
+                            v_str = v_str[:40] + "…"
+                        arg_parts.append(f"{k}={v_str}")
+                    args_display = " ".join(arg_parts)
+                    if len(args_display) > 80:
+                        args_display = args_display[:80] + "…"
+                else:
+                    args_display = ""
+
+                if args_display:
+                    print(colored(f"  ⚡ {tool_name}", "cyan") + colored(f" {args_display}", "white", attrs=["dark"]), end="", flush=True)
+                else:
+                    print(colored(f"  ⚡ {tool_name}", "cyan"), end="", flush=True)
+            except:
+                pass
+
             try:
                 tool_result = tool_map[tool_name](**arguments)
+                try:
+                    print(colored(" ✓", "green"), flush=True)
+                except:
+                    pass
             except Exception as e:
-                tool_result = f"Error executing tool '{tool_name}': {str(e)}. Tool map is : {tool_map}"
+                tool_result = f"Error executing tool '{tool_name}': {str(e)}"
+                try:
+                    print(colored(f" ✗ {str(e)[:50]}", "red"), flush=True)
+                except:
+                    pass
 
             try:
                 tool_result_str = json.dumps(tool_result, default=str)
@@ -897,18 +998,19 @@ def process_tool_calls(response_dict, tool_map, model, provider, messages, strea
             except Exception as e_serialize:
                 tool_result_str = f"Error serializing result for {tool_name}: {str(e_serialize)}"
                 serializable_result = {"error": tool_result_str}
-            
+
             result["tool_results"].append({
                 "tool_call_id": tool_id,
                 "tool_name": tool_name,
                 "arguments": arguments,
                 "result": serializable_result
             })
-            
-            
+
+            # Add tool result as a tool message (proper format for multi-turn)
             result["messages"].append({
-                "role": "assistant",
-                "content": f'The results of the tool call for {tool_name} with {arguments} are as follows:' +tool_result_str
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "content": tool_result_str
             })
     
     return result
