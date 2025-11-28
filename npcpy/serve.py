@@ -50,7 +50,6 @@ from npcpy.memory.search import execute_rag_command, execute_brainblast_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
 
-from npcsh._state import get_relevant_memories, search_kg_facts
 
 import base64
 import shutil
@@ -972,12 +971,8 @@ def execute_jinx():
         'state': state,
         'CommandHistory': CommandHistory,
         'load_kg_from_db': load_kg_from_db,
-        'execute_rag_command': execute_rag_command,
-        'execute_brainblast_command': execute_brainblast_command,
-        'load_file_contents': load_file_contents,
-        'search_web': search_web,
-        'get_relevant_memories': get_relevant_memories,
-        'search_kg_facts': search_kg_facts,
+        #'get_relevant_memories': get_relevant_memories,
+        #'search_kg_facts': search_kg_facts,
     }
 
     jinx_execution_result = jinx.execute(

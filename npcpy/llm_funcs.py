@@ -1,7 +1,8 @@
 from jinja2 import Environment, FileSystemLoader, Undefined
 import json
+import os
 import PIL
-import random 
+import random
 import subprocess
 import copy
 import itertools
@@ -501,25 +502,7 @@ def _get_jinxs(npc, team):
 
 def _jinxs_to_tools(jinxs):
     """Convert jinxs to OpenAI-style tool definitions."""
-    tools = []
-    for name, jinx in jinxs.items():
-        params = {"type": "object", "properties": {}, "required": []}
-        for inp in getattr(jinx, 'inputs', []):
-            if isinstance(inp, str):
-                params["properties"][inp] = {"type": "string", "description": f"Input: {inp}"}
-                params["required"].append(inp)
-            elif isinstance(inp, dict):
-                key = list(inp.keys())[0]
-                params["properties"][key] = {"type": "string", "description": inp.get(key, f"Input: {key}")}
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": getattr(jinx, 'description', f"Execute {name}"),
-                "parameters": params
-            }
-        })
-    return tools
+    return [jinx.to_tool_def() for jinx in jinxs.values()]
 
 
 def _execute_jinx(jinx, inputs, npc, team, messages, extra_globals):
@@ -577,6 +560,7 @@ def check_llm_command(
     actions: Dict[str, Dict] = None,  # backwards compat, ignored
     extra_globals=None,
     max_iterations: int = 5,
+    jinxs: Dict = None,
 ):
     """
     Simple agent loop: try tool calling first, fall back to ReAct if unsupported.
@@ -595,7 +579,9 @@ def check_llm_command(
         logger.debug(f"  [{i}] role={role}, content_preview={content_preview}...")
 
     total_usage = {"input_tokens": 0, "output_tokens": 0}
-    jinxs = _get_jinxs(npc, team)
+    # Use provided jinxs or get from npc/team
+    if jinxs is None:
+        jinxs = _get_jinxs(npc, team)
     tools = _jinxs_to_tools(jinxs) if jinxs else None
 
     # Keep full message history, only truncate for API calls to reduce tokens
@@ -603,6 +589,7 @@ def check_llm_command(
     logger.debug(f"[check_llm_command] full_messages initialized with {len(full_messages)} messages")
 
     # Try with native tool calling first
+
     try:
         response = get_llm_response(
             command,
@@ -618,133 +605,178 @@ def check_llm_command(
             context=context,
             tools=tools,
         )
+    except Exception as e:
+        print(colored(f"[check_llm_command] EXCEPTION in get_llm_response: {type(e).__name__}: {e}", "red"))
+        return {
+            "messages": full_messages,
+            "output": f"LLM call failed: {e}",
+            "error": str(e),
+            "usage": total_usage,
+        }
 
-        if response.get("usage"):
-            total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
-            total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
+    if response.get("error"):
+        logger.warning(f"[check_llm_command] Error in response: {response.get('error')}")
 
-        # Check if tool calls were made
-        tool_calls = response.get("tool_calls", [])
-        if not tool_calls:
-            # Direct answer - append user message to full messages
-            full_messages.append({"role": "user", "content": command})
-            assistant_response = response.get("response", "")
-            # Only append assistant message if it's a string (not a stream)
-            # For streaming, the caller (process_result) handles appending after consumption
-            if assistant_response and isinstance(assistant_response, str):
-                full_messages.append({"role": "assistant", "content": assistant_response})
-            logger.debug(f"[check_llm_command] No tool calls - returning {len(full_messages)} messages")
-            return {
-                "messages": full_messages,
-                "output": assistant_response,
-                "usage": total_usage,
-            }
+    if response.get("usage"):
+        total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
+        total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
 
-        # Execute tool calls in a loop - start with full messages
+    # Check if tool calls were made
+    tool_calls = response.get("tool_calls", [])
+    if not tool_calls:
+        # Direct answer - append user message to full messages
         full_messages.append({"role": "user", "content": command})
-        current_messages = full_messages
-        logger.debug(f"[check_llm_command] Tool calls detected - current_messages has {len(current_messages)} messages")
-        for iteration in range(max_iterations):
-            for tc in tool_calls:
-                # Handle both dict and object formats
-                if hasattr(tc, 'function'):
-                    func = tc.function
-                    jinx_name = func.name if hasattr(func, 'name') else func.get('name')
-                    args_str = func.arguments if hasattr(func, 'arguments') else func.get('arguments', '{}')
-                    tc_id = tc.id if hasattr(tc, 'id') else tc.get('id', '')
-                else:
-                    func = tc.get("function", {})
-                    jinx_name = func.get("name")
-                    args_str = func.get("arguments", "{}")
-                    tc_id = tc.get("id", "")
+        assistant_response = response.get("response", "")
+        # Only append assistant message if it's a string (not a stream)
+        # For streaming, the caller (process_result) handles appending after consumption
+        if assistant_response and isinstance(assistant_response, str):
+            full_messages.append({"role": "assistant", "content": assistant_response})
+        logger.debug(f"[check_llm_command] No tool calls - returning {len(full_messages)} messages")
+        return {
+            "messages": full_messages,
+            "output": assistant_response,
+            "usage": total_usage,
+        }
 
+    # Helper to serialize tool_calls for message history
+    def _serialize_tool_calls(tcs):
+        """Convert tool_call objects to dicts for message history."""
+        serialized = []
+        for tc in tcs:
+            if hasattr(tc, 'id'):
+                # It's an object, convert to dict
+                func = tc.function
+                serialized.append({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": func.name if hasattr(func, 'name') else func.get('name'),
+                        "arguments": func.arguments if hasattr(func, 'arguments') else func.get('arguments', '{}')
+                    }
+                })
+            else:
+                # Already a dict
+                serialized.append(tc)
+        return serialized
+
+    # Execute tool calls in a loop - start with full messages
+    full_messages.append({"role": "user", "content": command})
+    # Add assistant message with tool_calls before executing them
+    assistant_msg = {"role": "assistant", "content": response.get("response", "")}
+    if tool_calls:
+        assistant_msg["tool_calls"] = _serialize_tool_calls(tool_calls)
+    full_messages.append(assistant_msg)
+    current_messages = full_messages
+    logger.debug(f"[check_llm_command] Tool calls detected - current_messages has {len(current_messages)} messages")
+    for iteration in range(max_iterations):
+        for tc in tool_calls:
+            # Handle both dict and object formats
+            if hasattr(tc, 'function'):
+                func = tc.function
+                jinx_name = func.name if hasattr(func, 'name') else func.get('name')
+                args_str = func.arguments if hasattr(func, 'arguments') else func.get('arguments', '{}')
+                tc_id = tc.id if hasattr(tc, 'id') else tc.get('id', '')
+            else:
+                func = tc.get("function", {})
+                jinx_name = func.get("name")
+                args_str = func.get("arguments", "{}")
+                tc_id = tc.get("id", "")
+
+            try:
+                inputs = json.loads(args_str) if isinstance(args_str, str) else args_str
+            except:
+                inputs = {}
+
+            if jinx_name in jinxs:
                 try:
-                    inputs = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    from termcolor import colored
+                    print(colored(f"  ⚡ {jinx_name}", "cyan"), end="", flush=True)
                 except:
-                    inputs = {}
+                    pass
+                output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
+                try:
+                    print(colored(" ✓", "green"), flush=True)
+                except:
+                    pass
 
-                if jinx_name in jinxs:
-                    try:
-                        from termcolor import colored
-                        print(colored(f"  ⚡ {jinx_name}", "cyan"), end="", flush=True)
-                    except:
-                        pass
-                    output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
-                    try:
-                        print(colored(" ✓", "green"), flush=True)
-                    except:
-                        pass
+                # Add tool result to messages
+                # Include name for Gemini compatibility
+                current_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "name": jinx_name,
+                    "content": str(output)
+                })
 
-                    # Add tool result to messages
-                    current_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": str(output)
-                    })
+        # Get next response - truncate carefully to not orphan tool responses
+        # Find a safe truncation point that doesn't split tool_call/tool_response pairs
+        truncated = current_messages
+        if len(current_messages) > 15:
+            # Start from -15 and walk back to find a user message or start
+            start_idx = len(current_messages) - 15
+            while start_idx > 0:
+                msg = current_messages[start_idx]
+                # Don't start on a tool response - would orphan it
+                if msg.get("role") == "tool":
+                    start_idx -= 1
+                # Don't start on assistant with tool_calls unless next is tool response
+                elif msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    start_idx -= 1
+                else:
+                    break
+            truncated = current_messages[start_idx:]
 
-            # Get next response - use truncated messages for API, keep full history
+        try:
             response = get_llm_response(
                 "",  # continuation
                 model=model,
                 provider=provider,
                 api_url=api_url,
                 api_key=api_key,
-                messages=current_messages[-15:],  # Truncate for API call only
+                messages=truncated,
                 npc=npc,
                 team=team,
                 stream=stream,
                 context=context,
                 tools=tools,
             )
+        except Exception as e:
+            # If continuation fails, return what we have so far
+            # The tool was already executed successfully
+            logger.warning(f"[check_llm_command] Continuation failed: {e}")
+            return {
+                "messages": current_messages,
+                "output": f"Tool executed successfully. (Continuation error: {type(e).__name__})",
+                "usage": total_usage,
+            }
 
-            if response.get("usage"):
-                total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
-                total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
+        if response.get("usage"):
+            total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
+            total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
 
-            tool_calls = response.get("tool_calls", [])
-            # Append assistant response to full messages, don't overwrite with truncated
-            assistant_response = response.get("response", "")
-            if assistant_response:
-                current_messages.append({"role": "assistant", "content": assistant_response})
+        tool_calls = response.get("tool_calls", [])
+        # Append assistant response to full messages with tool_calls if present
+        assistant_response = response.get("response", "")
+        assistant_msg = {"role": "assistant", "content": assistant_response}
+        if tool_calls:
+            assistant_msg["tool_calls"] = _serialize_tool_calls(tool_calls)
+        current_messages.append(assistant_msg)
 
-            if not tool_calls:
-                # Done - return full message history
-                logger.debug(f"[check_llm_command] Tool loop done - returning {len(current_messages)} messages")
-                return {
-                    "messages": current_messages,
-                    "output": assistant_response,
-                    "usage": total_usage,
-                }
+        if not tool_calls:
+            # Done - return full message history
+            logger.debug(f"[check_llm_command] Tool loop done - returning {len(current_messages)} messages")
+            return {
+                "messages": current_messages,
+                "output": assistant_response,
+                "usage": total_usage,
+            }
 
-        logger.debug(f"[check_llm_command] Max iterations - returning {len(current_messages)} messages")
-        return {
-            "messages": current_messages,
-            "output": response.get("response", "Max iterations reached"),
-            "usage": total_usage,
-        }
-
-    except Exception as e:
-        # Tool calling not supported - fall back to ReAct
-        if "tool" not in str(e).lower() and "function" not in str(e).lower():
-            raise  # Re-raise if not a tool-related error
-
-    # ReAct fallback for models without tool support
-    return _react_fallback(
-        command=command,
-        model=model,
-        provider=provider,
-        api_url=api_url,
-        api_key=api_key,
-        npc=npc,
-        team=team,
-        messages=messages,
-        images=images,
-        stream=stream,
-        context=context,
-        jinxs=jinxs,
-        extra_globals=extra_globals,
-        max_iterations=max_iterations,
-    )
+    logger.debug(f"[check_llm_command] Max iterations - returning {len(current_messages)} messages")
+    return {
+        "messages": current_messages,
+        "output": response.get("response", "Max iterations reached"),
+        "usage": total_usage,
+    }
 
 
 def _react_fallback(

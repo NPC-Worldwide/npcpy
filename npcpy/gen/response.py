@@ -184,7 +184,7 @@ Do not include any additional markdown formatting or leading ```json tags in you
        
        if detected_tools:
            result["tool_calls"] = detected_tools
-           result = process_tool_calls(result, tool_map, "local", "transformers", result["messages"])
+           result = process_tool_calls(result, tool_map, "local", "transformers", result["messages"], tools=tools)
    
    if format == "json":
        try:
@@ -409,11 +409,12 @@ def get_ollama_response(
         }
         
         
-        processed_result = process_tool_calls(response_for_processing, 
-                                              tool_map, model, 
-                                              'ollama', 
-                                              messages, 
-                                              stream=False)
+        processed_result = process_tool_calls(response_for_processing,
+                                              tool_map, model,
+                                              'ollama',
+                                              messages,
+                                              stream=False,
+                                              tools=tools)
         
         
         if stream:
@@ -776,9 +777,16 @@ def get_litellm_response(
     
     initial_api_params = api_params.copy()
     initial_api_params["stream"] = False
-    
-    
-    resp = completion(**initial_api_params)
+
+    try:
+        resp = completion(**initial_api_params)
+    except Exception as e:
+        from termcolor import colored
+        print(colored(f"[litellm ERROR] completion() failed: {type(e).__name__}: {e}", "red"))
+        result["error"] = str(e)
+        result["response"] = f"LLM call failed: {e}"
+        return result
+
     result["raw_response"] = resp
 
     # Extract usage if available
@@ -787,6 +795,10 @@ def get_litellm_response(
             "input_tokens": getattr(resp.usage, 'prompt_tokens', 0) or 0,
             "output_tokens": getattr(resp.usage, 'completion_tokens', 0) or 0,
         }
+
+    if not resp.choices:
+        result["response"] = "No response from model"
+        return result
 
     has_tool_calls = hasattr(resp.choices[0].message, 'tool_calls') and resp.choices[0].message.tool_calls
     
@@ -798,7 +810,8 @@ def get_litellm_response(
                                               model,
                                               provider,
                                               result["messages"],
-                                              stream=False)
+                                              stream=False,
+                                              tools=tools)
 
         # Always do a follow-up call to get a proper response after tool execution
         # Convert tool interactions to a clean format for the follow-up call
@@ -887,7 +900,7 @@ def get_litellm_response(
         else:
             result["response"] = llm_response
     return result            
-def process_tool_calls(response_dict, tool_map, model, provider, messages, stream=False):
+def process_tool_calls(response_dict, tool_map, model, provider, messages, stream=False, tools=None):
     result = response_dict.copy()
     result["tool_results"] = []
 
@@ -953,24 +966,36 @@ def process_tool_calls(response_dict, tool_map, model, provider, messages, strea
             serializable_result = None
 
             # Show tool execution indicator with truncated args
+            # Store full args for Ctrl+O expansion
+            _last_tool_call = {"name": tool_name, "arguments": arguments}
+            try:
+                import builtins
+                builtins._npcsh_last_tool_call = _last_tool_call
+            except:
+                pass
+
             try:
                 from termcolor import colored
                 # Format arguments nicely - show key=value pairs
+                is_truncated = False
                 if arguments:
                     arg_parts = []
                     for k, v in arguments.items():
                         v_str = str(v)
                         if len(v_str) > 40:
                             v_str = v_str[:40] + "…"
-                        arg_parts.append(f"{k}={v_str}")
+                            is_truncated = True
+                        arg_parts.append(f"{v_str}")
                     args_display = " ".join(arg_parts)
-                    if len(args_display) > 80:
-                        args_display = args_display[:80] + "…"
+                    if len(args_display) > 60:
+                        args_display = args_display[:60] + "…"
+                        is_truncated = True
                 else:
                     args_display = ""
 
                 if args_display:
-                    print(colored(f"  ⚡ {tool_name}", "cyan") + colored(f" {args_display}", "white", attrs=["dark"]), end="", flush=True)
+                    hint = colored(" [^O]", "white", attrs=["dark"]) if is_truncated else ""
+                    print(colored(f"  ⚡ {tool_name}", "cyan") + colored(f" {args_display}", "white", attrs=["dark"]) + hint, end="", flush=True)
                 else:
                     print(colored(f"  ⚡ {tool_name}", "cyan"), end="", flush=True)
             except:

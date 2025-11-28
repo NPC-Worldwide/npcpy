@@ -434,6 +434,34 @@ class Jinx:
         self.steps = jinx_data.get("steps", [])
         self._source_path = jinx_data.get("_source_path", None)
 
+    def to_tool_def(self) -> Dict[str, Any]:
+        """Convert this Jinx to an OpenAI-style tool definition."""
+        properties = {}
+        required = []
+        for inp in self.inputs:
+            if isinstance(inp, str):
+                properties[inp] = {"type": "string", "description": f"Parameter: {inp}"}
+                required.append(inp)
+            elif isinstance(inp, dict):
+                name = list(inp.keys())[0]
+                default_val = inp.get(name, "")
+                desc = f"Parameter: {name}"
+                if default_val != "":
+                    desc += f" (default: {default_val})"
+                properties[name] = {"type": "string", "description": desc}
+        return {
+            "type": "function",
+            "function": {
+                "name": self.jinx_name,
+                "description": self.description or f"Jinx: {self.jinx_name}",
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required
+                }
+            }
+        }
+
     def render_first_pass(
         self, 
         jinja_env_for_macros: Environment, 
@@ -769,28 +797,7 @@ def load_jinxs_from_directory(directory):
 
 def jinx_to_tool_def(jinx_obj: 'Jinx') -> Dict[str, Any]:
     """Convert a Jinx instance into an MCP/LLM-compatible tool schema definition."""
-    properties: Dict[str, Any] = {}
-    required: List[str] = []
-    for inp in jinx_obj.inputs:
-        if isinstance(inp, str):
-            properties[inp] = {"type": "string"}
-            required.append(inp)
-        elif isinstance(inp, dict):
-            name = list(inp.keys())[0]
-            properties[name] = {"type": "string", "default": inp.get(name, "")}
-            required.append(name)
-    return {
-        "type": "function",
-        "function": {
-            "name": jinx_obj.jinx_name,
-            "description": jinx_obj.description or f"Jinx: {jinx_obj.jinx_name}",
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required
-            }
-        }
-    }
+    return jinx_obj.to_tool_def()
 
 def build_jinx_tool_catalog(jinxs: Dict[str, 'Jinx']) -> Dict[str, Dict[str, Any]]:
     """Helper to build a name->tool_def catalog from a dict of Jinx objects."""
@@ -948,7 +955,9 @@ class NPC:
             self.npc_directory = None
 
         self.team = team # Store the team reference (can be None)
-        self.jinxs_spec = jinxs or "*" # Store the jinx specification for later loading
+        # Only set jinxs_spec from parameter if it wasn't already set by _load_from_file
+        if not hasattr(self, 'jinxs_spec') or jinxs is not None:
+            self.jinxs_spec = jinxs or "*" # Store the jinx specification for later loading
 
         if tools is not None:
             tools_schema, tool_map = auto_tools(tools)
@@ -1834,17 +1843,21 @@ class NPC:
                 pass  # Don't fail jinx execution due to logging error
         return result
     def check_llm_command(self,
-                            command, 
+                            command,
                             messages=None,
                             context=None,
                             team=None,
-                            stream=False):
+                            stream=False,
+                            jinxs=None):
         """Check if a command is for the LLM"""
         if context is None:
             context = self.shared_context
-        
+
         if team:
             self._current_team = team
+
+        # Use provided jinxs or fall back to NPC's own jinxs
+        jinxs_to_use = jinxs if jinxs is not None else self.jinxs_dict
 
         return npy.llm_funcs.check_llm_command(
             command,
@@ -1855,6 +1868,7 @@ class NPC:
             messages=self.memory if messages is None else messages,
             context=context,
             stream=stream,
+            jinxs=jinxs_to_use,
         )
     
     def handle_agent_pass(self, 
@@ -2457,146 +2471,98 @@ class Team:
         else:
             return None
 
-    def orchestrate(self, request):
+    def orchestrate(self, request, max_iterations=3):
         """Orchestrate a request through the team"""
-        forenpc = self.get_forenpc() # Now guaranteed to be an NPC object
+        import re
+        from termcolor import colored
+
+        forenpc = self.get_forenpc()
         if not forenpc:
             return {"error": "No forenpc available to coordinate the team"}
-        
-        log_entry(
-            self.name,
-            "orchestration_start",
-            {"request": request}
-        )
-        
-        result = forenpc.check_llm_command(request,
-            context=getattr(self, 'context', {}),
-            team = self, 
-        )
-        
-        while True:
-            completion_prompt= "" 
-            if isinstance(result, dict):
-                self.shared_context["execution_history"].append(result)
-                
-                if result.get("messages") and result.get("npc_name"):
-                    if result["npc_name"] not in self.shared_context["npc_messages"]:
-                        self.shared_context["npc_messages"][result["npc_name"]] = []
-                    self.shared_context["npc_messages"][result["npc_name"]].extend(
-                        result["messages"]
-                    )
-                
-                completion_prompt += f"""Context:
-                    User request '{request}', previous agent
-                    
-                    previous agent returned:
-                    {result.get('output')}
 
-                    
-                Instructions:
+        print(colored(f"[orchestrate] Starting with forenpc={forenpc.name}, team={self.name}", "cyan"))
+        print(colored(f"[orchestrate] Request: {request[:100]}...", "cyan"))
 
-                    Check whether the response is relevant to the user's request.
+        # Filter out 'orchestrate' jinx to prevent infinite recursion
+        jinxs_for_orchestration = {k: v for k, v in forenpc.jinxs_dict.items() if k != 'orchestrate'}
 
-                """
-                if self.npcs is None or len(self.npcs) == 0:
-                    completion_prompt += f"""
-                    The team has no members, so the forenpc must handle the request alone.
-                    """
-                else:
-                    completion_prompt += f"""
-                    
-                    These are all the members of the team: {', '.join(self.npcs.keys())}
-
-                    Therefore, if you are trying to evaluate whether a request was fulfilled relevantly,
-                    consider that requests are made to the forenpc: {forenpc.name}
-                    and that the forenpc must pass those along to the other npcs. 
-                    """
-                completion_prompt += f"""
-
-                Mainly concern yourself with ensuring there are no
-                glaring errors nor fundamental mishaps in the response.
-                Do not consider stylistic hiccups as the answers being
-                irrelevant. By providing responses back to for the user to
-                comment on, they can can more efficiently iterate and resolve any issues by 
-                prompting more clearly.
-                natural language itself is very fuzzy so there will always be some level
-                of misunderstanding, but as long as the response is clearly relevant 
-                to the input request and along the user's intended direction,
-                it is considered relevant.
-                                
-
-                If there is enough information to begin a fruitful conversation with the user, 
-                please consider the request relevant so that we do not
-                arbritarily stall business logic which is more efficiently
-                determined by iterations than through unnecessary pedantry.
-
-                It is more important to get a response to the user
-                than to account for all edge cases, so as long as the response more or less tackles the
-                initial problem to first order, consider it relevant.
-
-                Return a JSON object with:
-                    -'relevant' with boolean value
-                    -'explanation' for irrelevance with quoted citations in your explanation noting why it is irrelevant to user input must be a single string.
-                Return only the JSON object."""
-            
-            completion_check = npy.llm_funcs.get_llm_response(
-                completion_prompt, 
-                model=forenpc.model,
-                provider=forenpc.provider,
-                api_key=forenpc.api_key,
-                api_url=forenpc.api_url,
-                npc=forenpc,
-                format="json"
+        try:
+            result = forenpc.check_llm_command(
+                request,
+                context=getattr(self, 'context', {}),
+                team=self,
+                jinxs=jinxs_for_orchestration,
             )
-            
-            if isinstance(completion_check.get("response"), dict):
-                complete = completion_check["response"].get("relevant", False)
-                explanation = completion_check["response"].get("explanation", "")
-            else:
-                complete = False
-                explanation = "Could not determine completion status"
-            
-            if complete:
-                debrief = npy.llm_funcs.get_llm_response(
-                    f"""Context:
-                    Original request: {request}
-                    Execution history: {self.shared_context['execution_history']}
+            print(colored(f"[orchestrate] Initial result type={type(result)}", "cyan"))
+            if isinstance(result, dict):
+                print(colored(f"[orchestrate] Result keys={list(result.keys())}", "cyan"))
+                if 'error' in result:
+                    print(colored(f"[orchestrate] Error in result: {result['error']}", "red"))
+                    return result
+        except Exception as e:
+            print(colored(f"[orchestrate] Exception in check_llm_command: {e}", "red"))
+            return {"error": str(e), "output": f"Orchestration failed: {e}"}
 
-                    Instructions:
-                    Provide summary of actions taken and recommendations.
-                    Return a JSON object with:
-                    - 'summary': Overview of what was accomplished
-                    - 'recommendations': Suggested next steps
-                    Return only the JSON object.""",
-                    model=forenpc.model,
-                    provider=forenpc.provider,
-                    api_key=forenpc.api_key,
-                    api_url=forenpc.api_url,
-                    npc=forenpc,
-                    format="json"
-                )
-                
-                return {
-                    "debrief": debrief.get("response"),
-                    "output": result.get("output"),
-                    "execution_history": self.shared_context["execution_history"],
-                }
-            else:
-                updated_request = (
-                    request
-                    + "\n\nThe request has not yet been fully completed. "
-                    + explanation
-                    + "\nPlease address only the remaining parts of the request."
-                )
-                print('updating request', updated_request)
-                
-                result = forenpc.check_llm_command(
-                    updated_request,
-                    context=getattr(self, 'context', {}),
-                    stream = False,
-                    team = self
-                    
-                )
+        # Check if forenpc mentioned other team members - if so, delegate to them
+        output = ""
+        if isinstance(result, dict):
+            output = result.get('output') or result.get('response') or ""
+
+        print(colored(f"[orchestrate] Output preview: {output[:200] if output else 'EMPTY'}...", "cyan"))
+
+        if output and self.npcs:
+            # Look for @npc_name mentions OR just npc names
+            at_pattern = r'@(\w+)'
+            mentions = re.findall(at_pattern, output)
+
+            # Also check for NPC names mentioned without @ (case insensitive)
+            if not mentions:
+                for npc_name in self.npcs.keys():
+                    if npc_name.lower() != forenpc.name.lower():
+                        if npc_name.lower() in output.lower():
+                            mentions.append(npc_name)
+                            break
+
+            print(colored(f"[orchestrate] Found mentions: {mentions}", "cyan"))
+
+            for mentioned in mentions:
+                mentioned_lower = mentioned.lower()
+                if mentioned_lower in self.npcs and mentioned_lower != forenpc.name:
+                    target_npc = self.npcs[mentioned_lower]
+                    print(colored(f"[orchestrate] Delegating to @{mentioned_lower}", "yellow"))
+
+                    try:
+                        # Execute the request with the target NPC (exclude orchestrate to prevent loops)
+                        target_jinxs = {k: v for k, v in target_npc.jinxs_dict.items() if k != 'orchestrate'}
+                        delegate_result = target_npc.check_llm_command(
+                            request,
+                            context=getattr(self, 'context', {}),
+                            team=self,
+                            jinxs=target_jinxs,
+                        )
+
+                        if isinstance(delegate_result, dict):
+                            delegate_output = delegate_result.get('output') or delegate_result.get('response') or ""
+                            if delegate_output:
+                                output = f"[{mentioned_lower}]: {delegate_output}"
+                                result = delegate_result
+                                print(colored(f"[orchestrate] Got response from {mentioned_lower}", "green"))
+                    except Exception as e:
+                        print(colored(f"[orchestrate] Delegation to {mentioned_lower} failed: {e}", "red"))
+
+                    break  # Only delegate to first mentioned NPC
+
+        if isinstance(result, dict):
+            final_output = output if output else str(result)
+            return {
+                "output": final_output,
+                "result": result,
+            }
+        else:
+            return {
+                "output": str(result),
+                "result": result,
+            }
                 
     def to_dict(self):
         """Convert team to dictionary representation"""
