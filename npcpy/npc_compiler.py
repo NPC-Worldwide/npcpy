@@ -2285,13 +2285,9 @@ class Team:
                     if 'file_patterns' in ctx_data:
                         file_cache = self._parse_file_patterns(ctx_data['file_patterns'])
                         self.shared_context['files'] = file_cache
-                    if 'preferences' in ctx_data:
-                        self.preferences = ctx_data['preferences']
-                    else:
-                        self.preferences = []
-                    
+                    # All other keys (including preferences) are treated as generic context
                     for key, item in ctx_data.items():
-                        if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns', 'forenpc', 'model', 'provider', 'api_url', 'env', 'preferences']:
+                        if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns', 'forenpc', 'model', 'provider', 'api_url', 'env']:
                             self.shared_context[key] = item
                 return # Only load the first .ctx file found
         

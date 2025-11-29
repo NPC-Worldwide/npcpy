@@ -842,8 +842,11 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
     if team is not None:
         team_context = team.context if hasattr(team, "context") and team.context else ""
-        team_preferences = team.preferences if hasattr(team, "preferences") and len(team.preferences) > 0 else ""
-        system_message += f"\nTeam context: {team_context}\nTeam preferences: {team_preferences}\n"
+        # preferences now comes from shared_context like other generic context keys
+        team_preferences = team.shared_context.get('preferences', '') if hasattr(team, "shared_context") else ""
+        system_message += f"\nTeam context: {team_context}\n"
+        if team_preferences:
+            system_message += f"Team preferences: {team_preferences}\n"
 
         # Add team members
         if hasattr(team, 'npcs') and team.npcs:

@@ -66,7 +66,7 @@ from npcpy.memory.command_history import (
     save_conversation_message,
     generate_message_id,
 )
-from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxs_from_directory, build_jinx_tool_catalog
+from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxs_from_directory, build_jinx_tool_catalog, initialize_npc_project
 
 from npcpy.llm_funcs import (
     get_llm_response, check_llm_command
@@ -2173,19 +2173,27 @@ def api_get_last_used_in_conversation():
     result = get_last_used_model_and_npc_in_conversation(conversation_id)
     return jsonify(result)
 
-def get_ctx_path(is_global, current_path=None):
+def get_ctx_path(is_global, current_path=None, create_default=False):
     """Determines the path to the .ctx file."""
     if is_global:
         ctx_dir = os.path.join(os.path.expanduser("~/.npcsh/npc_team/"))
         ctx_files = glob.glob(os.path.join(ctx_dir, "*.ctx"))
-        return ctx_files[0] if ctx_files else None
+        if ctx_files:
+            return ctx_files[0]
+        elif create_default:
+            return os.path.join(ctx_dir, "team.ctx")
+        return None
     else:
         if not current_path:
             return None
-        
+
         ctx_dir = os.path.join(current_path, "npc_team")
         ctx_files = glob.glob(os.path.join(ctx_dir, "*.ctx"))
-        return ctx_files[0] if ctx_files else None
+        if ctx_files:
+            return ctx_files[0]
+        elif create_default:
+            return os.path.join(ctx_dir, "team.ctx")
+        return None
 
 
 def read_ctx_file(file_path):
@@ -2286,10 +2294,10 @@ def save_project_context():
         data = request.json
         current_path = data.get("path")
         context_data = data.get("context", {})
-        
+
         if not current_path:
             return jsonify({"error": "Project path is required."}), 400
-            
+
         ctx_path = get_ctx_path(is_global=False, current_path=current_path)
         if write_ctx_file(ctx_path, context_data):
             return jsonify({"message": "Project context saved.", "error": None})
@@ -2297,6 +2305,23 @@ def save_project_context():
             return jsonify({"error": "Failed to write project context file."}), 500
     except Exception as e:
         print(f"Error saving project context: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/context/project/init", methods=["POST"])
+def init_project_team():
+    """Initialize a new npc_team folder in the project directory."""
+    try:
+        data = request.json
+        project_path = data.get("path")
+
+        if not project_path:
+            return jsonify({"error": "Project path is required."}), 400
+
+        # Use the existing initialize_npc_project function
+        result = initialize_npc_project(directory=project_path)
+        return jsonify({"message": "Project team initialized.", "path": result, "error": None})
+    except Exception as e:
+        print(f"Error initializing project team: {e}")
         return jsonify({"error": str(e)}), 500
 
 
