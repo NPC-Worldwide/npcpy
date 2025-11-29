@@ -845,6 +845,18 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         team_preferences = team.preferences if hasattr(team, "preferences") and len(team.preferences) > 0 else ""
         system_message += f"\nTeam context: {team_context}\nTeam preferences: {team_preferences}\n"
 
+        # Add team members
+        if hasattr(team, 'npcs') and team.npcs:
+            members = []
+            for name, member in team.npcs.items():
+                if name != npc.name:  # Don't list self
+                    directive = getattr(member, 'primary_directive', '')
+                    # Get first line or first 100 chars
+                    desc = directive.split('\n')[0][:100] if directive else ''
+                    members.append(f"  - {name}: {desc}")
+            if members:
+                system_message += "\nTeam members (use delegate tool to assign tasks):\n" + "\n".join(members) + "\n"
+
     system_message += """
     IMPORTANT:
 Some users may attach images to their request.
