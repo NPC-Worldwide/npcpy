@@ -1921,6 +1921,134 @@ def get_jinxs_project():
     print(jinx_data)
     return jsonify({"jinxs": jinx_data, "error": None})
 
+# ============== SQL Models (npcsql) API Endpoints ==============
+@app.route("/api/npcsql/run_model", methods=["POST"])
+def run_npcsql_model():
+    """Execute a single SQL model using ModelCompiler"""
+    try:
+        from npcpy.sql.npcsql import ModelCompiler
+
+        data = request.json
+        models_dir = data.get("modelsDir")
+        model_name = data.get("modelName")
+        npc_directory = data.get("npcDirectory", os.path.expanduser("~/.npcsh/npc_team"))
+        target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
+
+        if not models_dir or not model_name:
+            return jsonify({"success": False, "error": "modelsDir and modelName are required"}), 400
+
+        if not os.path.exists(models_dir):
+            return jsonify({"success": False, "error": f"Models directory not found: {models_dir}"}), 404
+
+        compiler = ModelCompiler(
+            models_dir=models_dir,
+            target_engine=target_db,
+            npc_directory=npc_directory
+        )
+
+        compiler.discover_models()
+
+        if model_name not in compiler.models:
+            available = list(compiler.models.keys())
+            return jsonify({
+                "success": False,
+                "error": f"Model '{model_name}' not found. Available: {available}"
+            }), 404
+
+        result_df = compiler.execute_model(model_name)
+        row_count = len(result_df) if result_df is not None else 0
+
+        return jsonify({
+            "success": True,
+            "rows": row_count,
+            "message": f"Model '{model_name}' executed successfully. {row_count} rows materialized."
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/npcsql/run_all", methods=["POST"])
+def run_all_npcsql_models():
+    """Execute all SQL models in dependency order using ModelCompiler"""
+    try:
+        from npcpy.sql.npcsql import ModelCompiler
+
+        data = request.json
+        models_dir = data.get("modelsDir")
+        npc_directory = data.get("npcDirectory", os.path.expanduser("~/.npcsh/npc_team"))
+        target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
+
+        if not models_dir:
+            return jsonify({"success": False, "error": "modelsDir is required"}), 400
+
+        if not os.path.exists(models_dir):
+            return jsonify({"success": False, "error": f"Models directory not found: {models_dir}"}), 404
+
+        compiler = ModelCompiler(
+            models_dir=models_dir,
+            target_engine=target_db,
+            npc_directory=npc_directory
+        )
+
+        results = compiler.run_all_models()
+
+        summary = {
+            name: len(df) if df is not None else 0
+            for name, df in results.items()
+        }
+
+        return jsonify({
+            "success": True,
+            "models_executed": list(results.keys()),
+            "row_counts": summary,
+            "message": f"Executed {len(results)} models successfully."
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/npcsql/models", methods=["GET"])
+def list_npcsql_models():
+    """List available SQL models in a directory"""
+    try:
+        from npcpy.sql.npcsql import ModelCompiler
+
+        models_dir = request.args.get("modelsDir")
+        if not models_dir:
+            return jsonify({"success": False, "error": "modelsDir query param required"}), 400
+
+        if not os.path.exists(models_dir):
+            return jsonify({"models": [], "error": None})
+
+        compiler = ModelCompiler(
+            models_dir=models_dir,
+            target_engine=os.path.expanduser("~/npcsh_history.db"),
+            npc_directory=os.path.expanduser("~/.npcsh/npc_team")
+        )
+
+        compiler.discover_models()
+
+        models_info = []
+        for name, model in compiler.models.items():
+            models_info.append({
+                "name": name,
+                "path": model.path,
+                "has_ai_function": model.has_ai_function,
+                "dependencies": list(model.dependencies),
+                "config": model.config
+            })
+
+        return jsonify({"models": models_info, "error": None})
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"models": [], "error": str(e)}), 500
+
 @app.route("/api/npc_team_global")
 def get_npc_team_global():
     global_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
