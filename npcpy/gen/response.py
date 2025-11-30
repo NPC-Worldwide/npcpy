@@ -5,13 +5,18 @@ from npcpy.npc_sysenv import get_system_message, lookup_provider, render_markdow
 import base64
 import json
 import uuid
-import os 
-try: 
+import os
+import warnings
+
+# Suppress Pydantic serialization warnings from litellm
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
+
+try:
     import ollama
 except ImportError:
     pass
 except OSError:
-    
+
     print("Ollama is not installed or not available. Please install it to use this feature.")
 try:
     import litellm
@@ -815,6 +820,9 @@ def get_litellm_response(
 
         # Always do a follow-up call to get a proper response after tool execution
         # Convert tool interactions to a clean format for the follow-up call
+        # BUT preserve the full message history for returning to caller
+        full_message_history = processed_result["messages"].copy()
+
         clean_messages = []
         tool_results_summary = []
 
@@ -855,6 +863,9 @@ def get_litellm_response(
             del final_api_params["tool_choice"]
 
         final_resp = completion(**final_api_params)
+
+        # Restore full message history and append final response
+        processed_result["messages"] = full_message_history
 
         if stream:
             processed_result["response"] = final_resp
