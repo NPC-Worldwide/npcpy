@@ -50,7 +50,6 @@ from npcpy.memory.search import execute_rag_command, execute_brainblast_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
 
-from npcsh._state import get_relevant_memories, search_kg_facts
 
 import base64
 import shutil
@@ -67,7 +66,7 @@ from npcpy.memory.command_history import (
     save_conversation_message,
     generate_message_id,
 )
-from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxs_from_directory, build_jinx_tool_catalog
+from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxs_from_directory, build_jinx_tool_catalog, initialize_npc_project
 
 from npcpy.llm_funcs import (
     get_llm_response, check_llm_command
@@ -972,12 +971,8 @@ def execute_jinx():
         'state': state,
         'CommandHistory': CommandHistory,
         'load_kg_from_db': load_kg_from_db,
-        'execute_rag_command': execute_rag_command,
-        'execute_brainblast_command': execute_brainblast_command,
-        'load_file_contents': load_file_contents,
-        'search_web': search_web,
-        'get_relevant_memories': get_relevant_memories,
-        'search_kg_facts': search_kg_facts,
+        #'get_relevant_memories': get_relevant_memories,
+        #'search_kg_facts': search_kg_facts,
     }
 
     jinx_execution_result = jinx.execute(
@@ -1921,6 +1916,134 @@ def get_jinxs_project():
     print(jinx_data)
     return jsonify({"jinxs": jinx_data, "error": None})
 
+# ============== SQL Models (npcsql) API Endpoints ==============
+@app.route("/api/npcsql/run_model", methods=["POST"])
+def run_npcsql_model():
+    """Execute a single SQL model using ModelCompiler"""
+    try:
+        from npcpy.sql.npcsql import ModelCompiler
+
+        data = request.json
+        models_dir = data.get("modelsDir")
+        model_name = data.get("modelName")
+        npc_directory = data.get("npcDirectory", os.path.expanduser("~/.npcsh/npc_team"))
+        target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
+
+        if not models_dir or not model_name:
+            return jsonify({"success": False, "error": "modelsDir and modelName are required"}), 400
+
+        if not os.path.exists(models_dir):
+            return jsonify({"success": False, "error": f"Models directory not found: {models_dir}"}), 404
+
+        compiler = ModelCompiler(
+            models_dir=models_dir,
+            target_engine=target_db,
+            npc_directory=npc_directory
+        )
+
+        compiler.discover_models()
+
+        if model_name not in compiler.models:
+            available = list(compiler.models.keys())
+            return jsonify({
+                "success": False,
+                "error": f"Model '{model_name}' not found. Available: {available}"
+            }), 404
+
+        result_df = compiler.execute_model(model_name)
+        row_count = len(result_df) if result_df is not None else 0
+
+        return jsonify({
+            "success": True,
+            "rows": row_count,
+            "message": f"Model '{model_name}' executed successfully. {row_count} rows materialized."
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/npcsql/run_all", methods=["POST"])
+def run_all_npcsql_models():
+    """Execute all SQL models in dependency order using ModelCompiler"""
+    try:
+        from npcpy.sql.npcsql import ModelCompiler
+
+        data = request.json
+        models_dir = data.get("modelsDir")
+        npc_directory = data.get("npcDirectory", os.path.expanduser("~/.npcsh/npc_team"))
+        target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
+
+        if not models_dir:
+            return jsonify({"success": False, "error": "modelsDir is required"}), 400
+
+        if not os.path.exists(models_dir):
+            return jsonify({"success": False, "error": f"Models directory not found: {models_dir}"}), 404
+
+        compiler = ModelCompiler(
+            models_dir=models_dir,
+            target_engine=target_db,
+            npc_directory=npc_directory
+        )
+
+        results = compiler.run_all_models()
+
+        summary = {
+            name: len(df) if df is not None else 0
+            for name, df in results.items()
+        }
+
+        return jsonify({
+            "success": True,
+            "models_executed": list(results.keys()),
+            "row_counts": summary,
+            "message": f"Executed {len(results)} models successfully."
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/npcsql/models", methods=["GET"])
+def list_npcsql_models():
+    """List available SQL models in a directory"""
+    try:
+        from npcpy.sql.npcsql import ModelCompiler
+
+        models_dir = request.args.get("modelsDir")
+        if not models_dir:
+            return jsonify({"success": False, "error": "modelsDir query param required"}), 400
+
+        if not os.path.exists(models_dir):
+            return jsonify({"models": [], "error": None})
+
+        compiler = ModelCompiler(
+            models_dir=models_dir,
+            target_engine=os.path.expanduser("~/npcsh_history.db"),
+            npc_directory=os.path.expanduser("~/.npcsh/npc_team")
+        )
+
+        compiler.discover_models()
+
+        models_info = []
+        for name, model in compiler.models.items():
+            models_info.append({
+                "name": name,
+                "path": model.path,
+                "has_ai_function": model.has_ai_function,
+                "dependencies": list(model.dependencies),
+                "config": model.config
+            })
+
+        return jsonify({"models": models_info, "error": None})
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"models": [], "error": str(e)}), 500
+
 @app.route("/api/npc_team_global")
 def get_npc_team_global():
     global_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
@@ -2050,19 +2173,27 @@ def api_get_last_used_in_conversation():
     result = get_last_used_model_and_npc_in_conversation(conversation_id)
     return jsonify(result)
 
-def get_ctx_path(is_global, current_path=None):
+def get_ctx_path(is_global, current_path=None, create_default=False):
     """Determines the path to the .ctx file."""
     if is_global:
         ctx_dir = os.path.join(os.path.expanduser("~/.npcsh/npc_team/"))
         ctx_files = glob.glob(os.path.join(ctx_dir, "*.ctx"))
-        return ctx_files[0] if ctx_files else None
+        if ctx_files:
+            return ctx_files[0]
+        elif create_default:
+            return os.path.join(ctx_dir, "team.ctx")
+        return None
     else:
         if not current_path:
             return None
-        
+
         ctx_dir = os.path.join(current_path, "npc_team")
         ctx_files = glob.glob(os.path.join(ctx_dir, "*.ctx"))
-        return ctx_files[0] if ctx_files else None
+        if ctx_files:
+            return ctx_files[0]
+        elif create_default:
+            return os.path.join(ctx_dir, "team.ctx")
+        return None
 
 
 def read_ctx_file(file_path):
@@ -2163,10 +2294,10 @@ def save_project_context():
         data = request.json
         current_path = data.get("path")
         context_data = data.get("context", {})
-        
+
         if not current_path:
             return jsonify({"error": "Project path is required."}), 400
-            
+
         ctx_path = get_ctx_path(is_global=False, current_path=current_path)
         if write_ctx_file(ctx_path, context_data):
             return jsonify({"message": "Project context saved.", "error": None})
@@ -2174,6 +2305,23 @@ def save_project_context():
             return jsonify({"error": "Failed to write project context file."}), 500
     except Exception as e:
         print(f"Error saving project context: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/context/project/init", methods=["POST"])
+def init_project_team():
+    """Initialize a new npc_team folder in the project directory."""
+    try:
+        data = request.json
+        project_path = data.get("path")
+
+        if not project_path:
+            return jsonify({"error": "Project path is required."}), 400
+
+        # Use the existing initialize_npc_project function
+        result = initialize_npc_project(directory=project_path)
+        return jsonify({"message": "Project team initialized.", "path": result, "error": None})
+    except Exception as e:
+        print(f"Error initializing project team: {e}")
         return jsonify({"error": str(e)}), 500
 
 

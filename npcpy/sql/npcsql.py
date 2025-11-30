@@ -253,56 +253,81 @@ class NPCSQLOperations:
         return None
         
     def execute_ai_function(
-        self, 
-        func_name: str, 
-        df: pd.DataFrame, 
+        self,
+        func_name: str,
+        df: pd.DataFrame,
         **params
     ) -> pd.Series:
         if func_name not in self.function_map:
             raise ValueError(f"Unknown AI function: {func_name}")
-            
+
         func = self.function_map[func_name]
-        
+
         npc_ref = params.get('npc', '')
         resolved_npc = self._resolve_npc_reference(npc_ref)
-        
+
         resolved_team = self._get_team()
         if not resolved_team and hasattr(resolved_npc, 'team'):
             resolved_team = resolved_npc.team
-        
-        def apply_function_to_row(row):
+
+        total_rows = len(df)
+        print(f"NQL: Executing {func_name} on {total_rows} rows with NPC '{npc_ref}'...")
+
+        results = []
+        for idx, (row_idx, row) in enumerate(df.iterrows()):
             query_template = params.get('query', '')
             column_name = params.get('column', '')
-            
+
             column_value = str(row[column_name]) if column_name and column_name in row.index else column_name
 
             if query_template:
                 row_data = {
-                    col: str(row[col]) 
+                    col: str(row[col])
                     for col in df.columns
                 }
-                row_data['column_value'] = column_value 
+                row_data['column_value'] = column_value
                 query = query_template.format(**row_data)
             else:
                 query = column_value
-            
+
+            print(f"  [{idx+1}/{total_rows}] Processing row {row_idx}...", end=" ", flush=True)
+
             sig = py_inspect.signature(func)
+
+            # Extract model/provider from NPC if available
+            npc_model = None
+            npc_provider = None
+            if resolved_npc and hasattr(resolved_npc, 'model'):
+                npc_model = resolved_npc.model
+            if resolved_npc and hasattr(resolved_npc, 'provider'):
+                npc_provider = resolved_npc.provider
+
             func_params = {
                 k: v for k, v in {
-                    'prompt': query, 
-                    'text': query,   
+                    'prompt': query,
+                    'text': query,
                     'npc': resolved_npc,
                     'team': resolved_team,
-                    'context': params.get('context', '')
+                    'context': params.get('context', ''),
+                    'model': npc_model or 'gpt-4o-mini',
+                    'provider': npc_provider or 'openai'
                 }.items() if k in sig.parameters
             }
-            
-            result = func(**func_params)
-            return (result.get("response", "") 
-                    if isinstance(result, dict) 
-                    else str(result))
-        
-        return df.apply(apply_function_to_row, axis=1)
+
+            try:
+                result = func(**func_params)
+                result_value = (result.get("response", "")
+                        if isinstance(result, dict)
+                        else str(result))
+                print(f"OK ({len(result_value)} chars)")
+            except Exception as e:
+                print(f"ERROR: {e}")
+                result_value = None
+
+            results.append(result_value)
+
+        print(f"NQL: Completed {func_name} on {total_rows} rows.")
+        return pd.Series(results, index=df.index)
     
 
 # --- SQL Model Definition ---
@@ -360,11 +385,10 @@ class SQLModel:
     def _extract_ai_functions(self) -> Dict[str, Dict]:
         """Extract AI function calls from SQL content with improved robustness."""
         import types
-        
+
         ai_functions = {}
-        # More robust pattern that handles nested parentheses better
-        # This captures: nql.function_name(args...)
-        pattern = r"nql\.(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)"
+        # Pattern that captures: nql.function_name(args...) as alias
+        pattern = r"nql\.(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(\s+as\s+(\w+))?"
         
         matches = re.finditer(pattern, self.content, flags=re.DOTALL | re.IGNORECASE)
 
@@ -424,13 +448,17 @@ class SQLModel:
                 if self.npc_directory and npc_param.startswith(self.npc_directory):
                     npc_param = npc_param[len(self.npc_directory):].strip('/')
 
+                # Extract alias if present (group 4 from the pattern)
+                alias = match.group(4) if match.lastindex >= 4 and match.group(4) else f"{func_name}_result"
+
                 ai_functions[func_name] = {
                     "column": column_param,
                     "npc": npc_param,
                     "query": query_param,
                     "context": context_param,
                     "full_call_string": full_call_string,
-                    "original_func_name": match.group(1)  # Store original case
+                    "original_func_name": match.group(1),  # Store original case
+                    "alias": alias
                 }
             else:
                 print(f"DEBUG SQLModel: Function '{func_name}' not found in available LLM funcs ({available_functions}). Skipping this NQL call.")
@@ -546,14 +574,23 @@ class ModelCompiler:
 
         def replace_ref(match):
             model_name = match.group(1)
-            if model_name not in self.models:
-                raise ValueError(
-                    f"Model '{model_name}' referenced by '{{{{ ref('{model_name}') }}}}' not found during compilation."
-                )
-            
-            if self.target_schema:
-                return f"{self.target_schema}.{model_name}"
-            return model_name
+
+            # First check if it's a model we're compiling
+            if model_name in self.models:
+                if self.target_schema:
+                    return f"{self.target_schema}.{model_name}"
+                return model_name
+
+            # Otherwise, check if it's an existing table in the database
+            if self._table_exists(model_name):
+                if self.target_schema:
+                    return f"{self.target_schema}.{model_name}"
+                return model_name
+
+            # If neither, raise an error
+            raise ValueError(
+                f"Model or table '{model_name}' referenced by '{{{{ ref('{model_name}') }}}}' not found during compilation."
+            )
 
         replaced_sql = re.sub(ref_pattern, replace_ref, sql_content)
         return replaced_sql
@@ -665,42 +702,42 @@ class ModelCompiler:
             for func_name, params in model.ai_functions.items():
                 try:
                     result_series = self.npc_operations.execute_ai_function(func_name, df, **params)
-                    result_column_name = f"{func_name}_{params.get('column', 'result')}" # Use a more specific alias if possible
+                    # Use the SQL alias if available, otherwise generate one
+                    result_column_name = params.get('alias', f"{func_name}_result")
                     df[result_column_name] = result_series
-                    print(f"DEBUG: Python-driven AI function '{func_name}' executed. Result in column '{result_column_name}'.")
+                    print(f"DEBUG: AI function '{func_name}' result stored in column '{result_column_name}'.")
                 except Exception as e:
-                    print(f"ERROR: Executing Python-driven AI function '{func_name}': {e}. Assigning NULL.")
-                    df[f"{func_name}_{params.get('column', 'result')}"] = None
+                    print(f"ERROR: Executing AI function '{func_name}': {e}. Assigning NULL.")
+                    result_column_name = params.get('alias', f"{func_name}_result")
+                    df[result_column_name] = None
                     
             return df
 
     def _replace_nql_calls_with_null(self, sql_content: str, model: SQLModel) -> str:
         """
-        Replaces specific nql.func(...) as alias calls with NULL as alias.
-        This is used for the fallback path or to clean up any NQL calls missed by native translation.
+        Replaces nql.func(...) calls with NULL placeholders.
+        This is used for the fallback path where we execute SQL first, then apply AI functions in Python.
         """
         modified_sql = sql_content
-        for func_name, params in model.ai_functions.items():
-            original_nql_call = params.get('full_call_string')
-            if not original_nql_call:
-                print(f"WARNING: 'full_call_string' not found for NQL function '{func_name}'. Cannot replace with NULL.")
-                continue
 
-            # Extract alias from the original_nql_call string for NULL replacement
-            alias_match = re.search(r'\s+as\s+(\w+)(?:\W|$)', original_nql_call, re.IGNORECASE)
-            alias_name = alias_match.group(1) if alias_match else f"{func_name}_{params.get('column', 'result')}"
+        # Pattern to match nql.function_name(...) with nested parentheses support
+        # Also captures the 'as alias' part if present
+        nql_pattern = r'nql\.(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(\s+as\s+(\w+))?'
 
-            # Create a robust pattern for the original NQL call to handle whitespace variability
-            escaped_original_call = re.escape(original_nql_call.strip())
-            pattern_to_sub = re.compile(r"\s*".join(escaped_original_call.split()), flags=re.IGNORECASE)
+        def replace_with_null(match):
+            func_name = match.group(1)
+            alias_part = match.group(3) or ''
+            alias_name = match.group(4)
 
-            # Perform the replacement with NULL as alias
-            old_sql = modified_sql
-            modified_sql, count = pattern_to_sub.subn(f"NULL as {alias_name}", modified_sql)
-            if count == 0:
-                print(f"WARNING: NULL replacement failed for NQL call '{original_nql_call}' (no change to SQL). SQL still contains NQL call.")
-            else:
-                print(f"DEBUG: Replaced NQL call '{original_nql_call}' with 'NULL as {alias_name}'.")
+            # If no alias specified, generate one from function name
+            if not alias_name:
+                alias_name = f"{func_name}_result"
+                alias_part = f" as {alias_name}"
+
+            print(f"DEBUG: Replacing nql.{func_name}(...) with NULL{alias_part}")
+            return f"NULL{alias_part}"
+
+        modified_sql = re.sub(nql_pattern, replace_with_null, modified_sql, flags=re.IGNORECASE | re.DOTALL)
 
         return modified_sql
 

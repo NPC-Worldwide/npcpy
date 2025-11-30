@@ -511,6 +511,178 @@ else:
 The intention for this model ensembler system is to mimic human cognition: pattern-matched gut reactions (System 1 of Kahneman) for familiar queries, falling back to deliberate reasoning (System 2 of Kahneman) for novel problems. Genetic algorithms evolve both knowledge structures and model specializations over time.
 
 
+## NPCArray - NumPy for AI
+
+`npcpy` provides `NPCArray`, a NumPy-like interface for working with populations of models (LLMs, sklearn, PyTorch) at scale. Think of it as vectorized operations over AI models.
+
+### Core Concepts
+- Model arrays support vectorized operations
+- Operations are lazy until `.collect()` is called (like Spark)
+- Same interface works for single models (treated as length-1 arrays)
+- Supports ensemble voting, consensus, evolution, and more
+
+### Basic Usage
+
+```python
+from npcpy.npc_array import NPCArray
+
+# Create array of LLMs
+models = NPCArray.from_llms(
+    ['llama3.2', 'gemma3:1b'],
+    providers='ollama'
+)
+
+print(f"Model array shape: {models.shape}")  # (2,)
+
+# Inference across all models - returns shape (n_models, n_prompts)
+result = models.infer("What is 2+2? Just the number.").collect()
+
+print(f"Model 1: {result.data[0, 0]}")
+print(f"Model 2: {result.data[1, 0]}")
+```
+
+### Lazy Chaining & Ensemble Operations
+
+```python
+from npcpy.npc_array import NPCArray
+
+models = NPCArray.from_llms(['llama3.2', 'gemma3:1b', 'mistral:7b'])
+
+# Build lazy computation graph - nothing executed yet
+result = (
+    models
+    .infer("Is Python compiled or interpreted? One word.")
+    .map(lambda r: r.strip().lower())  # Clean responses
+    .vote(axis=0)  # Majority voting across models
+)
+
+# Show the computation plan
+result.explain()
+
+# Now execute
+answer = result.collect()
+print(f"Consensus: {answer.data[0]}")
+```
+
+### Parameter Sweeps with Meshgrid
+
+```python
+from npcpy.npc_array import NPCArray
+
+# Cartesian product over parameters
+configs = NPCArray.meshgrid(
+    models=['llama3.2', 'gemma3:1b'],
+    temperatures=[0.0, 0.5, 1.0]
+)
+
+print(f"Config array shape: {configs.shape}")  # (6,) = 2 models × 3 temps
+
+# Run inference with each config
+result = configs.infer("Complete: The quick brown fox").collect()
+```
+
+### Matrix Sampling with get_llm_response
+
+The `get_llm_response` function supports `matrix` and `n_samples` parameters for exploration:
+
+```python
+from npcpy.llm_funcs import get_llm_response
+
+# Matrix parameter - cartesian product over specified params
+result = get_llm_response(
+    "Write a creative opening line.",
+    matrix={
+        'model': ['llama3.2', 'gemma3:1b'],
+        'temperature': [0.5, 1.0]
+    }
+)
+print(f"Number of runs: {len(result['runs'])}")  # 4 = 2×2
+
+# n_samples - multiple samples from same config
+result = get_llm_response(
+    "Pick a random number 1-100.",
+    model='llama3.2',
+    n_samples=5
+)
+print(f"Samples: {[r['response'] for r in result['runs']]}")
+
+# Combine both for full exploration
+result = get_llm_response(
+    "Flip a coin: heads or tails?",
+    matrix={'model': ['llama3.2', 'gemma3:1b']},
+    n_samples=3  # 2 models × 3 samples = 6 runs
+)
+```
+
+### sklearn Integration
+
+```python
+from npcpy.npc_array import NPCArray
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+import numpy as np
+
+# Create sample data
+X_train = np.random.randn(100, 4)
+y_train = (X_train[:, 0] > 0).astype(int)
+
+# Pre-fit models
+rf = RandomForestClassifier(n_estimators=10).fit(X_train, y_train)
+lr = LogisticRegression().fit(X_train, y_train)
+
+# Create array from fitted models
+models = NPCArray.from_sklearn([rf, lr])
+
+# Vectorized prediction
+X_test = np.random.randn(20, 4)
+predictions = models.predict(X_test).collect()
+
+print(f"RF predictions: {predictions.data[0]}")
+print(f"LR predictions: {predictions.data[1]}")
+```
+
+### ML Functions with Grid Search
+
+```python
+from npcpy.ml_funcs import fit_model, score_model, ensemble_predict
+
+# Grid search via matrix parameter
+result = fit_model(
+    X_train, y_train,
+    model='RandomForestClassifier',
+    matrix={
+        'n_estimators': [10, 50, 100],
+        'max_depth': [3, 5, 10]
+    }
+)
+
+print(f"Fitted {len(result['models'])} model configurations")
+
+# Ensemble voting with multiple models
+predictions = ensemble_predict(X_test, result['models'], method='vote')
+```
+
+### Quick Utilities
+
+```python
+from npcpy.npc_array import infer_matrix, ensemble_vote
+
+# Quick matrix inference
+result = infer_matrix(
+    prompts=["Hello", "Goodbye"],
+    models=['llama3.2', 'gemma3:1b']
+)
+
+# Quick ensemble vote
+answer = ensemble_vote(
+    "What is the capital of France? One word.",
+    models=['llama3.2', 'gemma3:1b']
+)
+print(f"Voted answer: {answer}")
+```
+
+See `examples/npc_array_examples.py` for more comprehensive examples.
+
 
 ## Serving an NPC Team
 
