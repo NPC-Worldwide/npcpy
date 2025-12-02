@@ -1,4 +1,5 @@
 import os
+import shutil
 from pyexpat.errors import messages
 import yaml
 import json
@@ -18,7 +19,6 @@ from typing import Any, Dict, List, Optional, Union, Callable, Tuple
 from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoader
 from sqlalchemy import create_engine, text
 import npcpy as npy 
-from npcpy.llm_funcs import DEFAULT_ACTION_SPACE
 from npcpy.tools import auto_tools
 import math 
 import random
@@ -183,6 +183,7 @@ def initialize_npc_project(
     """Initialize an NPC project"""
     if directory is None:
         directory = os.getcwd()
+    directory = os.path.expanduser(os.fspath(directory))
 
     npc_team_dir = os.path.join(directory, "npc_team")
     os.makedirs(npc_team_dir, exist_ok=True)
@@ -191,7 +192,8 @@ def initialize_npc_project(
                    "assembly_lines", 
                    "sql_models", 
                    "jobs", 
-                   "triggers"]:
+                   "triggers",
+                   "tools"]:
         os.makedirs(os.path.join(npc_team_dir, subdir), exist_ok=True)
     
     forenpc_path = os.path.join(npc_team_dir, "forenpc.npc")
@@ -206,20 +208,166 @@ def initialize_npc_project(
         }
         with open(forenpc_path, "w") as f:
             yaml.dump(default_npc, f)
-    ctx_path = os.path.join(npc_team_dir, "team.ctx")
-    if not os.path.exists(ctx_path):
+    parsed_templates: List[str] = []
+    if templates:
+        if isinstance(templates, str):
+            parsed_templates = [
+                t.strip() for t in re.split(r"[,\s]+", templates) if t.strip()
+            ]
+        elif isinstance(templates, (list, tuple, set)):
+            parsed_templates = [str(t).strip() for t in templates if str(t).strip()]
+        else:
+            parsed_templates = [str(templates).strip()]
+
+    ctx_destination: Optional[str] = None
+    preexisting_ctx = [
+        os.path.join(npc_team_dir, f)
+        for f in os.listdir(npc_team_dir)
+        if f.endswith(".ctx")
+    ]
+    if preexisting_ctx:
+        ctx_destination = preexisting_ctx[0]
+        if len(preexisting_ctx) > 1:
+            print(
+                "Warning: Multiple .ctx files already present; using first and ignoring the rest."
+            )
+    
+    def _resolve_template_path(template_name: str) -> Optional[str]:
+        expanded = os.path.expanduser(template_name)
+        if os.path.exists(expanded):
+            return expanded
+
+        embedded_templates = {
+            "slean": """name: slean
+primary_directive: You are slean, the marketing innovator AI. Your responsibility is to create marketing campaigns and manage them effectively, while also thinking creatively to solve marketing challenges. Guide the strategy that drives customer engagement and brand awareness.
+""",
+            "turnic": """name: turnic
+primary_directive: Assist with sales challenges and questions. Opt for straightforward solutions that help sales professionals achieve quick results.
+""",
+            "budgeto": """name: budgeto
+primary_directive: You manage marketing budgets, ensuring resources are allocated efficiently and spend is optimized.
+""",
+            "relatio": """name: relatio
+primary_directive: You manage customer relationships and ensure satisfaction throughout the sales process. Focus on nurturing clients and maintaining long-term connections.
+""",
+            "funnel": """name: funnel
+primary_directive: You oversee the sales pipeline, track progress, and optimize conversion rates to move leads efficiently.
+""",
+        }
+
+        base_dirs = [
+            os.path.expanduser("~/.npcsh/npc_team/templates"),
+            os.path.expanduser("~/.npcpy/npc_team/templates"),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tests", "template_tests", "npc_team")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "examples", "npc_team")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "example_npc_project", "npc_team")),
+        ]
+        base_dirs = [d for d in base_dirs if os.path.isdir(d)]
+
+        for base in base_dirs:
+            direct = os.path.join(base, template_name)
+            if os.path.exists(direct):
+                return direct
+            if not direct.endswith(".npc") and os.path.exists(direct + ".npc"):
+                return direct + ".npc"
+            for root, _, files in os.walk(base):
+                for fname in files:
+                    stem, ext = os.path.splitext(fname)
+                    if ext == ".npc" and stem == template_name:
+                        return os.path.join(root, fname)
+
+        # If no on-disk template found, fall back to embedded definitions
+        if template_name in embedded_templates:
+            embedded_dir = os.path.join(npc_team_dir, "_embedded_templates", template_name)
+            os.makedirs(embedded_dir, exist_ok=True)
+            npc_file = os.path.join(embedded_dir, f"{template_name}.npc")
+            if not os.path.exists(npc_file):
+                with open(npc_file, "w") as f:
+                    f.write(embedded_templates[template_name])
+            return embedded_dir
+        return None
+
+    def _copy_template(src_path: str) -> List[str]:
+        nonlocal ctx_destination
+        copied: List[str] = []
+        src_path = os.path.expanduser(src_path)
+
+        allowed_exts = {".npc", ".tool", ".pipe", ".sql", ".job", ".ctx", ".yaml", ".yml"}
+
+        if os.path.isfile(src_path):
+            if os.path.splitext(src_path)[1] in allowed_exts:
+                if os.path.splitext(src_path)[1] == ".ctx":
+                    if ctx_destination:
+                        print(
+                            f"Warning: Skipping extra context file '{src_path}' because one already exists."
+                        )
+                        return copied
+                    dest_path = os.path.join(npc_team_dir, os.path.basename(src_path))
+                    ctx_destination = dest_path
+                else:
+                    dest_path = os.path.join(npc_team_dir, os.path.basename(src_path))
+                if not os.path.exists(dest_path):
+                    shutil.copy2(src_path, dest_path)
+                copied.append(dest_path)
+            return copied
+
+        for root, _, files in os.walk(src_path):
+            rel_dir = os.path.relpath(root, src_path)
+            dest_dir = npc_team_dir if rel_dir == "." else os.path.join(npc_team_dir, rel_dir)
+            os.makedirs(dest_dir, exist_ok=True)
+            for fname in files:
+                if os.path.splitext(fname)[1] not in allowed_exts:
+                    continue
+                if os.path.splitext(fname)[1] == ".ctx":
+                    if ctx_destination:
+                        print(
+                            f"Warning: Skipping extra context file '{os.path.join(root, fname)}' because one already exists."
+                        )
+                        continue
+                    dest_path = os.path.join(npc_team_dir, fname)
+                    ctx_destination = dest_path
+                else:
+                    dest_path = os.path.join(dest_dir, fname)
+                if not os.path.exists(dest_path):
+                    shutil.copy2(os.path.join(root, fname), dest_path)
+                copied.append(dest_path)
+        return copied
+
+    applied_templates: List[str] = []
+    if parsed_templates:
+        for template_name in parsed_templates:
+            template_path = _resolve_template_path(template_name)
+            if not template_path:
+                print(f"Warning: Template '{template_name}' not found in known template directories.")
+                continue
+            copied = _copy_template(template_path)
+            if copied:
+                applied_templates.append(template_name)
+    
+    if applied_templates:
+        applied_templates = sorted(set(applied_templates))
+    if not ctx_destination:
+        default_ctx_path = os.path.join(npc_team_dir, "team.ctx")
         default_ctx = {
             'name': '',
-            'context' : '', 
+            'context' : context or '', 
             'preferences': '', 
             'mcp_servers': '', 
             'databases':'', 
             'use_global_jinxs': True,
             'forenpc': 'forenpc'
         }
-        with open(ctx_path, "w") as f:
+        if parsed_templates:
+            default_ctx['templates'] = parsed_templates
+        with open(default_ctx_path, "w") as f:
             yaml.dump(default_ctx, f)
-            
+        ctx_destination = default_ctx_path
+
+    if applied_templates:
+        return (
+            f"NPC project initialized in {npc_team_dir} "
+            f"using templates: {', '.join(applied_templates)}"
+        )
     return f"NPC project initialized in {npc_team_dir}"
 
 
@@ -290,6 +438,34 @@ class Jinx:
         self.steps = jinx_data.get("steps", []) # This can now be a Jinja templated list
         self.file_context = jinx_data.get("file_context", [])
         self._source_path = jinx_data.get("_source_path", None)
+
+    def to_tool_def(self) -> Dict[str, Any]:
+        """Convert this Jinx to an OpenAI-style tool definition."""
+        properties = {}
+        required = []
+        for inp in self.inputs:
+            if isinstance(inp, str):
+                properties[inp] = {"type": "string", "description": f"Parameter: {inp}"}
+                required.append(inp)
+            elif isinstance(inp, dict):
+                name = list(inp.keys())[0]
+                default_val = inp.get(name, "")
+                desc = f"Parameter: {name}"
+                if default_val != "":
+                    desc += f" (default: {default_val})"
+                properties[name] = {"type": "string", "description": desc}
+        return {
+            "type": "function",
+            "function": {
+                "name": self.jinx_name,
+                "description": self.description or f"Jinx: {self.jinx_name}",
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required
+                }
+            }
+        }
 
     def render_first_pass(
         self, 
@@ -739,100 +915,12 @@ def load_jinxs_from_directory(directory):
 
 def jinx_to_tool_def(jinx_obj: 'Jinx') -> Dict[str, Any]:
     """Convert a Jinx instance into an MCP/LLM-compatible tool schema definition."""
-    properties: Dict[str, Any] = {}
-    required: List[str] = []
-    for inp in jinx_obj.inputs:
-        if isinstance(inp, str):
-            properties[inp] = {"type": "string"}
-            required.append(inp)
-        elif isinstance(inp, dict):
-            name = list(inp.keys())[0]
-            properties[name] = {"type": "string", "default": inp.get(name, "")}
-            required.append(name)
-    return {
-        "type": "function",
-        "function": {
-            "name": jinx_obj.jinx_name,
-            "description": jinx_obj.description or f"Jinx: {jinx_obj.jinx_name}",
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required
-            }
-        }
-    }
+    return jinx_obj.to_tool_def()
 
 def build_jinx_tool_catalog(jinxs: Dict[str, 'Jinx']) -> Dict[str, Dict[str, Any]]:
     """Helper to build a name->tool_def catalog from a dict of Jinx objects."""
     return {name: jinx_to_tool_def(jinx_obj) for name, jinx_obj in jinxs.items()}
 
-def get_npc_action_space(npc=None, team=None):
-    """Get action space for NPC including memory CRUD and core capabilities"""
-    actions = DEFAULT_ACTION_SPACE.copy()
-    
-    if npc:
-        core_tools = [
-            npc.think_step_by_step,
-        ]
-        if hasattr(npc, "write_code"):
-            core_tools.append(npc.write_code)
-        
-        if npc.command_history:
-            core_tools.extend([
-                npc.search_my_conversations,
-                npc.search_my_memories,
-                npc.create_memory,
-                npc.read_memory,
-                npc.update_memory,
-                npc.delete_memory,
-                npc.search_memories,
-                npc.get_all_memories,
-                npc.archive_old_memories,
-                npc.get_memory_stats
-            ])
-        
-        if npc.db_conn:
-            core_tools.append(npc.query_database)
-        
-        if hasattr(npc, 'tools') and npc.tools:
-            core_tools.extend([func for func in npc.tool_map.values() if callable(func)])
-        
-        if core_tools:
-            tools_schema, tool_map = auto_tools(core_tools)
-            actions.update({
-                f"use_{tool.__name__}": {
-                    "description": f"Use {tool.__name__} capability",
-                    "handler": tool,
-                    "context": lambda **_: f"Available as automated capability",
-                    "output_keys": {"result": {"description": "Tool execution result", "type": "string"}}
-                }
-                for tool in core_tools
-            })
-    
-    if team and hasattr(team, 'npcs') and len(team.npcs) > 1:
-        available_npcs = [name for name in team.npcs.keys() if name != (npc.name if npc else None)]
-        
-        def team_aware_handler(command, extracted_data, **kwargs):
-            if 'team' not in kwargs or kwargs['team'] is None:
-                kwargs['team'] = team
-            return agent_pass_handler(command, extracted_data, **kwargs)
-        
-        actions["pass_to_npc"] = {
-            "description": "Pass request to another NPC - only when task requires their specific expertise",
-            "handler": team_aware_handler,
-            "context": lambda npc=npc, team=team, **_: (
-                f"Available NPCs: {', '.join(available_npcs)}. "
-                f"Only pass when you genuinely cannot complete the task."
-            ),
-            "output_keys": {
-                "target_npc": {
-                    "description": "Name of the NPC to pass the request to",
-                    "type": "string"
-                }
-            }
-        }
-    
-    return actions
 def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
     print(f"DEBUG extract_jinx_inputs called with args: {args}")
     print(f"DEBUG jinx.inputs: {jinx.inputs}")
@@ -985,7 +1073,9 @@ class NPC:
             self.npc_directory = None
 
         self.team = team # Store the team reference (can be None)
-        self.jinxs_spec = jinxs or "*" # Store the jinx specification for later loading
+        # Only set jinxs_spec from parameter if it wasn't already set by _load_from_file
+        if not hasattr(self, 'jinxs_spec') or jinxs is not None:
+            self.jinxs_spec = jinxs or "*" # Store the jinx specification for later loading
 
         if tools is not None:
             tools_schema, tool_map = auto_tools(tools)
@@ -1051,10 +1141,29 @@ class NPC:
                         print(f"Warning: Jinx '{jinx_item}' not found for NPC '{self.name}' during initial load.")
         
         self.shared_context = {
+            # Data analysis (guac)
             "dataframes": {},
             "current_data": None,
             "computation_results": [],
-            "memories":{}
+            "locals": {},  # Python exec locals for guac mode
+
+            # Memory
+            "memories": {},
+
+            # MCP tools (corca)
+            "mcp_client": None,
+            "mcp_tools": [],
+            "mcp_tool_map": {},
+
+            # Session tracking
+            "session_input_tokens": 0,
+            "session_output_tokens": 0,
+            "session_cost_usd": 0.0,
+            "turn_count": 0,
+
+            # Mode state
+            "current_mode": "agent",
+            "attachments": [],
         }
         
         for key, value in kwargs.items():
@@ -1833,35 +1942,41 @@ class NPC:
             jinja_env=self.jinja_env # Pass the NPC's second-pass Jinja env
         )
         
-        if self.db_conn is not None:
-            self.db_conn.add_jinx_call(
-                triggering_message_id=message_id,
-                conversation_id=conversation_id,
-                jinx_name=jinx_name,
-                jinx_inputs=inputs,
-                jinx_output=result,
-                status="success",
-                error_message=None,
-                duration_ms=None,
-                npc_name=self.name,
-                team_name=team_name,
-            )
+        # Log jinx call if we have a command_history with add_jinx_call method
+        if self.command_history is not None and hasattr(self.command_history, 'add_jinx_call'):
+            try:
+                self.command_history.add_jinx_call(
+                    triggering_message_id=message_id,
+                    conversation_id=conversation_id,
+                    jinx_name=jinx_name,
+                    jinx_inputs=inputs,
+                    jinx_output=result,
+                    status="success",
+                    error_message=None,
+                    duration_ms=None,
+                    npc_name=self.name,
+                    team_name=team_name,
+                )
+            except Exception:
+                pass  # Don't fail jinx execution due to logging error
         return result
     def check_llm_command(self,
-                            command, 
+                            command,
                             messages=None,
                             context=None,
                             team=None,
-                            stream=False):
+                            stream=False,
+                            jinxs=None):
         """Check if a command is for the LLM"""
         if context is None:
             context = self.shared_context
-        
+
         if team:
             self._current_team = team
-        
-        actions = get_npc_action_space(npc=self, team=team)
-        
+
+        # Use provided jinxs or fall back to NPC's own jinxs
+        jinxs_to_use = jinxs if jinxs is not None else self.jinxs_dict
+
         return npy.llm_funcs.check_llm_command(
             command,
             model=self.model,
@@ -1871,7 +1986,7 @@ class NPC:
             messages=self.memory if messages is None else messages,
             context=context,
             stream=stream,
-            actions=actions  
+            jinxs=jinxs_to_use,
         )
     
     def handle_agent_pass(self, 
@@ -2288,13 +2403,9 @@ class Team:
                     if 'file_patterns' in ctx_data:
                         file_cache = self._parse_file_patterns(ctx_data['file_patterns'])
                         self.shared_context['files'] = file_cache
-                    if 'preferences' in ctx_data:
-                        self.preferences = ctx_data['preferences']
-                    else:
-                        self.preferences = []
-                    
+                    # All other keys (including preferences) are treated as generic context
                     for key, item in ctx_data.items():
-                        if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns', 'forenpc', 'model', 'provider', 'api_url', 'env', 'preferences']:
+                        if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns', 'forenpc', 'model', 'provider', 'api_url', 'env']:
                             self.shared_context[key] = item
                 return # Only load the first .ctx file found
         
@@ -2474,146 +2585,98 @@ class Team:
         else:
             return None
 
-    def orchestrate(self, request):
+    def orchestrate(self, request, max_iterations=3):
         """Orchestrate a request through the team"""
-        forenpc = self.get_forenpc() # Now guaranteed to be an NPC object
+        import re
+        from termcolor import colored
+
+        forenpc = self.get_forenpc()
         if not forenpc:
             return {"error": "No forenpc available to coordinate the team"}
-        
-        log_entry(
-            self.name,
-            "orchestration_start",
-            {"request": request}
-        )
-        
-        result = forenpc.check_llm_command(request,
-            context=getattr(self, 'context', {}),
-            team = self, 
-        )
-        
-        while True:
-            completion_prompt= "" 
-            if isinstance(result, dict):
-                self.shared_context["execution_history"].append(result)
-                
-                if result.get("messages") and result.get("npc_name"):
-                    if result["npc_name"] not in self.shared_context["npc_messages"]:
-                        self.shared_context["npc_messages"][result["npc_name"]] = []
-                    self.shared_context["npc_messages"][result["npc_name"]].extend(
-                        result["messages"]
-                    )
-                
-                completion_prompt += f"""Context:
-                    User request '{request}', previous agent
-                    
-                    previous agent returned:
-                    {result.get('output')}
 
-                    
-                Instructions:
+        print(colored(f"[orchestrate] Starting with forenpc={forenpc.name}, team={self.name}", "cyan"))
+        print(colored(f"[orchestrate] Request: {request[:100]}...", "cyan"))
 
-                    Check whether the response is relevant to the user's request.
+        # Filter out 'orchestrate' jinx to prevent infinite recursion
+        jinxs_for_orchestration = {k: v for k, v in forenpc.jinxs_dict.items() if k != 'orchestrate'}
 
-                """
-                if self.npcs is None or len(self.npcs) == 0:
-                    completion_prompt += f"""
-                    The team has no members, so the forenpc must handle the request alone.
-                    """
-                else:
-                    completion_prompt += f"""
-                    
-                    These are all the members of the team: {', '.join(self.npcs.keys())}
-
-                    Therefore, if you are trying to evaluate whether a request was fulfilled relevantly,
-                    consider that requests are made to the forenpc: {forenpc.name}
-                    and that the forenpc must pass those along to the other npcs. 
-                    """
-                completion_prompt += f"""
-
-                Mainly concern yourself with ensuring there are no
-                glaring errors nor fundamental mishaps in the response.
-                Do not consider stylistic hiccups as the answers being
-                irrelevant. By providing responses back to for the user to
-                comment on, they can can more efficiently iterate and resolve any issues by 
-                prompting more clearly.
-                natural language itself is very fuzzy so there will always be some level
-                of misunderstanding, but as long as the response is clearly relevant 
-                to the input request and along the user's intended direction,
-                it is considered relevant.
-                                
-
-                If there is enough information to begin a fruitful conversation with the user, 
-                please consider the request relevant so that we do not
-                arbritarily stall business logic which is more efficiently
-                determined by iterations than through unnecessary pedantry.
-
-                It is more important to get a response to the user
-                than to account for all edge cases, so as long as the response more or less tackles the
-                initial problem to first order, consider it relevant.
-
-                Return a JSON object with:
-                    -'relevant' with boolean value
-                    -'explanation' for irrelevance with quoted citations in your explanation noting why it is irrelevant to user input must be a single string.
-                Return only the JSON object."""
-            
-            completion_check = npy.llm_funcs.get_llm_response(
-                completion_prompt, 
-                model=forenpc.model,
-                provider=forenpc.provider,
-                api_key=forenpc.api_key,
-                api_url=forenpc.api_url,
-                npc=forenpc,
-                format="json"
+        try:
+            result = forenpc.check_llm_command(
+                request,
+                context=getattr(self, 'context', {}),
+                team=self,
+                jinxs=jinxs_for_orchestration,
             )
-            
-            if isinstance(completion_check.get("response"), dict):
-                complete = completion_check["response"].get("relevant", False)
-                explanation = completion_check["response"].get("explanation", "")
-            else:
-                complete = False
-                explanation = "Could not determine completion status"
-            
-            if complete:
-                debrief = npy.llm_funcs.get_llm_response(
-                    f"""Context:
-                    Original request: {request}
-                    Execution history: {self.shared_context['execution_history']}
+            print(colored(f"[orchestrate] Initial result type={type(result)}", "cyan"))
+            if isinstance(result, dict):
+                print(colored(f"[orchestrate] Result keys={list(result.keys())}", "cyan"))
+                if 'error' in result:
+                    print(colored(f"[orchestrate] Error in result: {result['error']}", "red"))
+                    return result
+        except Exception as e:
+            print(colored(f"[orchestrate] Exception in check_llm_command: {e}", "red"))
+            return {"error": str(e), "output": f"Orchestration failed: {e}"}
 
-                    Instructions:
-                    Provide summary of actions taken and recommendations.
-                    Return a JSON object with:
-                    - 'summary': Overview of what was accomplished
-                    - 'recommendations': Suggested next steps
-                    Return only the JSON object.""",
-                    model=forenpc.model,
-                    provider=forenpc.provider,
-                    api_key=forenpc.api_key,
-                    api_url=forenpc.api_url,
-                    npc=forenpc,
-                    format="json"
-                )
-                
-                return {
-                    "debrief": debrief.get("response"),
-                    "output": result.get("output"),
-                    "execution_history": self.shared_context["execution_history"],
-                }
-            else:
-                updated_request = (
-                    request
-                    + "\n\nThe request has not yet been fully completed. "
-                    + explanation
-                    + "\nPlease address only the remaining parts of the request."
-                )
-                print('updating request', updated_request)
-                
-                result = forenpc.check_llm_command(
-                    updated_request,
-                    context=getattr(self, 'context', {}),
-                    stream = False,
-                    team = self
-                    
-                )
+        # Check if forenpc mentioned other team members - if so, delegate to them
+        output = ""
+        if isinstance(result, dict):
+            output = result.get('output') or result.get('response') or ""
+
+        print(colored(f"[orchestrate] Output preview: {output[:200] if output else 'EMPTY'}...", "cyan"))
+
+        if output and self.npcs:
+            # Look for @npc_name mentions OR just npc names
+            at_pattern = r'@(\w+)'
+            mentions = re.findall(at_pattern, output)
+
+            # Also check for NPC names mentioned without @ (case insensitive)
+            if not mentions:
+                for npc_name in self.npcs.keys():
+                    if npc_name.lower() != forenpc.name.lower():
+                        if npc_name.lower() in output.lower():
+                            mentions.append(npc_name)
+                            break
+
+            print(colored(f"[orchestrate] Found mentions: {mentions}", "cyan"))
+
+            for mentioned in mentions:
+                mentioned_lower = mentioned.lower()
+                if mentioned_lower in self.npcs and mentioned_lower != forenpc.name:
+                    target_npc = self.npcs[mentioned_lower]
+                    print(colored(f"[orchestrate] Delegating to @{mentioned_lower}", "yellow"))
+
+                    try:
+                        # Execute the request with the target NPC (exclude orchestrate to prevent loops)
+                        target_jinxs = {k: v for k, v in target_npc.jinxs_dict.items() if k != 'orchestrate'}
+                        delegate_result = target_npc.check_llm_command(
+                            request,
+                            context=getattr(self, 'context', {}),
+                            team=self,
+                            jinxs=target_jinxs,
+                        )
+
+                        if isinstance(delegate_result, dict):
+                            delegate_output = delegate_result.get('output') or delegate_result.get('response') or ""
+                            if delegate_output:
+                                output = f"[{mentioned_lower}]: {delegate_output}"
+                                result = delegate_result
+                                print(colored(f"[orchestrate] Got response from {mentioned_lower}", "green"))
+                    except Exception as e:
+                        print(colored(f"[orchestrate] Delegation to {mentioned_lower} failed: {e}", "red"))
+
+                    break  # Only delegate to first mentioned NPC
+
+        if isinstance(result, dict):
+            final_output = output if output else str(result)
+            return {
+                "output": final_output,
+                "result": result,
+            }
+        else:
+            return {
+                "output": str(result),
+                "result": result,
+            }
                 
     def to_dict(self):
         """Convert team to dictionary representation"""

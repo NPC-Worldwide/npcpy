@@ -363,7 +363,8 @@ def generate_image(
     api_url: Optional[str] = None,
     attachments: Union[List[Union[str, bytes, Image.Image]], None] = None,
     save_path: Optional[str] = None,
-    custom_model_path: Optional[str] = None, # <--- NEW: Accept custom_model_path
+    custom_model_path: Optional[str] = None, # <--- NEW: Accept custom_model_path,
+    
 ):
     """
     Unified function to generate or edit images using various providers.
@@ -429,7 +430,9 @@ def generate_image(
             attachments=attachments,
             height=height,
             width=width,
-            n_images=n_images
+            n_images=n_images,
+            api_key=api_key
+            
         )
         all_generated_pil_images.extend(images)
 
