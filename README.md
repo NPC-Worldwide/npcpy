@@ -179,9 +179,8 @@ output = context['research_summary']
             "code": '''
 # Access outputs from previous steps.
 research_summary = context['initial_llm_research']
-# The output of a declarative jinx call (like 'file_reader') is stored under its step name.
-# The actual content we want is the 'output' of the *last step* within that sub-jinx.
-file_summary = context['read_and_process_source_file'].get('output', 'No file summary available.')
+# The file_reader jinx returns its output directly; also keep a fallback of file_raw_content.
+file_summary = context.get('read_and_process_source_file', '') or context.get('file_raw_content', 'No file summary available.')
 
 prompt = f"""Based on the following information:
 1. Comprehensive Research Summary:
