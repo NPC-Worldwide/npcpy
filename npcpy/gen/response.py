@@ -346,7 +346,12 @@ def get_ollama_response(
         res = ollama.chat(**api_params, options=options)
         result["raw_response"] = res
 
-        # Extract usage from ollama response
+        if stream:
+            # Return immediately for streaming - don't check 'in' on generator as it consumes it
+            result["response"] = res
+            return result
+
+        # Extract usage from ollama response (only for non-streaming)
         if hasattr(res, 'prompt_eval_count') or 'prompt_eval_count' in res:
             input_tokens = getattr(res, 'prompt_eval_count', None) or res.get('prompt_eval_count', 0) or 0
             output_tokens = getattr(res, 'eval_count', None) or res.get('eval_count', 0) or 0
@@ -354,10 +359,6 @@ def get_ollama_response(
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
             }
-
-        if stream:
-            result["response"] = res
-            return result
         else:
 
             message = res.get("message", {})

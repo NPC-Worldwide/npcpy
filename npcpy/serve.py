@@ -3901,26 +3901,41 @@ def stream():
                 print('.', end="", flush=True)
                 dot_count += 1
                 if "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
-                    chunk_content = response_chunk["message"]["content"] if "message" in response_chunk and "content" in response_chunk["message"] else ""
-                    if "message" in response_chunk and "tool_calls" in response_chunk["message"]:
-                        for tool_call in response_chunk["message"]["tool_calls"]:
-                            if "id" in tool_call:
-                                tool_call_data["id"] = tool_call["id"]
-                            if "function" in tool_call:
-                                if "name" in tool_call["function"]:
-                                    tool_call_data["function_name"] = tool_call["function"]["name"]
-                                if "arguments" in tool_call["function"]:
-                                    arg_val = tool_call["function"]["arguments"]
+                    # Ollama returns ChatResponse objects - support both attribute and dict access
+                    msg = getattr(response_chunk, "message", None) or response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {}
+                    chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
+                    # Extract Ollama thinking/reasoning tokens
+                    thinking_content = getattr(msg, "thinking", None) or (msg.get("thinking") if hasattr(msg, "get") else None)
+                    # Handle tool calls with robust attribute/dict access
+                    tool_calls = getattr(msg, "tool_calls", None) or (msg.get("tool_calls") if hasattr(msg, "get") else None)
+                    if tool_calls:
+                        for tool_call in tool_calls:
+                            tc_id = getattr(tool_call, "id", None) or (tool_call.get("id") if hasattr(tool_call, "get") else None)
+                            if tc_id:
+                                tool_call_data["id"] = tc_id
+                            tc_func = getattr(tool_call, "function", None) or (tool_call.get("function") if hasattr(tool_call, "get") else None)
+                            if tc_func:
+                                tc_name = getattr(tc_func, "name", None) or (tc_func.get("name") if hasattr(tc_func, "get") else None)
+                                if tc_name:
+                                    tool_call_data["function_name"] = tc_name
+                                tc_args = getattr(tc_func, "arguments", None) or (tc_func.get("arguments") if hasattr(tc_func, "get") else None)
+                                if tc_args:
+                                    arg_val = tc_args
                                     if isinstance(arg_val, dict):
                                         arg_val = json.dumps(arg_val)
                                     tool_call_data["arguments"] += arg_val
                     if chunk_content:
                         complete_response.append(chunk_content)
+                    # Extract other fields with robust access
+                    created_at = getattr(response_chunk, "created_at", None) or (response_chunk.get("created_at") if hasattr(response_chunk, "get") else None)
+                    model_name = getattr(response_chunk, "model", None) or (response_chunk.get("model") if hasattr(response_chunk, "get") else model)
+                    msg_role = getattr(msg, "role", None) or (msg.get("role") if hasattr(msg, "get") else "assistant")
+                    done_reason = getattr(response_chunk, "done_reason", None) or (response_chunk.get("done_reason") if hasattr(response_chunk, "get") else None)
                     chunk_data = {
                         "id": None, "object": None,
-                        "created": response_chunk["created_at"] or datetime.datetime.now(),
-                        "model": response_chunk["model"],
-                        "choices": [{"index": 0, "delta": {"content": chunk_content, "role": response_chunk["message"]["role"]}, "finish_reason": response_chunk.get("done_reason")}]
+                        "created": created_at or datetime.datetime.now(),
+                        "model": model_name,
+                        "choices": [{"index": 0, "delta": {"content": chunk_content, "role": msg_role, "reasoning_content": thinking_content}, "finish_reason": done_reason}]
                     }
                     yield f"data: {json.dumps(chunk_data)}\n\n"
                 else:
