@@ -50,7 +50,7 @@ from npcpy.memory.search import execute_rag_command, execute_brainblast_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
 
-from npcsh._state import get_relevant_memories, search_kg_facts
+
 
 import base64
 import shutil
