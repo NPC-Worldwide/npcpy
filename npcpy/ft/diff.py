@@ -3,7 +3,7 @@ try:
     import torch.nn as nn
     import torch.nn.functional as F
     from torch.utils.data import DataLoader, Dataset as TorchDataset
-    from transformers import CLIPTextModel, CLIPTokenizer
+
     TORCH_AVAILABLE = True
 except ImportError:
     torch = None

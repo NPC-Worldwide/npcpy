@@ -487,7 +487,10 @@ class CommandHistory:
             Column('model', String(100)),
             Column('provider', String(100)),
             Column('npc', String(100)),
-            Column('team', String(100))
+            Column('team', String(100)),
+            Column('reasoning_content', Text),  # For thinking tokens / chain of thought
+            Column('tool_calls', Text),  # JSON array of tool calls made by assistant
+            Column('tool_results', Text)  # JSON array of tool call results
         )
         
         Table('message_attachments', metadata,
@@ -719,31 +722,41 @@ class CommandHistory:
 
 
     def add_conversation(
-        self, 
+        self,
         message_id,
         timestamp,
-        role, 
-        content, 
-        conversation_id, 
+        role,
+        content,
+        conversation_id,
         directory_path,
-        model=None, 
-        provider=None, 
-        npc=None, 
+        model=None,
+        provider=None,
+        npc=None,
         team=None,
         attachments=None,
+        reasoning_content=None,
+        tool_calls=None,
+        tool_results=None,
     ):
         if isinstance(content, (dict, list)):
             content = json.dumps(content, cls=CustomJSONEncoder)
 
+        # Serialize tool_calls and tool_results as JSON
+        if tool_calls is not None and not isinstance(tool_calls, str):
+            tool_calls = json.dumps(tool_calls, cls=CustomJSONEncoder)
+        if tool_results is not None and not isinstance(tool_results, str):
+            tool_results = json.dumps(tool_results, cls=CustomJSONEncoder)
+
         stmt = """
             INSERT INTO conversation_history
-            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team)
-            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team)
+            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results)
+            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team, :reasoning_content, :tool_calls, :tool_results)
         """
         params = {
             "message_id": message_id, "timestamp": timestamp, "role": role, "content": content,
             "conversation_id": conversation_id, "directory_path": directory_path, "model": model,
-            "provider": provider, "npc": npc, "team": team
+            "provider": provider, "npc": npc, "team": team, "reasoning_content": reasoning_content,
+            "tool_calls": tool_calls, "tool_results": tool_results
         }
         with self.engine.begin() as conn:
             conn.execute(text(stmt), params)
@@ -756,7 +769,7 @@ class CommandHistory:
                     attachment_type=attachment.get("type"),
                     data=attachment.get("data"),
                     size=attachment.get("size"),
-                    file_path=attachment.get("path") 
+                    file_path=attachment.get("path")
                 )
 
         return message_id
@@ -1084,16 +1097,28 @@ class CommandHistory:
     def get_conversations_by_id(self, conversation_id: str) -> List[Dict[str, Any]]:
         stmt = """
             SELECT id, message_id, timestamp, role, content, conversation_id,
-                    directory_path, model, provider, npc, team
-            FROM conversation_history WHERE conversation_id = :conversation_id 
+                    directory_path, model, provider, npc, team,
+                    reasoning_content, tool_calls, tool_results
+            FROM conversation_history WHERE conversation_id = :conversation_id
             ORDER BY timestamp ASC
         """
         results = self._fetch_all(stmt, {"conversation_id": conversation_id})
-        
+
         for message_dict in results:
             attachments = self.get_message_attachments(message_dict["message_id"])
             if attachments:
                 message_dict["attachments"] = attachments
+            # Parse JSON fields
+            if message_dict.get("tool_calls"):
+                try:
+                    message_dict["tool_calls"] = json.loads(message_dict["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if message_dict.get("tool_results"):
+                try:
+                    message_dict["tool_results"] = json.loads(message_dict["tool_results"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
         return results
 
     def get_npc_conversation_stats(self, start_date=None, end_date=None) -> pd.DataFrame:
@@ -1295,9 +1320,13 @@ def save_conversation_message(
     team: str = None,
     attachments: List[Dict] = None,
     message_id: str = None,
+    reasoning_content: str = None,
+    tool_calls: List[Dict] = None,
+    tool_results: List[Dict] = None,
     ):
     """
     Saves a conversation message linked to a conversation ID with optional attachments.
+    Now also supports reasoning_content, tool_calls, and tool_results.
     """
     if wd is None:
         wd = os.getcwd()
@@ -1307,17 +1336,20 @@ def save_conversation_message(
 
 
     return command_history.add_conversation(
-        message_id, 
-        timestamp, 
-        role, 
-        content, 
-        conversation_id, 
-        wd, 
-        model=model, 
-        provider=provider, 
-        npc=npc, 
-        team=team, 
-        attachments=attachments)
+        message_id,
+        timestamp,
+        role,
+        content,
+        conversation_id,
+        wd,
+        model=model,
+        provider=provider,
+        npc=npc,
+        team=team,
+        attachments=attachments,
+        reasoning_content=reasoning_content,
+        tool_calls=tool_calls,
+        tool_results=tool_results)
 def retrieve_last_conversation(
     command_history: CommandHistory, conversation_id: str
     ) -> str:

@@ -216,12 +216,14 @@ class MCPClientNPC:
             self._exit_stack = None
 
 
-def get_llm_response_with_handling(prompt, npc, messages, tools, stream, team, context=None):
+def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools, stream, team, context=None):
     """Unified LLM response with basic exception handling (inlined from corca to avoid that dependency)."""
     try:
         return get_llm_response(
             prompt=prompt,
             npc=npc,
+            model=model, 
+            provider=provider,
             messages=messages,
             tools=tools,
             auto_process_tool_calls=False,
@@ -234,6 +236,8 @@ def get_llm_response_with_handling(prompt, npc, messages, tools, stream, team, c
         return get_llm_response(
             prompt=prompt,
             npc=npc,
+            model=model, 
+            provider=provider,
             messages=messages,
             tools=tools,
             auto_process_tool_calls=False,
@@ -241,6 +245,7 @@ def get_llm_response_with_handling(prompt, npc, messages, tools, stream, team, c
             team=team,
             context=context
         )
+    
 class MCPServerManager:
     """
     Simple in-process tracker for launching/stopping MCP servers.
@@ -2920,11 +2925,7 @@ def get_mcp_tools():
     )
     server_path = os.path.abspath(os.path.expanduser(resolved_path))
 
-    try:
-        from npcsh.corca import MCPClientNPC
-    except ImportError:
-        return jsonify({"error": "MCP Client (npcsh.corca) not available. Ensure npcsh.corca is installed and importable."}), 500
-
+    # MCPClientNPC is defined inline at the top of this file
     temp_mcp_client = None
     jinx_tools = []
     try:
@@ -3473,61 +3474,6 @@ def stream():
             **tool_args
         )
         messages = stream_response.get('messages', messages)
-
-    elif exe_mode == 'npcsh':
-        from npcsh._state import execute_command, initial_state
-        from npcsh.routes import router
-        initial_state.model = model
-        initial_state.provider = provider
-        initial_state.npc = npc_object
-        initial_state.team = team_object
-        initial_state.messages = messages
-        initial_state.command_history = command_history
-        
-        state, stream_response = execute_command(
-            commandstr, 
-            initial_state, router=router)
-        messages = state.messages        
-        
-    elif exe_mode == 'guac':
-        from npcsh.guac import execute_guac_command
-        from npcsh.routes import router
-        from npcsh._state import initial_state
-        from pathlib import Path
-        import pandas as pd, numpy as np, matplotlib.pyplot as plt
-
-        if not hasattr(app, 'guac_locals'):
-            app.guac_locals = {}
-
-        if conversation_id not in app.guac_locals:
-            app.guac_locals[conversation_id] = {
-                'pd': pd, 
-                'np': np, 
-                'plt': plt, 
-                'datetime': datetime,
-                'Path': Path, 
-                'os': os, 
-                'sys': sys, 
-                'json': json
-            }
-
-        initial_state.model = model
-        initial_state.provider = provider  
-        initial_state.npc = npc_object
-        initial_state.team = team_object
-        initial_state.messages = messages
-        initial_state.command_history = command_history
-        
-        state, stream_response = execute_guac_command(
-            commandstr,
-            initial_state, 
-            app.guac_locals[conversation_id],
-            "guac",
-            Path.cwd() / "npc_team", 
-            router
-        )
-        messages = state.messages
-        
     elif exe_mode == 'tool_agent':
         mcp_server_path_from_request = data.get("mcpServerPath")
         selected_mcp_tools_from_request = data.get("selectedMcpTools", [])
@@ -3576,7 +3522,6 @@ def stream():
 
         mcp_client = app.mcp_clients[state_key]["client"]
         messages = app.mcp_clients[state_key].get("messages", messages)
-
         def stream_mcp_sse():
             nonlocal messages
             iteration = 0
@@ -3599,17 +3544,21 @@ def stream():
                 llm_response = get_llm_response_with_handling(
                     prompt=prompt,
                     npc=npc_object,
+                    model=model, 
+                    provider=provider,
                     messages=messages,
                     tools=tools_for_llm,
                     stream=True,
                     team=team_object,
                     context=f' The users working directory is {current_path}'
                 )
+                print('RESPONSE', llm_response)
 
                 stream = llm_response.get("response", [])
                 messages = llm_response.get("messages", messages)
                 collected_content = ""
                 collected_tool_calls = []
+                agent_tool_call_data = {"id": None, "function_name": None, "arguments": ""}
 
                 for response_chunk in stream:
                     with cancellation_lock:
@@ -3617,7 +3566,62 @@ def stream():
                             yield {"type": "interrupt"}
                             return
 
-                    if hasattr(response_chunk, "choices") and response_chunk.choices:
+                    if "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
+                        # Ollama returns ChatResponse objects - support both attribute and dict access
+                        msg = getattr(response_chunk, "message", None) or (response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {})
+                        chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
+                        # Extract Ollama thinking/reasoning tokens
+                        reasoning_content = getattr(msg, "thinking", None) or (msg.get("thinking") if hasattr(msg, "get") else None)
+                        # Handle tool calls with robust attribute/dict access
+                        tool_calls = getattr(msg, "tool_calls", None) or (msg.get("tool_calls") if hasattr(msg, "get") else None)
+                        if tool_calls:
+                            for tool_call in tool_calls:
+                                tc_id = getattr(tool_call, "id", None) or (tool_call.get("id") if hasattr(tool_call, "get") else None)
+                                tc_func = getattr(tool_call, "function", None) or (tool_call.get("function") if hasattr(tool_call, "get") else None)
+                                if tc_func:
+                                    tc_name = getattr(tc_func, "name", None) or (tc_func.get("name") if hasattr(tc_func, "get") else None)
+                                    tc_args = getattr(tc_func, "arguments", None) or (tc_func.get("arguments") if hasattr(tc_func, "get") else None)
+                                    if tc_name:
+                                        arg_str = tc_args
+                                        if isinstance(arg_str, dict):
+                                            arg_str = json.dumps(arg_str)
+                                        elif arg_str is None:
+                                            arg_str = "{}"
+                                        # Add to collected_tool_calls for Ollama
+                                        collected_tool_calls.append({
+                                            "id": tc_id or f"call_{len(collected_tool_calls)}",
+                                            "type": "function",
+                                            "function": {"name": tc_name, "arguments": arg_str}
+                                        })
+                        if chunk_content:
+                            collected_content += chunk_content
+                        # Extract other fields with robust access
+                        created_at = getattr(response_chunk, "created_at", None) or (response_chunk.get("created_at") if hasattr(response_chunk, "get") else None)
+                        model_name = getattr(response_chunk, "model", None) or (response_chunk.get("model") if hasattr(response_chunk, "get") else model)
+                        msg_role = getattr(msg, "role", None) or (msg.get("role") if hasattr(msg, "get") else "assistant")
+                        done_reason = getattr(response_chunk, "done_reason", None) or (response_chunk.get("done_reason") if hasattr(response_chunk, "get") else None)
+
+                        # Build chunk_data with proper structure
+                        chunk_data = {
+                            "id": None,
+                            "object": None,
+                            "created": str(created_at) if created_at else datetime.datetime.now().isoformat(),
+                            "model": model_name,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "content": chunk_content,
+                                        "role": msg_role,
+                                        "reasoning_content": reasoning_content
+                                    },
+                                    "finish_reason": done_reason
+                                }
+                            ]
+                        }
+                        yield chunk_data
+
+                    elif hasattr(response_chunk, "choices") and response_chunk.choices:
                         delta = response_chunk.choices[0].delta
                         if hasattr(delta, "content") and delta.content:
                             collected_content += delta.content
@@ -3698,55 +3702,41 @@ def stream():
                             try:
                                 jinx_ctx = jinx_obj.execute(
                                     input_values=tool_args if isinstance(tool_args, dict) else {},
-                                    npc=npc_object,
-                                    messages=messages
+                                    npc=npc_object
                                 )
-                                tool_content = str(jinx_ctx.get("output", jinx_ctx))
-                                print(f"[MCP] jinx tool_complete {tool_name}")
+                                tool_content = str(jinx_ctx)
                             except Exception as e:
-                                raise Exception(f"Jinx execution failed: {e}")
+                                tool_content = f"Jinx execution error: {str(e)}"
                         else:
-                            try:
-                                loop = asyncio.get_event_loop()
-                            except RuntimeError:
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                            if loop.is_closed():
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                            mcp_result = loop.run_until_complete(
-                                mcp_client.session.call_tool(tool_name, tool_args)
-                            ) if mcp_client else {"error": "No MCP client"}
-                            if hasattr(mcp_result, "content") and mcp_result.content:
-                                for content_item in mcp_result.content:
-                                    if hasattr(content_item, "text"):
-                                        tool_content += content_item.text
-                                    elif hasattr(content_item, "data"):
-                                        tool_content += str(content_item.data)
+                            # Execute via MCP client
+                            if mcp_client and tool_name in mcp_client.tool_map:
+                                try:
+                                    tool_func = mcp_client.tool_map[tool_name]
+                                    result = tool_func(**(tool_args if isinstance(tool_args, dict) else {}))
+                                    # Handle MCP CallToolResult
+                                    if hasattr(result, 'content'):
+                                        tool_content = str(result.content[0].text) if result.content else str(result)
                                     else:
-                                        tool_content += str(content_item)
+                                        tool_content = str(result)
+                                except Exception as mcp_e:
+                                    tool_content = f"MCP tool error: {str(mcp_e)}"
                             else:
-                                tool_content = str(mcp_result)
-
-                        tool_results.append({
+                                tool_content = f"Tool '{tool_name}' not found in MCP server or Jinxs"
+                        
+                        messages.append({
                             "role": "tool",
                             "tool_call_id": tool_id,
                             "name": tool_name,
                             "content": tool_content
                         })
+                        
+                        print(f"[MCP] tool_result {tool_name}: {tool_content}")
+                        yield {"type": "tool_result", "name": tool_name, "id": tool_id, "result": tool_content}
 
-                        print(f"[MCP] tool_complete {tool_name}")
-                        yield {"type": "tool_complete", "name": tool_name, "id": tool_id, "result_preview": tool_content[:4000]}
                     except Exception as e:
-                        err_msg = f"Error executing {tool_name}: {e}"
-                        tool_results.append({
-                            "role": "tool",
-                            "tool_call_id": tool_id,
-                            "name": tool_name,
-                            "content": err_msg
-                        })
-                        print(f"[MCP] tool_error {tool_name}: {e}")
-                        yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": str(e)}
+                        error_msg = f"Tool execution error: {str(e)}"
+                        print(f"[MCP] tool_error {tool_name}: {error_msg}")
+                        yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": error_msg}
 
                 serialized_tool_calls = []
                 for tc in collected_tool_calls:
@@ -3770,14 +3760,12 @@ def stream():
                     "content": collected_content,
                     "tool_calls": serialized_tool_calls
                 })
-                messages.extend(tool_results)
                 tool_results_for_db = tool_results
 
                 prompt = ""
 
             app.mcp_clients[state_key]["messages"] = messages
             return
-
         stream_response = stream_mcp_sse()
 
     else:
@@ -3814,6 +3802,8 @@ def stream():
 
     def event_stream(current_stream_id):
         complete_response = []
+        complete_reasoning = []  # Accumulate reasoning content
+        accumulated_tool_calls = []  # Accumulate all tool calls
         dot_count = 0
         interrupted = False
         tool_call_data = {"id": None, "function_name": None, "arguments": ""}
@@ -3839,17 +3829,30 @@ def stream():
                                 content_piece = delta.get("content")
                                 if content_piece:
                                     complete_response.append(content_piece)
+                                # Accumulate reasoning content from generator chunks
+                                reasoning_piece = delta.get("reasoning_content")
+                                if reasoning_piece:
+                                    complete_reasoning.append(reasoning_piece)
+                        # Accumulate tool calls from generator chunks
+                        if chunk.get("type") == "tool_call":
+                            tc = chunk.get("tool_call", {})
+                            if tc.get("id") and tc.get("name"):
+                                accumulated_tool_calls.append({
+                                    "id": tc.get("id"),
+                                    "function_name": tc.get("name"),
+                                    "arguments": tc.get("arguments", "")
+                                })
+                        if chunk.get("type") == "tool_result":
+                            tool_results_for_db.append({
+                                "name": chunk.get("name"),
+                                "tool_call_id": chunk.get("id"),
+                                "content": chunk.get("result", "")
+                            })
                         continue
                     yield f"data: {json.dumps({'choices':[{'delta':{'content': str(chunk), 'role': 'assistant'},'finish_reason':None}]})}\n\n"
-                # ensure stream termination and cleanup for generator flows
-                yield "data: [DONE]\n\n"
-                with cancellation_lock:
-                    if current_stream_id in cancellation_flags:
-                        del cancellation_flags[current_stream_id]
-                        print(f"Cleaned up cancellation flag for stream ID: {current_stream_id}")
-                return
+                # Generator finished - skip the other stream handling paths
 
-            if isinstance(stream_response, str) :
+            elif isinstance(stream_response, str) :
                 print('stream a str and not a gen')
                 chunk_data = {
                         "id": None,
@@ -3869,7 +3872,7 @@ def stream():
                         ]
                     }
                 yield f"data: {json.dumps(chunk_data)}\n\n"
-                return
+
             elif isinstance(stream_response, dict) and 'output' in stream_response and isinstance(stream_response.get('output'), str):
                 print('stream a str and not a gen')
                 chunk_data = {
@@ -3890,78 +3893,97 @@ def stream():
                         ]
                     }
                 yield f"data: {json.dumps(chunk_data)}\n\n"
-                return
-            for response_chunk in stream_response.get('response', stream_response.get('output')):
-                with cancellation_lock:
-                    if cancellation_flags.get(current_stream_id, False):
-                        print(f"Cancellation flag triggered for {current_stream_id}. Breaking loop.")
-                        interrupted = True
-                        break
 
-                print('.', end="", flush=True)
-                dot_count += 1
-                if "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
-                    # Ollama returns ChatResponse objects - support both attribute and dict access
-                    msg = getattr(response_chunk, "message", None) or response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {}
-                    chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
-                    # Extract Ollama thinking/reasoning tokens
-                    thinking_content = getattr(msg, "thinking", None) or (msg.get("thinking") if hasattr(msg, "get") else None)
-                    # Handle tool calls with robust attribute/dict access
-                    tool_calls = getattr(msg, "tool_calls", None) or (msg.get("tool_calls") if hasattr(msg, "get") else None)
-                    if tool_calls:
-                        for tool_call in tool_calls:
-                            tc_id = getattr(tool_call, "id", None) or (tool_call.get("id") if hasattr(tool_call, "get") else None)
-                            if tc_id:
-                                tool_call_data["id"] = tc_id
-                            tc_func = getattr(tool_call, "function", None) or (tool_call.get("function") if hasattr(tool_call, "get") else None)
-                            if tc_func:
-                                tc_name = getattr(tc_func, "name", None) or (tc_func.get("name") if hasattr(tc_func, "get") else None)
-                                if tc_name:
-                                    tool_call_data["function_name"] = tc_name
-                                tc_args = getattr(tc_func, "arguments", None) or (tc_func.get("arguments") if hasattr(tc_func, "get") else None)
-                                if tc_args:
-                                    arg_val = tc_args
-                                    if isinstance(arg_val, dict):
-                                        arg_val = json.dumps(arg_val)
-                                    tool_call_data["arguments"] += arg_val
-                    if chunk_content:
-                        complete_response.append(chunk_content)
-                    # Extract other fields with robust access
-                    created_at = getattr(response_chunk, "created_at", None) or (response_chunk.get("created_at") if hasattr(response_chunk, "get") else None)
-                    model_name = getattr(response_chunk, "model", None) or (response_chunk.get("model") if hasattr(response_chunk, "get") else model)
-                    msg_role = getattr(msg, "role", None) or (msg.get("role") if hasattr(msg, "get") else "assistant")
-                    done_reason = getattr(response_chunk, "done_reason", None) or (response_chunk.get("done_reason") if hasattr(response_chunk, "get") else None)
-                    chunk_data = {
-                        "id": None, "object": None,
-                        "created": created_at or datetime.datetime.now(),
-                        "model": model_name,
-                        "choices": [{"index": 0, "delta": {"content": chunk_content, "role": msg_role, "reasoning_content": thinking_content}, "finish_reason": done_reason}]
-                    }
-                    yield f"data: {json.dumps(chunk_data)}\n\n"
-                else:
-                    chunk_content = ""
-                    reasoning_content = ""
-                    for choice in response_chunk.choices:
-                        if hasattr(choice.delta, "tool_calls") and choice.delta.tool_calls:
-                            for tool_call in choice.delta.tool_calls:
-                                if tool_call.id:
-                                    tool_call_data["id"] = tool_call.id
-                                if tool_call.function:
-                                    if hasattr(tool_call.function, "name") and tool_call.function.name:
-                                        tool_call_data["function_name"] = tool_call.function.name
-                                    if hasattr(tool_call.function, "arguments") and tool_call.function.arguments:
-                                        tool_call_data["arguments"] += tool_call.function.arguments
-                    for choice in response_chunk.choices:
-                        if hasattr(choice.delta, "reasoning_content"):
-                            reasoning_content += choice.delta.reasoning_content
-                    chunk_content = "".join(choice.delta.content for choice in response_chunk.choices if choice.delta.content is not None)
-                    if chunk_content:
-                        complete_response.append(chunk_content)
-                    chunk_data = {
-                        "id": response_chunk.id, "object": response_chunk.object, "created": response_chunk.created, "model": response_chunk.model,
-                        "choices": [{"index": choice.index, "delta": {"content": choice.delta.content, "role": choice.delta.role, "reasoning_content": reasoning_content if hasattr(choice.delta, "reasoning_content") else None}, "finish_reason": choice.finish_reason} for choice in response_chunk.choices]
-                    }
-                    yield f"data: {json.dumps(chunk_data)}\n\n"
+            elif isinstance(stream_response, dict):
+                for response_chunk in stream_response.get('response', stream_response.get('output')):
+                    with cancellation_lock:
+                        if cancellation_flags.get(current_stream_id, False):
+                            print(f"Cancellation flag triggered for {current_stream_id}. Breaking loop.")
+                            interrupted = True
+                            break
+
+                    print('.', end="", flush=True)
+                    dot_count += 1
+                    if "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
+                        # Ollama returns ChatResponse objects - support both attribute and dict access
+                        msg = getattr(response_chunk, "message", None) or response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {}
+                        chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
+                        # Extract Ollama thinking/reasoning tokens
+                        reasoning_content = getattr(msg, "thinking", None) or (msg.get("thinking") if hasattr(msg, "get") else None)
+                        # Handle tool calls with robust attribute/dict access
+                        tool_calls = getattr(msg, "tool_calls", None) or (msg.get("tool_calls") if hasattr(msg, "get") else None)
+                        if tool_calls:
+                            for tool_call in tool_calls:
+                                tc_id = getattr(tool_call, "id", None) or (tool_call.get("id") if hasattr(tool_call, "get") else None)
+                                if tc_id:
+                                    tool_call_data["id"] = tc_id
+                                tc_func = getattr(tool_call, "function", None) or (tool_call.get("function") if hasattr(tool_call, "get") else None)
+                                if tc_func:
+                                    tc_name = getattr(tc_func, "name", None) or (tc_func.get("name") if hasattr(tc_func, "get") else None)
+                                    if tc_name:
+                                        tool_call_data["function_name"] = tc_name
+                                    tc_args = getattr(tc_func, "arguments", None) or (tc_func.get("arguments") if hasattr(tc_func, "get") else None)
+                                    if tc_args:
+                                        arg_val = tc_args
+                                        if isinstance(arg_val, dict):
+                                            arg_val = json.dumps(arg_val)
+                                        tool_call_data["arguments"] += arg_val
+                                # Accumulate complete tool call info for DB storage (Ollama path)
+                                if tc_id and tc_func and tc_name:
+                                    accumulated_tool_calls.append({
+                                        "id": tc_id,
+                                        "function_name": tc_name,
+                                        "arguments": arg_val if tc_args else ""
+                                    })
+                        # Accumulate reasoning content
+                        if reasoning_content:
+                            complete_reasoning.append(reasoning_content)
+                        if chunk_content:
+                            complete_response.append(chunk_content)
+                        # Extract other fields with robust access
+                        created_at = getattr(response_chunk, "created_at", None) or (response_chunk.get("created_at") if hasattr(response_chunk, "get") else None)
+                        model_name = getattr(response_chunk, "model", None) or (response_chunk.get("model") if hasattr(response_chunk, "get") else model)
+                        msg_role = getattr(msg, "role", None) or (msg.get("role") if hasattr(msg, "get") else "assistant")
+                        done_reason = getattr(response_chunk, "done_reason", None) or (response_chunk.get("done_reason") if hasattr(response_chunk, "get") else None)
+                        chunk_data = {
+                            "id": None, "object": None,
+                            "created": created_at or datetime.datetime.now(),
+                            "model": model_name,
+                            "choices": [{"index": 0, "delta": {"content": chunk_content, "role": msg_role, "reasoning_content": reasoning_content}, "finish_reason": done_reason}]
+                        }
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
+                    else:
+                        chunk_content = ""
+                        reasoning_content = ""
+                        for choice in response_chunk.choices:
+                            if hasattr(choice.delta, "tool_calls") and choice.delta.tool_calls:
+                                for tool_call in choice.delta.tool_calls:
+                                    if tool_call.id:
+                                        tool_call_data["id"] = tool_call.id
+                                    if tool_call.function:
+                                        if hasattr(tool_call.function, "name") and tool_call.function.name:
+                                            tool_call_data["function_name"] = tool_call.function.name
+                                        if hasattr(tool_call.function, "arguments") and tool_call.function.arguments:
+                                            tool_call_data["arguments"] += tool_call.function.arguments
+                                    # Accumulate complete tool call info for DB storage
+                                    if tool_call.id and tool_call.function and tool_call.function.name:
+                                        accumulated_tool_calls.append({
+                                            "id": tool_call.id,
+                                            "function_name": tool_call.function.name,
+                                            "arguments": tool_call.function.arguments or ""
+                                        })
+                        for choice in response_chunk.choices:
+                            if hasattr(choice.delta, "reasoning_content") and choice.delta.reasoning_content:
+                                reasoning_content += choice.delta.reasoning_content
+                                complete_reasoning.append(choice.delta.reasoning_content)
+                        chunk_content = "".join(choice.delta.content for choice in response_chunk.choices if choice.delta.content is not None)
+                        if chunk_content:
+                            complete_response.append(chunk_content)
+                        chunk_data = {
+                            "id": response_chunk.id, "object": response_chunk.object, "created": response_chunk.created, "model": response_chunk.model,
+                            "choices": [{"index": choice.index, "delta": {"content": choice.delta.content, "role": choice.delta.role, "reasoning_content": reasoning_content if hasattr(choice.delta, "reasoning_content") else None}, "finish_reason": choice.finish_reason} for choice in response_chunk.choices]
+                        }
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
 
         except Exception as e:
             print(f"\nAn exception occurred during streaming for {current_stream_id}: {e}")
@@ -4007,7 +4029,7 @@ def stream():
                         message_id=generate_message_id(),
                     )
 
-            # Save assistant message to the database
+            # Save assistant message to the database with reasoning content and tool calls
             npc_name_to_save = npc_object.name if npc_object else ''
             save_conversation_message(
                 command_history,
@@ -4020,6 +4042,9 @@ def stream():
                 npc=npc_name_to_save,
                 team=team,
                 message_id=message_id,
+                reasoning_content=''.join(complete_reasoning) if complete_reasoning else None,
+                tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
+                tool_results=tool_results_for_db if tool_results_for_db else None,
             )
 
             # Start background tasks for memory extraction and context compression
@@ -4181,11 +4206,24 @@ def get_conversation_messages(conversation_id):
     try:
         engine = get_db_connection()
         with engine.connect() as conn:
-            
+
             query = text("""
                 WITH ranked_messages AS (
                     SELECT
-                        ch.*,
+                        ch.id,
+                        ch.message_id,
+                        ch.timestamp,
+                        ch.role,
+                        ch.content,
+                        ch.conversation_id,
+                        ch.directory_path,
+                        ch.model,
+                        ch.provider,
+                        ch.npc,
+                        ch.team,
+                        ch.reasoning_content,
+                        ch.tool_calls,
+                        ch.tool_results,
                         GROUP_CONCAT(ma.id) as attachment_ids,
                         ROW_NUMBER() OVER (
                             PARTITION BY ch.role, strftime('%s', ch.timestamp)
@@ -4206,20 +4244,32 @@ def get_conversation_messages(conversation_id):
             result = conn.execute(query, {"conversation_id": conversation_id})
             messages = result.fetchall()
 
+            def parse_json_field(value):
+                """Parse a JSON string field, returning None if empty or invalid."""
+                if not value:
+                    return None
+                try:
+                    return json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    return None
+
             return jsonify(
                 {
                     "messages": [
                         {
-                            "message_id": msg[1] if len(msg) > 1 else None,  
+                            "message_id": msg[1] if len(msg) > 1 else None,
                             "role": msg[3] if len(msg) > 3 else None,
                             "content": msg[4] if len(msg) > 4 else None,
-                            "timestamp": msg[5] if len(msg) > 5 else None,
-                            "model": msg[6] if len(msg) > 6 else None,
-                            "provider": msg[7] if len(msg) > 7 else None,
-                            "npc": msg[8] if len(msg) > 8 else None,
+                            "timestamp": msg[2] if len(msg) > 2 else None,
+                            "model": msg[7] if len(msg) > 7 else None,
+                            "provider": msg[8] if len(msg) > 8 else None,
+                            "npc": msg[9] if len(msg) > 9 else None,
+                            "reasoningContent": msg[11] if len(msg) > 11 else None,
+                            "toolCalls": parse_json_field(msg[12]) if len(msg) > 12 else None,
+                            "toolResults": parse_json_field(msg[13]) if len(msg) > 13 else None,
                             "attachments": (
                                 get_message_attachments(msg[1])
-                                if len(msg) > 1 and msg[-1]  
+                                if len(msg) > 1 and msg[14]  # attachment_ids is at index 14
                                 else []
                             ),
                         }
@@ -4263,31 +4313,19 @@ def ollama_status():
 @app.route("/api/ollama/tool_models", methods=["GET"])
 def get_ollama_tool_models():
     """
-    Best-effort detection of Ollama models whose templates include tool-call support.
-    We scan templates for tool placeholders; if none are found we assume tools are unsupported.
+    Returns all Ollama models. Tool capability detection is unreliable,
+    so we don't filter - let the user try and the backend will handle failures.
     """
     try:
         detected = []
         listing = ollama.list()
         for model in listing.get("models", []):
             name = getattr(model, "model", None) or model.get("name") if isinstance(model, dict) else None
-            if not name:
-                continue
-            try:
-                details = ollama.show(name)
-                tmpl = details.get("template") or ""
-                if "{{- if .Tools" in tmpl or "{{- range .Tools" in tmpl or "{{- if .ToolCalls" in tmpl:
-                    detected.append(name)
-                    continue
-                metadata = details.get("metadata") or {}
-                if metadata.get("tools") or metadata.get("tool_calls"):
-                    detected.append(name)
-            except Exception as inner_e:
-                print(f"Warning: could not inspect ollama model {name} for tool support: {inner_e}")
-                continue
+            if name:
+                detected.append(name)
         return jsonify({"models": detected, "error": None})
     except Exception as e:
-        print(f"Error listing Ollama tool-capable models: {e}")
+        print(f"Error listing Ollama models: {e}")
         return jsonify({"models": [], "error": str(e)}), 500
 
 

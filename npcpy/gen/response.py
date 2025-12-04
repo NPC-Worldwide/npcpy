@@ -297,6 +297,16 @@ def get_ollama_response(
             last_user_idx = len(messages) - 1
         messages[last_user_idx]["images"] = image_paths
 
+    # Ollama's pydantic model requires tool_calls arguments to be dicts, not strings
+    for msg in messages:
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if tc.get("function") and isinstance(tc["function"].get("arguments"), str):
+                    try:
+                        tc["function"]["arguments"] = json.loads(tc["function"]["arguments"])
+                    except (json.JSONDecodeError, TypeError):
+                        tc["function"]["arguments"] = {}
+
     api_params = {
         "model": model,
         "messages": messages,
@@ -387,7 +397,7 @@ def get_ollama_response(
             return result
 
     
-    
+    print('Debug', api_params)
     res = ollama.chat(**api_params, options=options)
     result["raw_response"] = res
     

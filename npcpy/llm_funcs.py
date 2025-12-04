@@ -216,7 +216,7 @@ def get_llm_response(
 
     def _context_suffix(ctx):
         if ctx is not None:
-            return f'User Provided Context: {ctx}'
+            return f'\n\n\nUser Provided Context: {ctx}'
         return ''
 
     def _build_messages(base_messages, sys_msg, prompt_text, ctx_suffix):
