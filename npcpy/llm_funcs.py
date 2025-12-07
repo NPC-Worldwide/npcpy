@@ -566,6 +566,7 @@ def check_llm_command(
     extra_globals=None,
     max_iterations: int = 5,
     jinxs: Dict = None,
+    tool_capable: bool = None,  # If None, will be auto-detected
 ):
     """
     Simple agent loop: try tool calling first, fall back to ReAct if unsupported.
@@ -573,27 +574,21 @@ def check_llm_command(
     if messages is None:
         messages = []
 
-    # Log incoming messages
-    import logging
-    logger = logging.getLogger("npcpy.llm_funcs")
-    logger.debug(f"[check_llm_command] Received {len(messages)} messages")
-    for i, msg in enumerate(messages[-5:]):  # Log last 5 messages
-        role = msg.get('role', 'unknown')
-        content = msg.get('content', '')
-        content_preview = content[:100] if isinstance(content, str) else str(type(content))
-        logger.debug(f"  [{i}] role={role}, content_preview={content_preview}...")
-
     total_usage = {"input_tokens": 0, "output_tokens": 0}
+
     # Use provided jinxs or get from npc/team
     if jinxs is None:
         jinxs = _get_jinxs(npc, team)
-    tools = _jinxs_to_tools(jinxs) if jinxs else None
+
+    # Only prepare tools if model supports them
+    tools = None
+    if tool_capable is not False and jinxs:
+        tools = _jinxs_to_tools(jinxs)
 
     # Keep full message history, only truncate for API calls to reduce tokens
     full_messages = messages.copy() if messages else []
-    logger.debug(f"[check_llm_command] full_messages initialized with {len(full_messages)} messages")
 
-    # Try with native tool calling first
+    # Make LLM call (with or without tools based on tool_capable)
 
     try:
         response = get_llm_response(
@@ -619,8 +614,6 @@ def check_llm_command(
             "usage": total_usage,
         }
 
-    if response.get("error"):
-        logger.warning(f"[check_llm_command] Error in response: {response.get('error')}")
 
     if response.get("usage"):
         total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
@@ -636,7 +629,6 @@ def check_llm_command(
         # For streaming, the caller (process_result) handles appending after consumption
         if assistant_response and isinstance(assistant_response, str):
             full_messages.append({"role": "assistant", "content": assistant_response})
-        logger.debug(f"[check_llm_command] No tool calls - returning {len(full_messages)} messages")
         return {
             "messages": full_messages,
             "output": assistant_response,
@@ -672,8 +664,7 @@ def check_llm_command(
         assistant_msg["tool_calls"] = _serialize_tool_calls(tool_calls)
     full_messages.append(assistant_msg)
     current_messages = full_messages
-    logger.debug(f"[check_llm_command] Tool calls detected - current_messages has {len(current_messages)} messages")
-    for iteration in range(max_iterations):
+    for _ in range(max_iterations):
         for tc in tool_calls:
             # Handle both dict and object formats
             if hasattr(tc, 'function'):
@@ -744,8 +735,6 @@ def check_llm_command(
             )
         except Exception as e:
             # If continuation fails, return what we have so far
-            # The tool was already executed successfully
-            logger.warning(f"[check_llm_command] Continuation failed: {e}")
             return {
                 "messages": current_messages,
                 "output": f"Tool executed successfully. (Continuation error: {type(e).__name__})",
@@ -766,14 +755,12 @@ def check_llm_command(
 
         if not tool_calls:
             # Done - return full message history
-            logger.debug(f"[check_llm_command] Tool loop done - returning {len(current_messages)} messages")
             return {
                 "messages": current_messages,
                 "output": assistant_response,
                 "usage": total_usage,
             }
 
-    logger.debug(f"[check_llm_command] Max iterations - returning {len(current_messages)} messages")
     return {
         "messages": current_messages,
         "output": response.get("response", "Max iterations reached"),
