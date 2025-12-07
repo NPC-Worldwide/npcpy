@@ -14,6 +14,8 @@ from npcpy.npc_sysenv import (
     request_user_input, 
     get_system_message
 )
+
+
 from npcpy.gen.response import get_litellm_response
 from npcpy.gen.image_gen import generate_image
 from npcpy.gen.video_gen import generate_video_diffusers, generate_video_veo3
@@ -609,7 +611,7 @@ def check_llm_command(
             tools=tools,
         )
     except Exception as e:
-        print(colored(f"[check_llm_command] EXCEPTION in get_llm_response: {type(e).__name__}: {e}", "red"))
+        print(f"[check_llm_command] EXCEPTION in get_llm_response: {type(e).__name__}: {e}", "red")
         return {
             "messages": full_messages,
             "output": f"LLM call failed: {e}",
@@ -692,15 +694,12 @@ def check_llm_command(
 
             if jinx_name in jinxs:
                 try:
-                    from termcolor import colored
-                    print(colored(f"  ⚡ {jinx_name}", "cyan"), end="", flush=True)
+
+                    print((f"  ⚡ {jinx_name}", "cyan"), end="", flush=True)
                 except:
                     pass
                 output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
-                try:
-                    print(colored(" ✓", "green"), flush=True)
-                except:
-                    pass
+
 
                 # Add tool result to messages
                 # Include name for Gemini compatibility
@@ -867,16 +866,11 @@ Use EXACT parameter names from the tool definitions above."""
                 context = f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}"
                 continue
 
-            try:
-                from termcolor import colored
-                print(colored(f"  ⚡ {jinx_name}", "cyan"), end="", flush=True)
-            except:
-                pass
+
+
             output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
-            try:
-                print(colored(" ✓", "green"), flush=True)
-            except:
-                pass
+
+
             context = f"Tool '{jinx_name}' returned: {output}"
             command = f"{command}\n\nPrevious: {context}"
 
