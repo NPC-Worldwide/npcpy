@@ -2220,6 +2220,10 @@ def read_ctx_file(file_path):
                 if 'preferences' in data and isinstance(data['preferences'], list):
                     data['preferences'] = [{"value": item} for item in data['preferences']]
 
+                # Normalize websites list
+                if 'websites' in data and isinstance(data['websites'], list):
+                    data['websites'] = [{"value": item} for item in data['websites']]
+
                 return data
             except yaml.YAMLError as e:
                 print(f"YAML parsing error in {file_path}: {e}")
@@ -2245,6 +2249,10 @@ def write_ctx_file(file_path, data):
     
     if 'preferences' in data_to_save and isinstance(data_to_save['preferences'], list):
         data_to_save['preferences'] = [item.get("value", "") for item in data_to_save['preferences'] if isinstance(item, dict)]
+
+    # Denormalize websites list
+    if 'websites' in data_to_save and isinstance(data_to_save['websites'], list):
+        data_to_save['websites'] = [item.get("value", "") for item in data_to_save['websites'] if isinstance(item, dict)]
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, 'w') as f:
@@ -2328,6 +2336,80 @@ def init_project_team():
     except Exception as e:
         print(f"Error initializing project team: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/context/websites", methods=["GET"])
+def get_context_websites():
+    """Gets the websites list from a .ctx file."""
+    try:
+        current_path = request.args.get("path")
+        is_global = request.args.get("global", "false").lower() == "true"
+        
+        ctx_path = get_ctx_path(is_global=is_global, current_path=current_path)
+        data = read_ctx_file(ctx_path)
+        
+        websites = data.get("websites", [])
+        # Normalize to list of objects if needed
+        if isinstance(websites, list):
+            normalized = []
+            for item in websites:
+                if isinstance(item, str):
+                    normalized.append({"value": item})
+                elif isinstance(item, dict):
+                    normalized.append(item)
+            websites = normalized
+        
+        return jsonify({
+            "websites": websites,
+            "path": ctx_path,
+            "error": None
+        })
+    except Exception as e:
+        print(f"Error getting websites from context: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/context/websites", methods=["POST"])
+def save_context_websites():
+    """Saves the websites list to a .ctx file."""
+    try:
+        data = request.json
+        websites = data.get("websites", [])
+        current_path = data.get("path")
+        is_global = data.get("global", False)
+        
+        ctx_path = get_ctx_path(is_global=is_global, current_path=current_path, create_default=True)
+        
+        if not ctx_path:
+            return jsonify({"error": "Could not determine ctx file path. Provide a path or use global=true."}), 400
+        
+        # Read existing ctx data
+        existing_data = read_ctx_file(ctx_path) or {}
+        
+        # Normalize websites to list of strings for YAML storage
+        normalized_websites = []
+        for item in websites:
+            if isinstance(item, dict) and "value" in item:
+                normalized_websites.append(item["value"])
+            elif isinstance(item, str):
+                normalized_websites.append(item)
+        
+        existing_data["websites"] = normalized_websites
+        
+        if write_ctx_file(ctx_path, existing_data):
+            return jsonify({
+                "message": "Websites saved to context.",
+                "websites": [{"value": w} for w in normalized_websites],
+                "path": ctx_path,
+                "error": None
+            })
+        else:
+            return jsonify({"error": "Failed to write context file."}), 500
+            
+    except Exception as e:
+        print(f"Error saving websites to context: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 
 
 
@@ -4490,8 +4572,8 @@ if __name__ == "__main__":
 
     SETTINGS_FILE = Path(os.path.expanduser("~/.npcshrc"))
 
-    
+
     db_path = os.path.expanduser("~/npcsh_history.db")
     user_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
-    
+
     start_flask_server(db_path=db_path, user_npc_directory=user_npc_directory)

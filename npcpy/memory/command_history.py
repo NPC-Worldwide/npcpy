@@ -196,8 +196,19 @@ def init_kg_schema(engine: Engine):
         Column('value', Text),
         schema=None
     )
-    
-    
+
+    # NPC version history for rollback support
+    npc_versions = Table('npc_versions', metadata,
+        Column('id', Integer, primary_key=True, autoincrement=True),
+        Column('npc_name', String(255), nullable=False),
+        Column('team_path', Text, nullable=False),  # path to npc_team directory
+        Column('version', Integer, nullable=False),
+        Column('content', Text, nullable=False),  # full YAML content
+        Column('created_at', DateTime, default=datetime.utcnow),
+        Column('commit_message', Text),  # optional description of change
+        schema=None
+    )
+
     metadata.create_all(engine, checkfirst=True)
 
 def load_kg_from_db(engine: Engine, team_name: str, npc_name: str, directory_path: str) -> Dict[str, Any]:
@@ -401,6 +412,100 @@ def save_kg_to_db(engine: Engine, kg_data: Dict[str, Any], team_name: str, npc_n
             
     except Exception as e:
         print(f"Failed to save KG for scope '({team_name}, {npc_name}, {directory_path})': {e}")
+
+
+# ============== NPC Version History Functions ==============
+
+def save_npc_version(engine: Engine, npc_name: str, team_path: str, content: str, commit_message: str = None) -> int:
+    """Save a new version of an NPC config. Returns the new version number."""
+    init_kg_schema(engine)  # Ensure table exists
+
+    with engine.begin() as conn:
+        # Get current max version
+        result = conn.execute(text("""
+            SELECT COALESCE(MAX(version), 0) as max_version
+            FROM npc_versions
+            WHERE npc_name = :npc_name AND team_path = :team_path
+        """), {"npc_name": npc_name, "team_path": team_path})
+        row = result.fetchone()
+        new_version = (row[0] if row else 0) + 1
+
+        # Insert new version
+        conn.execute(text("""
+            INSERT INTO npc_versions (npc_name, team_path, version, content, created_at, commit_message)
+            VALUES (:npc_name, :team_path, :version, :content, :created_at, :commit_message)
+        """), {
+            "npc_name": npc_name,
+            "team_path": team_path,
+            "version": new_version,
+            "content": content,
+            "created_at": datetime.utcnow(),
+            "commit_message": commit_message
+        })
+
+    return new_version
+
+
+def get_npc_versions(engine: Engine, npc_name: str, team_path: str) -> List[Dict[str, Any]]:
+    """Get all versions of an NPC config."""
+    init_kg_schema(engine)
+
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+            SELECT id, version, created_at, commit_message
+            FROM npc_versions
+            WHERE npc_name = :npc_name AND team_path = :team_path
+            ORDER BY version DESC
+        """), {"npc_name": npc_name, "team_path": team_path})
+
+        return [
+            {
+                "id": row[0],
+                "version": row[1],
+                "created_at": row[2].isoformat() if row[2] else None,
+                "commit_message": row[3]
+            }
+            for row in result
+        ]
+
+
+def get_npc_version_content(engine: Engine, npc_name: str, team_path: str, version: int = None) -> Optional[str]:
+    """Get the content of a specific NPC version. If version is None, get latest."""
+    init_kg_schema(engine)
+
+    with engine.connect() as conn:
+        if version is None:
+            result = conn.execute(text("""
+                SELECT content FROM npc_versions
+                WHERE npc_name = :npc_name AND team_path = :team_path
+                ORDER BY version DESC LIMIT 1
+            """), {"npc_name": npc_name, "team_path": team_path})
+        else:
+            result = conn.execute(text("""
+                SELECT content FROM npc_versions
+                WHERE npc_name = :npc_name AND team_path = :team_path AND version = :version
+            """), {"npc_name": npc_name, "team_path": team_path, "version": version})
+
+        row = result.fetchone()
+        return row[0] if row else None
+
+
+def rollback_npc_to_version(engine: Engine, npc_name: str, team_path: str, version: int) -> Optional[str]:
+    """Rollback an NPC to a specific version. Returns the content if successful."""
+    content = get_npc_version_content(engine, npc_name, team_path, version)
+    if content is None:
+        return None
+
+    # Save as a new version with rollback message
+    save_npc_version(engine, npc_name, team_path, content, f"Rollback to version {version}")
+
+    # Write to file
+    file_path = os.path.join(team_path, f"{npc_name}.npc")
+    with open(file_path, 'w') as f:
+        f.write(content)
+
+    return content
+
 
 def generate_message_id() -> str:
     return str(uuid.uuid4())

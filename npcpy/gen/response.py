@@ -5,14 +5,18 @@ from npcpy.npc_sysenv import get_system_message, lookup_provider, render_markdow
 import base64
 import json
 import uuid
-import os 
-try: 
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
+try:
     import ollama
 except ImportError:
     pass
 except OSError:
-    
-    print("Ollama is not installed or not available. Please install it to use this feature.")
+    logger.warning("Ollama is not installed or not available.")
+
 try:
     import litellm
     from litellm import completion
@@ -397,7 +401,7 @@ def get_ollama_response(
             return result
 
     
-    print('Debug', api_params)
+    logger.debug(f"ollama api_params: {api_params}")
     res = ollama.chat(**api_params, options=options)
     result["raw_response"] = res
     
@@ -505,8 +509,7 @@ def get_ollama_response(
                             result["response"] = parsed_json
                         
                 except (json.JSONDecodeError, TypeError) as e:
-                    print(f"JSON parsing error: {str(e)}")
-                    print(f"Raw response: {llm_response[:500]}")
+                    logger.debug(f"JSON parsing error: {str(e)}, raw response: {llm_response[:500]}")
                     result["response"] = {}
                     result["error"] = "Invalid JSON response"
 
@@ -777,8 +780,7 @@ def get_litellm_response(
                             result["response"] = parsed_json
                         
                 except (json.JSONDecodeError, TypeError) as e:
-                    print(f"JSON parsing error: {str(e)}")
-                    print(f"Raw response: {llm_response[:500]}")
+                    logger.debug(f"JSON parsing error: {str(e)}, raw response: {llm_response[:500]}")
                     result["response"] = {}
                     result["error"] = "Invalid JSON response"
             
@@ -792,8 +794,7 @@ def get_litellm_response(
     try:
         resp = completion(**initial_api_params)
     except Exception as e:
-        from termcolor import colored
-        print(colored(f"[litellm ERROR] completion() failed: {type(e).__name__}: {e}", "red"))
+        logger.error(f"litellm completion() failed: {type(e).__name__}: {e}")
         result["error"] = str(e)
         result["response"] = f"LLM call failed: {e}"
         return result
@@ -976,54 +977,10 @@ def process_tool_calls(response_dict, tool_map, model, provider, messages, strea
             tool_result_str = ""
             serializable_result = None
 
-            # Show tool execution indicator with truncated args
-            # Store full args for Ctrl+O expansion
-            _last_tool_call = {"name": tool_name, "arguments": arguments}
-            try:
-                import builtins
-                builtins._npcsh_last_tool_call = _last_tool_call
-            except:
-                pass
-
-            try:
-                from termcolor import colored
-                # Format arguments nicely - show key=value pairs
-                is_truncated = False
-                if arguments:
-                    arg_parts = []
-                    for k, v in arguments.items():
-                        v_str = str(v)
-                        if len(v_str) > 40:
-                            v_str = v_str[:40] + "…"
-                            is_truncated = True
-                        arg_parts.append(f"{v_str}")
-                    args_display = " ".join(arg_parts)
-                    if len(args_display) > 60:
-                        args_display = args_display[:60] + "…"
-                        is_truncated = True
-                else:
-                    args_display = ""
-
-                if args_display:
-                    hint = colored(" [^O]", "white", attrs=["dark"]) if is_truncated else ""
-                    print(colored(f"  ⚡ {tool_name}", "cyan") + colored(f" {args_display}", "white", attrs=["dark"]) + hint, end="", flush=True)
-                else:
-                    print(colored(f"  ⚡ {tool_name}", "cyan"), end="", flush=True)
-            except:
-                pass
-
             try:
                 tool_result = tool_map[tool_name](**arguments)
-                try:
-                    print(colored(" ✓", "green"), flush=True)
-                except:
-                    pass
             except Exception as e:
                 tool_result = f"Error executing tool '{tool_name}': {str(e)}"
-                try:
-                    print(colored(f" ✗ {str(e)[:50]}", "red"), flush=True)
-                except:
-                    pass
 
             try:
                 tool_result_str = json.dumps(tool_result, default=str)

@@ -705,7 +705,10 @@ class Jinx:
         
         if extra_globals:
             exec_globals.update(extra_globals)
-        
+
+        # Add context values directly as variables so jinx code can use them without Jinja
+        exec_globals.update(context)
+
         exec_locals = {} # Locals for this specific exec call
 
         try:
@@ -1055,7 +1058,11 @@ class NPC:
             db_conn: Database connection
         """
         if not file and not name and not primary_directive:
-            raise ValueError("Either 'file' or 'name' and 'primary_directive' must be provided") 
+            raise ValueError("Either 'file' or 'name' and 'primary_directive' must be provided")
+
+        # Set team reference early so _load_from_file can use it for inheritance
+        self.team = team
+
         if file:
             if file.endswith(".npc"):
                 self._load_from_file(file)
@@ -1076,7 +1083,6 @@ class NPC:
                 self.jinxs_directory = None
             self.npc_directory = None
 
-        self.team = team # Store the team reference (can be None)
         # Only set jinxs_spec from parameter if it wasn't already set by _load_from_file
         if not hasattr(self, 'jinxs_spec') or jinxs is not None:
             self.jinxs_spec = jinxs or "*" # Store the jinx specification for later loading
@@ -1499,10 +1505,23 @@ class NPC:
         else:
             self.jinxs_spec = jinxs_spec
 
+        # Get model/provider from NPC file, or inherit from team
         self.model = npc_data.get("model")
         self.provider = npc_data.get("provider")
         self.api_url = npc_data.get("api_url")
         self.api_key = npc_data.get("api_key")
+
+        # Inherit from team if not set on NPC
+        if self.team:
+            if not self.model and hasattr(self.team, 'model'):
+                self.model = self.team.model
+            if not self.provider and hasattr(self.team, 'provider'):
+                self.provider = self.team.provider
+            if not self.api_url and hasattr(self.team, 'api_url'):
+                self.api_url = self.team.api_url
+            if not self.api_key and hasattr(self.team, 'api_key'):
+                self.api_key = self.team.api_key
+
         self.name = npc_data.get("name", self.name)
 
         self.npc_path = file
@@ -2348,18 +2367,18 @@ class Team:
         if not os.path.exists(self.team_path):
             raise ValueError(f"Team directory not found: {self.team_path}")
         
-        # 1. Load all NPCs first (without initializing their jinxs yet)
+        # 1. Load team context first (model, provider, forenpc name, etc.)
+        self._load_team_context_file()
+
+        # 2. Load all NPCs (they can now inherit team's model/provider)
         for filename in os.listdir(self.team_path):
             if filename.endswith(".npc"):
                 npc_path = os.path.join(self.team_path, filename)
                 # Pass 'self' to NPC constructor for team reference
                 # Do NOT pass jinxs=... here, as it will be initialized later
-                npc = NPC(npc_path, db_conn=self.db_conn, team=self) 
+                npc = NPC(npc_path, db_conn=self.db_conn, team=self)
                 self.npcs[npc.name] = npc
-        
-        # 2. Load team context and determine forenpc name (string)
-        self._load_team_context_file() # This populates self.model, self.provider, self.forenpc_name etc.
-        
+
         # 3. Resolve and set self.forenpc (NPC object)
         if self.forenpc_name and self.forenpc_name in self.npcs:
             self.forenpc = self.npcs[self.forenpc_name]

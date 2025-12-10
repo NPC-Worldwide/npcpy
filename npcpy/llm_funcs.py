@@ -243,7 +243,7 @@ def get_llm_response(
         ctx_suffix = _context_suffix(run_context)
         run_messages = _build_messages(messages, system_message, prompt, ctx_suffix)
         return get_litellm_response(
-            prompt + ctx_suffix,
+            (prompt + ctx_suffix) if prompt else None,
             messages=run_messages,
             model=run_model,
             provider=run_provider,
@@ -684,13 +684,8 @@ def check_llm_command(
                 inputs = {}
 
             if jinx_name in jinxs:
-                try:
-
-                    print((f"  ⚡ {jinx_name}", "cyan"), end="", flush=True)
-                except:
-                    pass
+                logger.debug(f"[check_llm_command] Executing jinx: {jinx_name}")
                 output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
-
 
                 # Add tool result to messages
                 # Include name for Gemini compatibility
@@ -853,11 +848,8 @@ Use EXACT parameter names from the tool definitions above."""
                 context = f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}"
                 continue
 
-
-
+            logger.debug(f"[_react_fallback] Executing jinx: {jinx_name}")
             output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
-
-
             context = f"Tool '{jinx_name}' returned: {output}"
             command = f"{command}\n\nPrevious: {context}"
 
