@@ -78,14 +78,15 @@ def search_perplexity(
     headers = {"Authorization": f"Bearer {api_key}", 
                "Content-Type": "application/json"}
 
-    
     response = requests.post(url,
                              json=payload,
                              headers=headers)
-    
-    response = response.json()
 
-    return [response["choices"][0]["message"]["content"], response["citations"]]
+    if response.status_code != 200:
+        raise Exception(f"Perplexity API error {response.status_code}: {response.text[:200]}")
+
+    data = response.json()
+    return [data["choices"][0]["message"]["content"], data.get("citations", [])]
 
 
 def search_web(
