@@ -4,6 +4,7 @@ from npcpy.data.image import compress_image
 from npcpy.npc_sysenv import get_system_message, lookup_provider, render_markdown
 import base64
 import json
+import yaml
 import uuid
 import os
 import logging
@@ -281,16 +282,33 @@ def get_ollama_response(
             Do not include any additional markdown formatting or leading
             ```json tags in your response. The item keys should be based on the ones provided
             by the user. Do not invent new ones."""
-            
+
         if messages and messages[-1]["role"] == "user":
             if isinstance(messages[-1]["content"], list):
                 messages[-1]["content"].append({
-                    "type": "text", 
+                    "type": "text",
                     "text": json_instruction
                 })
             elif isinstance(messages[-1]["content"], str):
                 messages[-1]["content"] += "\n" + json_instruction
-                        
+
+    if format == "yaml" and not stream:
+        yaml_instruction = """Return your response as valid YAML. Do not include ```yaml markdown tags.
+            For multi-line strings like code, use the literal block scalar (|) syntax:
+            code: |
+              your code here
+              more lines here
+            The keys should be based on the ones requested by the user. Do not invent new ones."""
+
+        if messages and messages[-1]["role"] == "user":
+            if isinstance(messages[-1]["content"], list):
+                messages[-1]["content"].append({
+                    "type": "text",
+                    "text": yaml_instruction
+                })
+            elif isinstance(messages[-1]["content"], str):
+                messages[-1]["content"] += "\n" + yaml_instruction
+
     if image_paths:
         last_user_idx = -1
         for i, msg in enumerate(messages):
@@ -397,10 +415,24 @@ def get_ollama_response(
                         result["response"] = parsed_response
                 except json.JSONDecodeError:
                     result["error"] = f"Invalid JSON response: {response_content}"
-            
+
+            if format == "yaml":
+                try:
+                    if isinstance(response_content, str):
+                        if response_content.startswith("```yaml"):
+                            response_content = (
+                                response_content.replace("```yaml", "")
+                                .replace("```", "")
+                                .strip()
+                            )
+                        parsed_response = yaml.safe_load(response_content)
+                        result["response"] = parsed_response
+                except yaml.YAMLError:
+                    result["error"] = f"Invalid YAML response: {response_content}"
+
             return result
 
-    
+
     logger.debug(f"ollama api_params: {api_params}")
     res = ollama.chat(**api_params, options=options)
     result["raw_response"] = res
@@ -513,9 +545,28 @@ def get_ollama_response(
                     result["response"] = {}
                     result["error"] = "Invalid JSON response"
 
+            if format == "yaml":
+                try:
+                    if isinstance(llm_response, str):
+                        llm_response = llm_response.strip()
+
+                        if '```yaml' in llm_response:
+                            start = llm_response.find('```yaml') + 7
+                            end = llm_response.rfind('```')
+                            if end > start:
+                                llm_response = llm_response[start:end].strip()
+
+                        parsed_yaml = yaml.safe_load(llm_response)
+                        result["response"] = parsed_yaml
+
+                except (yaml.YAMLError, TypeError) as e:
+                    logger.debug(f"YAML parsing error: {str(e)}, raw response: {llm_response[:500]}")
+                    result["response"] = {}
+                    result["error"] = "Invalid YAML response"
+
         return result
-    
-import time 
+
+import time
 
 
 def get_litellm_response(
@@ -634,12 +685,26 @@ def get_litellm_response(
             Do not include any additional markdown formatting or leading
             ```json tags in your response. The item keys should be based on the ones provided
             by the user. Do not invent new ones."""
-            
+
         if result["messages"] and result["messages"][-1]["role"] == "user":
             if isinstance(result["messages"][-1]["content"], list):
                 result["messages"][-1]["content"].append({"type": "text", "text": json_instruction})
             elif isinstance(result["messages"][-1]["content"], str):
                 result["messages"][-1]["content"] += "\n" + json_instruction
+
+    if format == "yaml" and not stream:
+        yaml_instruction = """Return your response as valid YAML. Do not include ```yaml markdown tags.
+            For multi-line strings like code, use the literal block scalar (|) syntax:
+            code: |
+              your code here
+              more lines here
+            The keys should be based on the ones requested by the user. Do not invent new ones."""
+
+        if result["messages"] and result["messages"][-1]["role"] == "user":
+            if isinstance(result["messages"][-1]["content"], list):
+                result["messages"][-1]["content"].append({"type": "text", "text": yaml_instruction})
+            elif isinstance(result["messages"][-1]["content"], str):
+                result["messages"][-1]["content"] += "\n" + yaml_instruction
 
     if images:
         last_user_idx = -1
@@ -783,7 +848,37 @@ def get_litellm_response(
                     logger.debug(f"JSON parsing error: {str(e)}, raw response: {llm_response[:500]}")
                     result["response"] = {}
                     result["error"] = "Invalid JSON response"
-            
+
+            if format == "yaml":
+                try:
+                    if isinstance(llm_response, str):
+                        llm_response = llm_response.strip()
+
+                        # Strip ```yaml markdown if present
+                        if '```yaml' in llm_response:
+                            start = llm_response.find('```yaml') + 7
+                            end = llm_response.rfind('```')
+                            if end > start:
+                                llm_response = llm_response[start:end].strip()
+                        elif '```' in llm_response:
+                            # Generic code block
+                            start = llm_response.find('```') + 3
+                            # Skip any language identifier on the same line
+                            newline = llm_response.find('\n', start)
+                            if newline != -1:
+                                start = newline + 1
+                            end = llm_response.rfind('```')
+                            if end > start:
+                                llm_response = llm_response[start:end].strip()
+
+                        parsed_yaml = yaml.safe_load(llm_response)
+                        result["response"] = parsed_yaml
+
+                except (yaml.YAMLError, TypeError) as e:
+                    logger.debug(f"YAML parsing error: {str(e)}, raw response: {llm_response[:500]}")
+                    result["response"] = {}
+                    result["error"] = "Invalid YAML response"
+
             return result
 
     

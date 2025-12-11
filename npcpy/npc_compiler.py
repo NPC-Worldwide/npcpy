@@ -411,7 +411,12 @@ class Jinx:
         
         # _raw_steps will now hold the original, potentially templated, steps definition
         self._raw_steps = list(self.steps)
-        self.steps = [] # Will be populated after first-pass rendering
+        # If steps are already valid dicts (not needing Jinja templating), keep them
+        # Otherwise clear for first-pass rendering to populate
+        if self.steps and all(isinstance(s, dict) for s in self.steps):
+            pass  # Keep steps as-is for simple jinxes
+        else:
+            self.steps = []  # Will be populated after first-pass rendering
         self.parsed_files = {}
         if self.file_context:
             self.parsed_files = self._parse_file_patterns(self.file_context)
@@ -638,7 +643,8 @@ class Jinx:
                 extra_globals=extra_globals
             )
             # If an error occurred in a step, propagate it and stop execution
-            if "error" in context.get("output", ""):
+            output_str = str(context.get("output", ""))
+            if "error" in output_str.lower():
                 self._log_debug(f"DEBUG: Jinx '{self.jinx_name}' execution stopped due to error in step '{step.get('name', 'unnamed_step')}': {context['output']}")
                 break
 
