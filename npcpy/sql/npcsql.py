@@ -7,6 +7,12 @@ from collections import defaultdict, deque
 from sqlalchemy import create_engine, text, Engine, inspect
 import inspect as py_inspect
 
+try:
+    from jinja2 import Environment, BaseLoader, DebugUndefined
+    JINJA_AVAILABLE = True
+except ImportError:
+    JINJA_AVAILABLE = False
+
 # --- Explicitly import llm_funcs as a module object ---
 try:
     import npcpy.llm_funcs as llm_funcs
@@ -189,41 +195,182 @@ class NativeDatabaseAITransformer:
         
         return transformer(**kwargs)
 
+
+# --- NQL Jinja Context ---
+class NQLJinjaContext:
+    """Provides Jinja template context for NQL models with access to NPCs, jinxs, and team."""
+
+    def __init__(self, team=None, npc_operations=None):
+        self.team = team
+        self.npc_operations = npc_operations
+        self._npc_cache = {}
+        self._jinx_cache = {}
+
+    def npc(self, name: str) -> dict:
+        """Get NPC properties by name. Usage: {{ npc('sibiji').model }}"""
+        if name in self._npc_cache:
+            return self._npc_cache[name]
+
+        if not self.team:
+            return {'name': name, 'error': 'No team loaded'}
+
+        npc_obj = self.team.get_npc(name)
+        if not npc_obj:
+            return {'name': name, 'error': f'NPC {name} not found'}
+
+        # Build properties dict
+        props = {
+            'name': getattr(npc_obj, 'name', name),
+            'model': getattr(npc_obj, 'model', 'gpt-4o-mini'),
+            'provider': getattr(npc_obj, 'provider', 'openai'),
+            'directive': getattr(npc_obj, 'primary_directive', ''),
+            'jinxs': getattr(npc_obj, 'jinxs', []),
+        }
+        self._npc_cache[name] = props
+        return props
+
+    def jinx(self, name: str) -> dict:
+        """Get jinx properties by name. Usage: {{ jinx('sample').description }}"""
+        if name in self._jinx_cache:
+            return self._jinx_cache[name]
+
+        if not self.npc_operations or not self.npc_operations.jinx_map:
+            return {'name': name, 'error': 'No jinxs loaded'}
+
+        jinx_info = self.npc_operations.jinx_map.get(name.lower())
+        if not jinx_info:
+            return {'name': name, 'error': f'Jinx {name} not found'}
+
+        props = {
+            'name': jinx_info.get('name', name),
+            'description': jinx_info.get('description', ''),
+            'inputs': jinx_info.get('inputs', []),
+        }
+        self._jinx_cache[name] = props
+        return props
+
+    def get_team_context(self) -> dict:
+        """Get team-level properties. Usage: {{ team.forenpc }}"""
+        if not self.team:
+            return {'error': 'No team loaded'}
+
+        return {
+            'name': getattr(self.team, 'name', 'npc_team'),
+            'forenpc': getattr(self.team, 'forenpc_name', None),
+            'npcs': [getattr(n, 'name', str(n)) for n in getattr(self.team, 'npcs', [])],
+            'jinx_count': len(self.npc_operations.jinx_map) if self.npc_operations else 0,
+        }
+
+    def ref(self, model_name: str) -> str:
+        """Reference another model. Usage: {{ ref('base_stats') }}"""
+        return f"{{{{ ref('{model_name}') }}}}"
+
+    def config(self, **kwargs) -> str:
+        """Model configuration. Usage: {{ config(materialized='table') }}"""
+        config_parts = [f"{k}='{v}'" if isinstance(v, str) else f"{k}={v}"
+                       for k, v in kwargs.items()]
+        return f"{{{{ config({', '.join(config_parts)}) }}}}"
+
+    def env(self, var_name: str, default: str = '') -> str:
+        """Get environment variable. Usage: {{ env('API_KEY') }}"""
+        return os.environ.get(var_name, default)
+
+    def build_jinja_env(self) -> 'Environment':
+        """Build Jinja2 environment with NQL functions."""
+        if not JINJA_AVAILABLE:
+            raise ImportError("Jinja2 is required for template processing. Install with: pip install jinja2")
+
+        env = Environment(
+            loader=BaseLoader(),
+            undefined=DebugUndefined,
+            # Keep {{ ref(...) }} and {{ config(...) }} unprocessed for later
+            variable_start_string='{%',
+            variable_end_string='%}',
+            block_start_string='{%%',
+            block_end_string='%%}',
+        )
+
+        # Add custom functions
+        env.globals['npc'] = self.npc
+        env.globals['jinx'] = self.jinx
+        env.globals['team'] = self.get_team_context()
+        env.globals['env'] = self.env
+
+        return env
+
+    def render_template(self, content: str) -> str:
+        """Render Jinja template in SQL content."""
+        if not JINJA_AVAILABLE:
+            return content
+
+        # Only process if there are NQL Jinja expressions ({% ... %})
+        if '{%' not in content:
+            return content
+
+        try:
+            env = self.build_jinja_env()
+            template = env.from_string(content)
+            return template.render()
+        except Exception as e:
+            print(f"Warning: Jinja template error: {e}")
+            return content
+
+
 # --- NPCSQL Operations ---
 class NPCSQLOperations:
     def __init__(
-        self, 
-        npc_directory: str, 
+        self,
+        npc_directory: str,
         db_engine: Union[str, Engine] = "~/npcsh_history.db"
     ):
         self.npc_directory = npc_directory
-        
+
         if isinstance(db_engine, str):
             self.engine = create_engine_from_path(db_engine)
         else:
             self.engine = db_engine
-            
+
         self.npc_loader = None
+        self.jinx_map = {}  # Maps jinx names to jinx objects
         self.function_map = self._build_function_map()
-        
+
     def _get_team(self):
-        return (self.npc_loader 
-                if hasattr(self.npc_loader, 'npcs') 
+        return (self.npc_loader
+                if hasattr(self.npc_loader, 'npcs')
                 else None)
 
     def _build_function_map(self):
         import types
-        
+
         function_map = {}
         for name in dir(llm_funcs):
             if name.startswith('_'):
                 continue
             obj = getattr(llm_funcs, name)
-            if (isinstance(obj, types.FunctionType) or 
+            if (isinstance(obj, types.FunctionType) or
                 (isinstance(obj, types.MethodType) and obj.__self__ is not None)):
                 function_map[name] = obj
-        
+
         return function_map
+
+    def load_team_jinxs(self, team):
+        """Load jinxs from team to make them available as NQL functions."""
+        if not team:
+            return
+
+        try:
+            # Get all jinxs from the team's jinx catalog
+            if hasattr(team, 'jinx_tool_catalog'):
+                for tool in team.jinx_tool_catalog:
+                    jinx_name = tool.get('name', '').lower()
+                    if jinx_name and jinx_name not in self.function_map:
+                        # Store reference to the jinx
+                        self.jinx_map[jinx_name] = tool
+                        # Add a placeholder to function_map so it's recognized
+                        self.function_map[jinx_name] = f"__jinx__{jinx_name}"
+                        print(f"NQL: Registered team jinx '{jinx_name}' as NQL function")
+        except Exception as e:
+            print(f"Warning: Could not load team jinxs: {e}")
 
     def _resolve_npc_reference(self, npc_ref: str):
         if not npc_ref or not self.npc_loader:
@@ -252,6 +399,37 @@ class NPCSQLOperations:
                 
         return None
         
+    def _execute_jinx(self, jinx_name: str, query: str, npc_ref: str, context: str = "") -> str:
+        """Execute a team jinx and return the result."""
+        try:
+            from npcpy.npc_compiler import execute_jinx
+
+            jinx_info = self.jinx_map.get(jinx_name)
+            if not jinx_info:
+                return f"Error: Jinx '{jinx_name}' not found"
+
+            # Build context for jinx execution
+            jinx_context = {
+                'input': query,
+                'prompt': query,
+                'text': query,
+                'context': context,
+            }
+
+            # Get the jinx object from team
+            team = self._get_team()
+            if team and hasattr(team, 'get_jinx'):
+                jinx = team.get_jinx(jinx_name)
+                if jinx:
+                    result = execute_jinx(jinx, jinx_context, team=team)
+                    if isinstance(result, dict):
+                        return result.get('output', str(result))
+                    return str(result)
+
+            return f"Error: Could not execute jinx '{jinx_name}'"
+        except Exception as e:
+            return f"Jinx error: {e}"
+
     def execute_ai_function(
         self,
         func_name: str,
@@ -262,6 +440,7 @@ class NPCSQLOperations:
             raise ValueError(f"Unknown AI function: {func_name}")
 
         func = self.function_map[func_name]
+        is_jinx = isinstance(func, str) and func.startswith("__jinx__")
 
         npc_ref = params.get('npc', '')
         resolved_npc = self._resolve_npc_reference(npc_ref)
@@ -271,7 +450,8 @@ class NPCSQLOperations:
             resolved_team = resolved_npc.team
 
         total_rows = len(df)
-        print(f"NQL: Executing {func_name} on {total_rows} rows with NPC '{npc_ref}'...")
+        func_type = "jinx" if is_jinx else "function"
+        print(f"NQL: Executing {func_type} '{func_name}' on {total_rows} rows with NPC '{npc_ref}'...")
 
         results = []
         for idx, (row_idx, row) in enumerate(df.iterrows()):
@@ -292,34 +472,45 @@ class NPCSQLOperations:
 
             print(f"  [{idx+1}/{total_rows}] Processing row {row_idx}...", end=" ", flush=True)
 
-            sig = py_inspect.signature(func)
-
-            # Extract model/provider from NPC if available
-            npc_model = None
-            npc_provider = None
-            if resolved_npc and hasattr(resolved_npc, 'model'):
-                npc_model = resolved_npc.model
-            if resolved_npc and hasattr(resolved_npc, 'provider'):
-                npc_provider = resolved_npc.provider
-
-            func_params = {
-                k: v for k, v in {
-                    'prompt': query,
-                    'text': query,
-                    'npc': resolved_npc,
-                    'team': resolved_team,
-                    'context': params.get('context', ''),
-                    'model': npc_model or 'gpt-4o-mini',
-                    'provider': npc_provider or 'openai'
-                }.items() if k in sig.parameters
-            }
-
             try:
-                result = func(**func_params)
-                result_value = (result.get("response", "")
-                        if isinstance(result, dict)
-                        else str(result))
-                print(f"OK ({len(result_value)} chars)")
+                if is_jinx:
+                    # Execute as jinx
+                    result_value = self._execute_jinx(
+                        func_name,
+                        query,
+                        npc_ref,
+                        params.get('context', '')
+                    )
+                else:
+                    # Execute as llm_func
+                    sig = py_inspect.signature(func)
+
+                    # Extract model/provider from NPC if available
+                    npc_model = None
+                    npc_provider = None
+                    if resolved_npc and hasattr(resolved_npc, 'model'):
+                        npc_model = resolved_npc.model
+                    if resolved_npc and hasattr(resolved_npc, 'provider'):
+                        npc_provider = resolved_npc.provider
+
+                    func_params = {
+                        k: v for k, v in {
+                            'prompt': query,
+                            'text': query,
+                            'npc': resolved_npc,
+                            'team': resolved_team,
+                            'context': params.get('context', ''),
+                            'model': npc_model or 'gpt-4o-mini',
+                            'provider': npc_provider or 'openai'
+                        }.items() if k in sig.parameters
+                    }
+
+                    result = func(**func_params)
+                    result_value = (result.get("response", "")
+                            if isinstance(result, dict)
+                            else str(result))
+
+                print(f"OK ({len(str(result_value))} chars)")
             except Exception as e:
                 print(f"ERROR: {e}")
                 result_value = None
@@ -333,20 +524,22 @@ class NPCSQLOperations:
 # --- SQL Model Definition ---
 class SQLModel:
     def __init__(
-        self, 
-        name: str, 
-        content: str, 
-        path: str, 
-        npc_directory: str
+        self,
+        name: str,
+        content: str,
+        path: str,
+        npc_directory: str,
+        additional_functions: Optional[List[str]] = None
     ):
         self.name = name
         self.content = content
         self.path = path
         self.npc_directory = npc_directory
-        
+        self.additional_functions = additional_functions or []
+
         config_match = re.search(
-            r'\{\{[\s]*config\((.*?)\)[\s]*\}\}', 
-            content, 
+            r'\{\{[\s]*config\((.*?)\)[\s]*\}\}',
+            content,
             re.DOTALL
         )
         if config_match:
@@ -356,7 +549,7 @@ class SQLModel:
 
         self.dependencies = self._extract_dependencies()
         self.has_ai_function = self._check_ai_functions()
-        
+
         # DEBUG print to confirm if AI functions are found
         self.ai_functions = self._extract_ai_functions()
         if self.ai_functions:
@@ -397,9 +590,15 @@ class SQLModel:
             if name.startswith('_'):
                 continue
             obj = getattr(llm_funcs, name)
-            if (isinstance(obj, types.FunctionType) or 
+            if (isinstance(obj, types.FunctionType) or
                 (isinstance(obj, types.MethodType) and obj.__self__ is not None)):
                 available_functions.append(name.lower())  # Store as lowercase for comparison
+
+        # Add any additional functions (e.g., team jinxs)
+        for fn in self.additional_functions:
+            fn_lower = fn.lower()
+            if fn_lower not in available_functions:
+                available_functions.append(fn_lower)
         
         for match in matches:
             full_call_string = match.group(0).strip()
@@ -496,9 +695,17 @@ class ModelCompiler:
         try:
             self.npc_team = Team(team_path=npc_directory)
             self.npc_operations.npc_loader = self.npc_team
+            # Load team jinxs as NQL functions
+            self.npc_operations.load_team_jinxs(self.npc_team)
         except Exception as e:
             self.npc_team = None
             print(f"Warning: Could not load NPC team from {npc_directory}. AI functions relying on NPC context might fail: {e}")
+
+        # Initialize Jinja context for template processing
+        self.jinja_context = NQLJinjaContext(
+            team=self.npc_team,
+            npc_operations=self.npc_operations
+        )
             
     def _get_engine(self, source_name: str) -> Engine:
         if source_name.lower() == 'local' or not self.external_engines:
@@ -516,19 +723,27 @@ class ModelCompiler:
     def discover_models(self):
         self.models = {}
         sql_files = list(self.models_dir.glob("**/*.sql"))
-        
+
+        # Get list of available jinx names for NQL function recognition
+        additional_funcs = list(self.npc_operations.jinx_map.keys())
+
         for sql_file in sql_files:
             model_name = sql_file.stem
             with open(sql_file, "r") as f:
                 content = f.read()
-            
+
+            # Process Jinja templates ({% npc(...) %}, {% team.forenpc %}, etc.)
+            if JINJA_AVAILABLE and '{%' in content:
+                content = self.jinja_context.render_template(content)
+
             self.models[model_name] = SQLModel(
-                model_name, 
-                content, 
-                str(sql_file), 
-                str(sql_file.parent) 
+                model_name,
+                content,
+                str(sql_file),
+                str(sql_file.parent),
+                additional_functions=additional_funcs
             )
-            
+
         return self.models
 
     def build_dag(self) -> Dict[str, Set[str]]:

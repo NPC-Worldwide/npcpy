@@ -4519,6 +4519,233 @@ def health_check():
     return jsonify({"status": "ok", "error": None})
 
 
+# OpenAI-compatible completions API
+@app.route("/v1/chat/completions", methods=["POST"])
+def openai_chat_completions():
+    """
+    OpenAI-compatible chat completions endpoint.
+    Allows using NPC team as a drop-in replacement for OpenAI API.
+
+    Extra parameter:
+      - agent: NPC name to use (optional, uses team's forenpc if not specified)
+    """
+    try:
+        data = request.get_json()
+        messages = data.get("messages", [])
+        model = data.get("model", "gpt-4o-mini")
+        stream = data.get("stream", False)
+        temperature = data.get("temperature", 0.7)
+        max_tokens = data.get("max_tokens", 4096)
+
+        # Extra: agent/npc selection
+        agent_name = data.get("agent") or data.get("npc")
+
+        current_path = request.headers.get("X-Current-Path", os.getcwd())
+
+        # Load team and NPC
+        db_path = app.config.get('DB_PATH') or os.path.expanduser("~/.npcsh/npcsh_history.db")
+        db_conn = create_engine(f'sqlite:///{db_path}')
+
+        npc = None
+        team = None
+
+        # Try to load from project or global
+        project_team_path = os.path.join(current_path, "npc_team")
+        global_team_path = os.path.expanduser("~/.npcsh/npc_team")
+
+        team_path = project_team_path if os.path.exists(project_team_path) else global_team_path
+
+        if os.path.exists(team_path):
+            try:
+                team = Team(team_path, db_conn=db_conn)
+                if agent_name and agent_name in team.npcs:
+                    npc = team.npcs[agent_name]
+                elif team.forenpc:
+                    npc = team.forenpc
+            except Exception as e:
+                print(f"Error loading team: {e}")
+
+        # Extract the prompt from messages
+        prompt = ""
+        conversation_messages = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Handle multimodal content
+                content = " ".join([c.get("text", "") for c in content if c.get("type") == "text"])
+            conversation_messages.append({"role": role, "content": content})
+            if role == "user":
+                prompt = content
+
+        # Determine provider from model name
+        provider = data.get("provider")
+        if not provider:
+            if "gpt" in model or "o1" in model or model.startswith("o3"):
+                provider = "openai"
+            elif "claude" in model:
+                provider = "anthropic"
+            elif "gemini" in model:
+                provider = "gemini"
+            else:
+                provider = "openai"  # default
+
+        if stream:
+            def generate_stream():
+                request_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+                created = int(time.time())
+
+                try:
+                    response = get_llm_response(
+                        prompt,
+                        model=model,
+                        provider=provider,
+                        npc=npc,
+                        team=team,
+                        messages=conversation_messages[:-1],  # exclude last user message (it's the prompt)
+                        stream=True,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+
+                    for chunk in response:
+                        if isinstance(chunk, str):
+                            delta_content = chunk
+                        elif hasattr(chunk, 'choices') and chunk.choices:
+                            delta = chunk.choices[0].delta
+                            delta_content = getattr(delta, 'content', '') or ''
+                        else:
+                            delta_content = str(chunk)
+
+                        if delta_content:
+                            chunk_data = {
+                                "id": request_id,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": delta_content},
+                                    "finish_reason": None
+                                }]
+                            }
+                            yield f"data: {json.dumps(chunk_data)}\n\n"
+
+                    # Final chunk
+                    final_chunk = {
+                        "id": request_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop"
+                        }]
+                    }
+                    yield f"data: {json.dumps(final_chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+
+                except Exception as e:
+                    error_chunk = {
+                        "error": {
+                            "message": str(e),
+                            "type": "server_error"
+                        }
+                    }
+                    yield f"data: {json.dumps(error_chunk)}\n\n"
+
+            return Response(
+                generate_stream(),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'X-Accel-Buffering': 'no'
+                }
+            )
+        else:
+            # Non-streaming response
+            response = get_llm_response(
+                prompt,
+                model=model,
+                provider=provider,
+                npc=npc,
+                team=team,
+                messages=conversation_messages[:-1],
+                stream=False,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+            content = ""
+            if isinstance(response, str):
+                content = response
+            elif hasattr(response, 'choices') and response.choices:
+                content = response.choices[0].message.content or ""
+            elif isinstance(response, dict):
+                content = response.get("response") or response.get("output") or str(response)
+            else:
+                content = str(response)
+
+            return jsonify({
+                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": content
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": -1,
+                    "completion_tokens": -1,
+                    "total_tokens": -1
+                }
+            })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "error": {
+                "message": str(e),
+                "type": "server_error",
+                "code": 500
+            }
+        }), 500
+
+
+@app.route("/v1/models", methods=["GET"])
+def openai_list_models():
+    """OpenAI-compatible models listing - returns available NPCs as models."""
+    current_path = request.headers.get("X-Current-Path", os.getcwd())
+
+    models = []
+
+    # Add NPCs as available "models"
+    project_team_path = os.path.join(current_path, "npc_team")
+    global_team_path = os.path.expanduser("~/.npcsh/npc_team")
+
+    for team_path in [project_team_path, global_team_path]:
+        if os.path.exists(team_path):
+            for npc_file in Path(team_path).glob("*.npc"):
+                models.append({
+                    "id": npc_file.stem,
+                    "object": "model",
+                    "created": int(os.path.getmtime(npc_file)),
+                    "owned_by": "npc-team"
+                })
+
+    return jsonify({
+        "object": "list",
+        "data": models
+    })
+
+
 def start_flask_server(
     port=5337,
     cors_origins=None,
