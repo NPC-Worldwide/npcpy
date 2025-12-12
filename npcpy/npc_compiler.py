@@ -425,7 +425,8 @@ class Jinx:
         jinx_data = load_yaml_file(path)
         if not jinx_data:
             raise ValueError(f"Failed to load jinx from {path}")
-        self._source_path = path
+        # Set _source_path in the data so it's preserved after _load_from_data
+        jinx_data['_source_path'] = path
         self._load_from_data(jinx_data)
             
 
@@ -715,7 +716,10 @@ class Jinx:
         # Add context values directly as variables so jinx code can use them without Jinja
         exec_globals.update(context)
 
-        exec_locals = {} # Locals for this specific exec call
+        # NOTE: Using same dict for globals and locals because when they're
+        # separate, imports end up in locals but nested functions can only see globals.
+        # This caused "name 'X' is not defined" errors when functions used imported names.
+        exec_locals = exec_globals  # Use same namespace so imports are visible in functions
 
         try:
             exec(rendered_code, exec_globals, exec_locals)
@@ -727,7 +731,7 @@ class Jinx:
             context['output'] = error_msg
             self._log_debug(error_msg)
             return context
-        
+
         # Update the main context with any variables set in exec_locals
         context.update(exec_locals)
         
@@ -933,6 +937,51 @@ def jinx_to_tool_def(jinx_obj: 'Jinx') -> Dict[str, Any]:
 def build_jinx_tool_catalog(jinxs: Dict[str, 'Jinx']) -> Dict[str, Dict[str, Any]]:
     """Helper to build a name->tool_def catalog from a dict of Jinx objects."""
     return {name: jinx_to_tool_def(jinx_obj) for name, jinx_obj in jinxs.items()}
+
+def match_jinx_spec_to_names(jinx_spec: str, team_jinxs_dict: Dict[str, 'Jinx'], jinxs_base_dir: str) -> List[str]:
+    """
+    Match a jinx spec pattern to actual jinx names from the team's jinxs_dict.
+
+    Args:
+        jinx_spec: A spec like 'lib/core/python', 'lib/computer_use/*', or just 'python'
+        team_jinxs_dict: Dict mapping jinx_name -> Jinx object
+        jinxs_base_dir: Base directory where team jinxs are stored (e.g., '/path/to/npc_team/jinxs')
+
+    Returns:
+        List of jinx names that match the spec
+    """
+    matched_names = []
+
+    # First, check if it's a direct jinx name match
+    if jinx_spec in team_jinxs_dict:
+        return [jinx_spec]
+
+    # Normalize the spec (add .jinx extension if not present, for path matching)
+    spec_pattern = jinx_spec
+    if not spec_pattern.endswith('.jinx') and not spec_pattern.endswith('*'):
+        spec_pattern += '.jinx'
+
+    # Handle glob patterns
+    for jinx_name, jinx_obj in team_jinxs_dict.items():
+        source_path = getattr(jinx_obj, '_source_path', None)
+        if not source_path:
+            continue
+
+        # Get relative path from jinxs base directory
+        try:
+            rel_path = os.path.relpath(source_path, jinxs_base_dir)
+        except ValueError:
+            # Can happen on Windows with different drives
+            continue
+
+        # Match using fnmatch for glob support
+        if fnmatch.fnmatch(rel_path, spec_pattern):
+            matched_names.append(jinx_name)
+        # Also try matching without .jinx for patterns like lib/core/python
+        elif fnmatch.fnmatch(rel_path, spec_pattern.replace('.jinx', '') + '.jinx'):
+            matched_names.append(jinx_name)
+
+    return matched_names
 
 def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
     print(f"DEBUG extract_jinx_inputs called with args: {args}")
@@ -1200,12 +1249,39 @@ class NPC:
             if self.team and hasattr(self.team, 'jinxs_dict') and self.team.jinxs_dict:
                 self.jinxs_dict.update(self.team.jinxs_dict)
         else: # If specific jinxs are requested, try to get them from team
-            for jinx_name in self.jinxs_spec:
-                if self.team and jinx_name in self.team.jinxs_dict:
-                    self.jinxs_dict[jinx_name] = self.team.jinxs_dict[jinx_name]
+            if self.team and hasattr(self.team, 'jinxs_dict') and self.team.jinxs_dict:
+                # Determine the jinxs base directory for path matching
+                jinxs_base_dir = None
+                if hasattr(self.team, 'team_path') and self.team.team_path:
+                    jinxs_base_dir = os.path.join(self.team.team_path, 'jinxs')
 
-        # Load NPC's own jinxs (if not already covered by team or if specific ones are requested)
+                for jinx_spec in self.jinxs_spec:
+                    # Use the helper to match spec patterns (paths, globs) to jinx names
+                    if jinxs_base_dir:
+                        matched_names = match_jinx_spec_to_names(jinx_spec, self.team.jinxs_dict, jinxs_base_dir)
+                    else:
+                        # Fallback to direct name match if no base dir
+                        matched_names = [jinx_spec] if jinx_spec in self.team.jinxs_dict else []
+
+                    for jinx_name in matched_names:
+                        if jinx_name in self.team.jinxs_dict:
+                            self.jinxs_dict[jinx_name] = self.team.jinxs_dict[jinx_name]
+
+        # Load NPC's own jinxs ONLY if:
+        # 1. The NPC has no team (standalone NPC), OR
+        # 2. The NPC's jinxs directory is different from the team's jinxs directory
+        # This prevents team NPCs with specific jinxs_spec from loading all team jinxs
+        should_load_from_directory = False
         if hasattr(self, 'npc_jinxs_directory') and self.npc_jinxs_directory and os.path.exists(self.npc_jinxs_directory):
+            if not self.team:
+                should_load_from_directory = True
+            elif hasattr(self.team, 'team_path') and self.team.team_path:
+                team_jinxs_dir = os.path.join(self.team.team_path, 'jinxs')
+                # Only load if NPC has its own separate jinxs directory
+                if os.path.normpath(self.npc_jinxs_directory) != os.path.normpath(team_jinxs_dir):
+                    should_load_from_directory = True
+
+        if should_load_from_directory:
             for jinx_obj in load_jinxs_from_directory(self.npc_jinxs_directory):
                 if jinx_obj.jinx_name not in self.jinxs_dict: # Only add if not already added from team
                     npc_jinxs_raw_list.append(jinx_obj)
@@ -1586,7 +1662,7 @@ class NPC:
         if use_core_tools:
             dynamic_core_tools_list = [
                 self.think_step_by_step,
-                self.write_code
+                self.write_code,
             ]
 
             if self.command_history:
@@ -1732,7 +1808,39 @@ class NPC:
         response = self.get_llm_response(thinking_prompt, tool_choice = False)
         return response.get('response', 'Unable to process thinking request')
 
+    def write_code(self, task: str, language: str = "python") -> str:
+        """Write code to accomplish a task.
 
+        Args:
+            task: Description of what the code should do
+            language: Programming language to use (default: python)
+
+        Returns:
+            The generated code as a string
+        """
+        code_prompt = f"""Write {language} code to accomplish the following task:
+
+{task}
+
+Requirements:
+- Write clean, well-commented code
+- Include error handling where appropriate
+- Make sure the code is complete and runnable
+- Only output the code, no explanations before or after
+
+```{language}
+"""
+
+        response = self.get_llm_response(code_prompt, tool_choice=False)
+        code = response.get('response', '')
+
+        # Clean up the response - extract code if wrapped in markdown
+        if f'```{language}' in code:
+            code = code.split(f'```{language}')[-1]
+        if '```' in code:
+            code = code.split('```')[0]
+
+        return code.strip()
 
 
     def create_planning_state(self, goal: str) -> Dict[str, Any]:

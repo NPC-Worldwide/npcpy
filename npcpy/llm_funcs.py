@@ -6,7 +6,10 @@ import random
 import subprocess
 import copy
 import itertools
+import logging
 from typing import List, Dict, Any, Optional, Union
+
+logger = logging.getLogger("npcpy.llm_funcs")
 from npcpy.npc_sysenv import (
     print_and_process_stream_with_markdown,
     render_markdown,
@@ -684,8 +687,14 @@ def check_llm_command(
                 inputs = {}
 
             if jinx_name in jinxs:
-                logger.debug(f"[check_llm_command] Executing jinx: {jinx_name}")
+                npc_name = getattr(npc, 'name', 'npc') if npc else 'npc'
+                inputs_preview = str(inputs)[:100] + "..." if len(str(inputs)) > 100 else str(inputs)
+                logger.info(f"[{npc_name}] ⚡ {jinx_name}: {inputs_preview}")
+
                 output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
+
+                output_preview = str(output)[:150] + "..." if len(str(output)) > 150 else str(output)
+                logger.info(f"[{npc_name}] → {output_preview}")
 
                 # Add tool result to messages
                 # Include name for Gemini compatibility
