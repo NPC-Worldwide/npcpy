@@ -655,17 +655,51 @@ def _react_fallback(
 
     jinx_list = "\n".join(_jinx_info(n, j) for n, j in jinxs.items()) if jinxs else "None"
 
+    MESSAGE_COMPRESSION_THRESHOLD = 15  # Compress when messages exceed this
+
     for iteration in range(max_iterations):
+        # Compress messages if they've grown too large
+        if len(current_messages) > MESSAGE_COMPRESSION_THRESHOLD:
+            try:
+                compressed = breathe(
+                    messages=current_messages,
+                    model=model,
+                    provider=provider,
+                    npc=npc
+                )
+                if compressed and compressed.get('messages'):
+                    current_messages = compressed.get('messages')
+                    logger.debug(f"[_react_fallback] Compressed messages from {len(current_messages)} to {len(compressed.get('messages', []))}")
+            except Exception as e:
+                logger.debug(f"[_react_fallback] Message compression failed: {e}")
+                # Fallback: just keep recent messages
+                if current_messages and current_messages[0].get('role') == 'system':
+                    current_messages = [current_messages[0]] + current_messages[-10:]
+                else:
+                    current_messages = current_messages[-10:]
+
+        # Build history of what's been tried
+        history_text = ""
+        if jinx_executions:
+            history_text = "\n\nPrevious tool calls this session:\n" + "\n".join(
+                f"- {h['name']}({h['inputs']}) -> {h['output']}"
+                for h in jinx_executions[-5:]
+            )
+
         prompt = f"""Request: {command}
 
-Tools:
+Available Tools:
 {jinx_list}
 
-Return JSON: {{"action": "answer", "response": "..."}} OR {{"action": "jinx", "jinx_name": "...", "inputs": {{"param_name": "value"}}}}
-Use EXACT parameter names from the tool definitions above."""
+Instructions:
+1. Analyze the request and determine the best tool to use
+2. If you have enough information to answer, use {{"action": "answer", "response": "your answer"}}
+3. If you need to use a tool, use {{"action": "jinx", "jinx_name": "tool_name", "inputs": {{"param": "value"}}}}
+4. Use EXACT parameter names from tool definitions
+5. Do NOT repeat the same tool call with the same inputs{history_text}"""
 
         if context:
-            prompt += f"\nContext: {context}"
+            prompt += f"\n\nCurrent context: {context}"
 
         response = get_llm_response(
             prompt,
@@ -783,7 +817,7 @@ Use EXACT parameter names from the tool definitions above."""
             jinx_executions.append({
                 "name": jinx_name,
                 "inputs": inputs,
-                "output": str(output)[:2000] if output else None
+                "output": str(output) if output else None
             })
 
             # Extract generated image paths from output for subsequent LLM calls
@@ -808,7 +842,7 @@ Use EXACT parameter names from the tool definitions above."""
                         print(f"[REACT-DEBUG] Added generated image (not found, using anyway): {local_path}")
 
             # Truncate output for context to avoid sending huge base64 data back to LLM
-            output_for_context = str(output)[:500] + "..." if len(str(output)) > 500 else str(output)
+            output_for_context = str(output)[:8000] + "..." if len(str(output)) > 8000 else str(output)
             context = f"Tool '{jinx_name}' returned: {output_for_context}"
             command = f"{command}\n\nPrevious: {context}"
 
