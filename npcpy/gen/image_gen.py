@@ -160,11 +160,12 @@ def openai_image_gen(
     height: int = 1024,
     width: int = 1024,
     n_images: int = 1,
+    api_key: Optional[str] = None,
 ):
     """Generate or edit an image using the OpenAI API."""
     from openai import OpenAI
 
-    client = OpenAI()
+    client = OpenAI(api_key=api_key) if api_key else OpenAI()
 
     if height is None:
         height = 1024

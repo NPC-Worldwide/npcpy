@@ -502,9 +502,10 @@ def get_ollama_response(
             
             result["response"] = ollama.chat(**stream_api_params, options=options)
         else:
-                        
+
             if format == "json":
                 try:
+                    llm_response = response_content
                     if isinstance(llm_response, str):
                         llm_response = llm_response.strip()
                         

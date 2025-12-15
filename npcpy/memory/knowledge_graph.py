@@ -871,7 +871,7 @@ def process_text_with_chroma(
     )
 
     
-    facts = extract_facts(text, model=model, provider=provider, npc=npc)
+    facts = get_facts(text, model=model, provider=provider, npc=npc)
 
     
     for i in range(0, len(facts), batch_size):

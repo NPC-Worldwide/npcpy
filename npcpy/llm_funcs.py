@@ -583,16 +583,17 @@ def check_llm_command(
     if jinxs is None:
         jinxs = _get_jinxs(npc, team)
 
-    # Only prepare tools if model supports them
-    tools = None
-    if tool_capable is not False and jinxs:
-        tools = _jinxs_to_tools(jinxs)
-
-    # Keep full message history, only truncate for API calls to reduce tokens
+    # Keep full message history
     full_messages = messages.copy() if messages else []
 
-    # Make LLM call (with or without tools based on tool_capable)
+    # If we have jinxs, use ReAct fallback (JSON prompting) instead of tool_calls
+    if jinxs:
+        return _react_fallback(
+            command, model, provider, api_url, api_key, npc, team,
+            full_messages, images, stream, context, jinxs, extra_globals, max_iterations
+        )
 
+    # No jinxs - just get a direct response
     try:
         response = get_llm_response(
             command,
@@ -600,13 +601,12 @@ def check_llm_command(
             provider=provider,
             api_url=api_url,
             api_key=api_key,
-            messages=messages[-10:],  # Truncate for API call only
+            messages=messages[-10:],
             npc=npc,
             team=team,
             images=images,
             stream=stream,
             context=context,
-            tools=tools,
         )
     except Exception as e:
         print(f"[check_llm_command] EXCEPTION in get_llm_response: {type(e).__name__}: {e}", "red")
@@ -617,157 +617,17 @@ def check_llm_command(
             "usage": total_usage,
         }
 
-
     if response.get("usage"):
         total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
         total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
 
-    # Check if tool calls were made
-    tool_calls = response.get("tool_calls", [])
-    if not tool_calls:
-        # Direct answer - append user message to full messages
-        full_messages.append({"role": "user", "content": command})
-        assistant_response = response.get("response", "")
-        # Only append assistant message if it's a string (not a stream)
-        # For streaming, the caller (process_result) handles appending after consumption
-        if assistant_response and isinstance(assistant_response, str):
-            full_messages.append({"role": "assistant", "content": assistant_response})
-        return {
-            "messages": full_messages,
-            "output": assistant_response,
-            "usage": total_usage,
-        }
-
-    # Helper to serialize tool_calls for message history
-    def _serialize_tool_calls(tcs):
-        """Convert tool_call objects to dicts for message history."""
-        serialized = []
-        for tc in tcs:
-            if hasattr(tc, 'id'):
-                # It's an object, convert to dict
-                func = tc.function
-                serialized.append({
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": func.name if hasattr(func, 'name') else func.get('name'),
-                        "arguments": func.arguments if hasattr(func, 'arguments') else func.get('arguments', '{}')
-                    }
-                })
-            else:
-                # Already a dict
-                serialized.append(tc)
-        return serialized
-
-    # Execute tool calls in a loop - start with full messages
     full_messages.append({"role": "user", "content": command})
-    # Add assistant message with tool_calls before executing them
-    assistant_msg = {"role": "assistant", "content": response.get("response", "")}
-    if tool_calls:
-        assistant_msg["tool_calls"] = _serialize_tool_calls(tool_calls)
-    full_messages.append(assistant_msg)
-    current_messages = full_messages
-    for _ in range(max_iterations):
-        for tc in tool_calls:
-            # Handle both dict and object formats
-            if hasattr(tc, 'function'):
-                func = tc.function
-                jinx_name = func.name if hasattr(func, 'name') else func.get('name')
-                args_str = func.arguments if hasattr(func, 'arguments') else func.get('arguments', '{}')
-                tc_id = tc.id if hasattr(tc, 'id') else tc.get('id', '')
-            else:
-                func = tc.get("function", {})
-                jinx_name = func.get("name")
-                args_str = func.get("arguments", "{}")
-                tc_id = tc.get("id", "")
-
-            try:
-                inputs = json.loads(args_str) if isinstance(args_str, str) else args_str
-            except:
-                inputs = {}
-
-            if jinx_name in jinxs:
-                npc_name = getattr(npc, 'name', 'npc') if npc else 'npc'
-                inputs_preview = str(inputs)[:100] + "..." if len(str(inputs)) > 100 else str(inputs)
-                logger.info(f"[{npc_name}] ⚡ {jinx_name}: {inputs_preview}")
-
-                output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
-
-                output_preview = str(output)[:150] + "..." if len(str(output)) > 150 else str(output)
-                logger.info(f"[{npc_name}] → {output_preview}")
-
-                # Add tool result to messages
-                # Include name for Gemini compatibility
-                current_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "name": jinx_name,
-                    "content": str(output)
-                })
-
-        # Get next response - truncate carefully to not orphan tool responses
-        # Find a safe truncation point that doesn't split tool_call/tool_response pairs
-        truncated = current_messages
-        if len(current_messages) > 15:
-            # Start from -15 and walk back to find a user message or start
-            start_idx = len(current_messages) - 15
-            while start_idx > 0:
-                msg = current_messages[start_idx]
-                # Don't start on a tool response - would orphan it
-                if msg.get("role") == "tool":
-                    start_idx -= 1
-                # Don't start on assistant with tool_calls unless next is tool response
-                elif msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    start_idx -= 1
-                else:
-                    break
-            truncated = current_messages[start_idx:]
-
-        try:
-            response = get_llm_response(
-                "",  # continuation
-                model=model,
-                provider=provider,
-                api_url=api_url,
-                api_key=api_key,
-                messages=truncated,
-                npc=npc,
-                team=team,
-                stream=stream,
-                context=context,
-                tools=tools,
-            )
-        except Exception as e:
-            # If continuation fails, return what we have so far
-            return {
-                "messages": current_messages,
-                "output": f"Tool executed successfully. (Continuation error: {type(e).__name__})",
-                "usage": total_usage,
-            }
-
-        if response.get("usage"):
-            total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
-            total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
-
-        tool_calls = response.get("tool_calls", [])
-        # Append assistant response to full messages with tool_calls if present
-        assistant_response = response.get("response", "")
-        assistant_msg = {"role": "assistant", "content": assistant_response}
-        if tool_calls:
-            assistant_msg["tool_calls"] = _serialize_tool_calls(tool_calls)
-        current_messages.append(assistant_msg)
-
-        if not tool_calls:
-            # Done - return full message history
-            return {
-                "messages": current_messages,
-                "output": assistant_response,
-                "usage": total_usage,
-            }
-
+    assistant_response = response.get("response", "")
+    if assistant_response and isinstance(assistant_response, str):
+        full_messages.append({"role": "assistant", "content": assistant_response})
     return {
-        "messages": current_messages,
-        "output": response.get("response", "Max iterations reached"),
+        "messages": full_messages,
+        "output": assistant_response,
         "usage": total_usage,
     }
 
@@ -779,10 +639,12 @@ def _react_fallback(
     """ReAct-style fallback for models without tool calling."""
     import logging
     logger = logging.getLogger("npcpy.llm_funcs")
-    logger.debug(f"[_react_fallback] Starting with {len(messages) if messages else 0} messages")
+    logger.debug(f"[_react_fallback] Starting with {len(messages) if messages else 0} messages, jinxs: {list(jinxs.keys()) if jinxs else None}")
 
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     current_messages = messages.copy() if messages else []
+    jinx_executions = []  # Track jinx calls for UI display
+    generated_images = []  # Track images generated by jinxs for subsequent LLM calls
     logger.debug(f"[_react_fallback] current_messages initialized with {len(current_messages)} messages")
 
     # Build jinx list with input parameters
@@ -814,7 +676,7 @@ Use EXACT parameter names from the tool definitions above."""
             messages=current_messages[-10:],
             npc=npc,
             team=team,
-            images=images if iteration == 0 else None,
+            images=((images or []) if iteration == 0 else []) + generated_images or None,
             format="json",
             context=context,
         )
@@ -824,14 +686,32 @@ Use EXACT parameter names from the tool definitions above."""
             total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
 
         decision = response.get("response", {})
+        logger.debug(f"[_react_fallback] Raw decision: {str(decision)[:200]}")
+        print(f"[REACT-DEBUG] Full response keys: {response.keys()}")
+        print(f"[REACT-DEBUG] Raw response['response']: {str(response.get('response', 'NONE'))[:500]}")
+        print(f"[REACT-DEBUG] Raw decision type: {type(decision)}, value: {str(decision)[:500]}")
         if isinstance(decision, str):
             try:
                 decision = json.loads(decision)
             except:
-                return {"messages": current_messages, "output": decision, "usage": total_usage}
+                logger.debug(f"[_react_fallback] Could not parse JSON, returning as text")
+                return {"messages": current_messages, "output": decision, "usage": total_usage, "jinx_executions": jinx_executions}
 
+        logger.debug(f"[_react_fallback] Parsed decision action: {decision.get('action')}")
         if decision.get("action") == "answer":
             output = decision.get("response", "")
+
+            # Prepend any image URLs from jinx executions to the output
+            import re
+            for jexec in jinx_executions:
+                joutput = jexec.get("output", "")
+                if joutput:
+                    # Find image URLs in jinx output
+                    img_urls = re.findall(r'/uploads/[^\s,\'"]+\.(?:png|jpg|jpeg|webp|gif)', str(joutput), re.IGNORECASE)
+                    for url in img_urls:
+                        if url not in output:
+                            output = f"![Generated Image]({url})\n\n{output}"
+
             # Add user message to full history
             current_messages.append({"role": "user", "content": command})
             if stream:
@@ -842,32 +722,136 @@ Use EXACT parameter names from the tool definitions above."""
                     total_usage["output_tokens"] += final["usage"].get("output_tokens", 0)
                 # Return full messages, not truncated from final
                 logger.debug(f"[_react_fallback] Answer (stream) - returning {len(current_messages)} messages")
-                return {"messages": current_messages, "output": final.get("response", output), "usage": total_usage}
+                return {"messages": current_messages, "output": final.get("response", output), "usage": total_usage, "jinx_executions": jinx_executions}
             # Non-streaming: add assistant response to full history
             if output and isinstance(output, str):
                 current_messages.append({"role": "assistant", "content": output})
             logger.debug(f"[_react_fallback] Answer - returning {len(current_messages)} messages")
-            return {"messages": current_messages, "output": output, "usage": total_usage}
+            return {"messages": current_messages, "output": output, "usage": total_usage, "jinx_executions": jinx_executions}
 
-        elif decision.get("action") == "jinx":
-            jinx_name = decision.get("jinx_name")
+        elif decision.get("action") == "jinx" or decision.get("action") in jinxs:
+            # Handle multiple formats:
+            # 1. {"action": "jinx", "jinx_name": "foo", "inputs": {...}}
+            # 2. {"action": "foo", "inputs": {...}}
+            # 3. {"action": "foo", "param1": "...", "param2": "..."} - params at top level
+            jinx_name = decision.get("jinx_name") or decision.get("action")
             inputs = decision.get("inputs", {})
+
+            # If inputs is empty, check if params are at top level
+            if not inputs:
+                # Extract all keys except 'action', 'jinx_name', 'inputs' as potential inputs
+                inputs = {k: v for k, v in decision.items() if k not in ('action', 'jinx_name', 'inputs', 'response')}
+            logger.debug(f"[_react_fallback] Jinx action: {jinx_name} with inputs: {inputs}")
+            print(f"[REACT-DEBUG] Chose jinx: {jinx_name}, inputs: {str(inputs)[:200]}")
 
             if jinx_name not in jinxs:
                 context = f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}"
+                logger.debug(f"[_react_fallback] Jinx not found: {jinx_name}")
                 continue
+
+            # Validate required parameters before executing
+            jinx_obj = jinxs[jinx_name]
+            # Handle both dict and Jinx object
+            if hasattr(jinx_obj, 'inputs'):
+                required_inputs = jinx_obj.inputs or []
+            elif isinstance(jinx_obj, dict):
+                required_inputs = jinx_obj.get('inputs', [])
+            else:
+                required_inputs = []
+
+            if required_inputs:
+                # Get just the parameter names (handle both string and dict formats)
+                required_names = []
+                for inp in required_inputs:
+                    if isinstance(inp, str):
+                        required_names.append(inp)
+                    elif isinstance(inp, dict):
+                        required_names.extend(inp.keys())
+
+                # Check which required params are missing
+                missing = [p for p in required_names if p not in inputs or not inputs.get(p)]
+                provided = list(inputs.keys())
+                if missing:
+                    context = f"Error: jinx '{jinx_name}' requires parameters {required_names} but got {provided}. Missing: {missing}. Please retry with correct parameter names."
+                    logger.debug(f"[_react_fallback] Missing required params: {missing}")
+                    print(f"[REACT-DEBUG] Missing params for {jinx_name}: {missing}, got: {provided}")
+                    continue
 
             logger.debug(f"[_react_fallback] Executing jinx: {jinx_name}")
             output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
-            context = f"Tool '{jinx_name}' returned: {output}"
+            logger.debug(f"[_react_fallback] Jinx output: {str(output)[:200]}")
+            jinx_executions.append({
+                "name": jinx_name,
+                "inputs": inputs,
+                "output": str(output)[:2000] if output else None
+            })
+
+            # Extract generated image paths from output for subsequent LLM calls
+            import re
+            image_paths = re.findall(r'/uploads/[^\s,\'"]+\.(?:png|jpg|jpeg|webp|gif)', str(output), re.IGNORECASE)
+            if image_paths:
+                # Convert relative URLs to absolute file paths
+                for img_path in image_paths:
+                    # Remove leading slash
+                    local_path = img_path.lstrip('/')
+                    # Check various possible locations
+                    if os.path.exists(local_path):
+                        generated_images.append(local_path)
+                        print(f"[REACT-DEBUG] Added generated image: {local_path}")
+                    elif os.path.exists(os.path.join(os.getcwd(), local_path)):
+                        full_path = os.path.join(os.getcwd(), local_path)
+                        generated_images.append(full_path)
+                        print(f"[REACT-DEBUG] Added generated image (cwd): {full_path}")
+                    else:
+                        # Just add the URL path anyway - let get_llm_response handle it
+                        generated_images.append(local_path)
+                        print(f"[REACT-DEBUG] Added generated image (not found, using anyway): {local_path}")
+
+            # Truncate output for context to avoid sending huge base64 data back to LLM
+            output_for_context = str(output)[:500] + "..." if len(str(output)) > 500 else str(output)
+            context = f"Tool '{jinx_name}' returned: {output_for_context}"
             command = f"{command}\n\nPrevious: {context}"
 
         else:
             logger.debug(f"[_react_fallback] Unknown action - returning {len(current_messages)} messages")
-            return {"messages": current_messages, "output": str(decision), "usage": total_usage}
+            # If we have jinx executions, return the last output instead of empty decision
+            if jinx_executions and jinx_executions[-1].get("output"):
+                return {"messages": current_messages, "output": jinx_executions[-1]["output"], "usage": total_usage, "jinx_executions": jinx_executions}
+            # If decision is empty {}, retry with clearer prompt if jinxs are available
+            if not decision or decision == {}:
+                if jinxs and iteration < max_iterations - 1:
+                    # Retry with explicit instruction to use a jinx
+                    print(f"[REACT-DEBUG] Empty decision on iteration {iteration}, retrying with clearer prompt")
+                    context = f"You MUST use one of these tools to complete the task: {list(jinxs.keys())}. Return JSON with action and inputs."
+                    continue
+                else:
+                    # Last resort: get a text response
+                    print(f"[REACT-DEBUG] Empty decision, getting text response instead")
+                    current_messages.append({"role": "user", "content": command})
+                    fallback_response = get_llm_response(
+                        command,
+                        model=model,
+                        provider=provider,
+                        messages=current_messages[-10:],
+                        npc=npc,
+                        team=team,
+                        stream=stream,
+                        context=context,
+                    )
+                    if fallback_response.get("usage"):
+                        total_usage["input_tokens"] += fallback_response["usage"].get("input_tokens", 0)
+                        total_usage["output_tokens"] += fallback_response["usage"].get("output_tokens", 0)
+                    output = fallback_response.get("response", "")
+                    if output and isinstance(output, str):
+                        current_messages.append({"role": "assistant", "content": output})
+                    return {"messages": current_messages, "output": output, "usage": total_usage, "jinx_executions": jinx_executions}
+            return {"messages": current_messages, "output": str(decision), "usage": total_usage, "jinx_executions": jinx_executions}
 
     logger.debug(f"[_react_fallback] Max iterations - returning {len(current_messages)} messages")
-    return {"messages": current_messages, "output": f"Max iterations reached. Last: {context}", "usage": total_usage}
+    # If we have jinx executions, return the last output
+    if jinx_executions and jinx_executions[-1].get("output"):
+        return {"messages": current_messages, "output": jinx_executions[-1]["output"], "usage": total_usage, "jinx_executions": jinx_executions}
+    return {"messages": current_messages, "output": f"Max iterations reached. Last: {context}", "usage": total_usage, "jinx_executions": jinx_executions}
 
 
 
@@ -1230,104 +1214,6 @@ def abstract(groups,
                                 **kwargs)
 
     return response["response"].get("groups", [])
-
-
-def extract_facts(
-    text: str,
-    model: str,
-    provider: str,
-    npc = None,
-    context: str = None
-) -> List[str]:
-    """Extract concise facts from text using LLM (as defined earlier)"""
-  
-    prompt = """Extract concise facts from this text.
-        A fact is a piece of information that makes a statement about the world.
-        A fact is typically a sentence that is true or false.
-        Facts may be simple or complex. They can also be conflicting with each other, usually
-        because there is some hidden context that is not mentioned in the text.
-        In any case, it is simply your job to extract a list of facts that could pertain to
-        an individual's personality.
-        
-        For example, if a message says:
-            "since I am a doctor I am often trying to think up new ways to help people.
-            Can you help me set up a new kind of software to help with that?"
-        You might extract the following facts:
-            - The individual is a doctor
-            - They are helpful
-
-        Another example:
-            "I am a software engineer who loves to play video games. I am also a huge fan of the
-            Star Wars franchise and I am a member of the 501st Legion."
-        You might extract the following facts:
-            - The individual is a software engineer
-            - The individual loves to play video games
-            - The individual is a huge fan of the Star Wars franchise
-            - The individual is a member of the 501st Legion
-
-        Another example:
-            "The quantum tunneling effect allows particles to pass through barriers
-            that classical physics says they shouldn't be able to cross. This has
-            huge implications for semiconductor design."
-        You might extract these facts:
-            - Quantum tunneling enables particles to pass through barriers that are
-              impassable according to classical physics
-            - The behavior of quantum tunneling has significant implications for
-              how semiconductors must be designed
-
-        Another example:
-            "People used to think the Earth was flat. Now we know it's spherical,
-            though technically it's an oblate spheroid due to its rotation."
-        You might extract these facts:
-            - People historically believed the Earth was flat
-            - It is now known that the Earth is an oblate spheroid
-            - The Earth's oblate spheroid shape is caused by its rotation
-
-        Another example:
-            "My research on black holes suggests they emit radiation, but my professor
-            says this conflicts with Einstein's work. After reading more papers, I
-            learned this is actually Hawking radiation and doesn't conflict at all."
-        You might extract the following facts:
-            - Black holes emit radiation
-            - The professor believes this radiation conflicts with Einstein's work
-            - The radiation from black holes is called Hawking radiation
-            - Hawking radiation does not conflict with Einstein's work
-
-        Another example:
-            "During the pandemic, many developers switched to remote work. I found
-            that I'm actually more productive at home, though my company initially
-            thought productivity would drop. Now they're keeping remote work permanent."
-        You might extract the following facts:
-            - The pandemic caused many developers to switch to remote work
-            - The individual discovered higher productivity when working from home
-            - The company predicted productivity would decrease with remote work
-            - The company decided to make remote work a permanent option
-
-        Thus, it is your mission to reliably extract lists of facts.
-
-        Return a JSON object with the following structure:
-            {
-                "fact_list": "a list containing the facts where each fact is a string",
-            }
-    """ 
-    if context and len(context) > 0:
-        prompt+=f""" Here is some relevant user context: {context}"""
-
-    prompt+="""    
-    Return only the JSON object.
-    Do not include any additional markdown formatting.
-    """
-
-    response = get_llm_response(
-        prompt + f"HERE BEGINS THE TEXT TO INVESTIGATE:\n\nText: {text}",
-        model=model,
-        provider=provider,
-        format="json",
-        npc=npc,
-        context=context,
-    )
-    response = response["response"]
-    return response.get("fact_list", [])
 
 
 def get_facts(content_text, 

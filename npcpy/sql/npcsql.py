@@ -80,10 +80,8 @@ class DatabaseAIFunctionMapper:
                 'cortex_function': 'COMPLETE',
                 'transformer': lambda prompt, **kwargs: f"SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', {prompt})"
             },
-            'extract_facts': {
-                'cortex_function': 'COMPLETE', 
-                'transformer': lambda text, **kwargs: f"SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', CONCAT('Extract concise facts from this text. Return JSON with fact_list array. Text: ', {text}))"
-            },
+
+            
             'get_facts': {
                 'cortex_function': 'COMPLETE',
                 'transformer': lambda text, **kwargs: f"""SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', 

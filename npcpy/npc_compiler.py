@@ -725,30 +725,41 @@ class Jinx:
             exec(rendered_code, exec_globals, exec_locals)
         except Exception as e:
             error_msg = (
-                f"Error executing step '{step_name}': "
+                f"Error executing step '{step_name}' in jinx '{self.jinx_name}': "
                 f"{type(e).__name__}: {e}"
             )
+            print(f"[JINX-ERROR] {error_msg}")
             context['output'] = error_msg
             self._log_debug(error_msg)
             return context
 
         # Update the main context with any variables set in exec_locals
+        # But preserve context['output'] if jinx set it via context['output'] = ...
+        context_output = context.get("output")
         context.update(exec_locals)
-        
-        if "output" in exec_locals:
+
+        # If jinx set context['output'] directly, preserve it
+        if context_output is not None:
+            context["output"] = context_output
+            context[step_name] = context_output
+
+        # Only use exec_locals output if it was explicitly set (not still None from init)
+        if "output" in exec_locals and exec_locals["output"] is not None:
             outp = exec_locals["output"]
             context["output"] = outp
             context[step_name] = outp
 
-            if messages is not None:
-                messages.append({
-                    'role':'assistant', 
-                    'content': (
-                        f'Jinx {self.jinx_name} step {step_name} '
-                        f'executed: {outp}'
-                    )
-                })
-                context['messages'] = messages
+        # Append to messages if we have output
+        final_output = context.get("output")
+        if final_output is not None and messages is not None:
+            messages.append({
+                'role':'assistant',
+                'content': (
+                    f'Jinx {self.jinx_name} step {step_name} '
+                    f'executed: {final_output}'
+                )
+            })
+            context['messages'] = messages
         
         return context
         
