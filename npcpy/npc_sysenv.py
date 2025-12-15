@@ -848,17 +848,17 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         if team_preferences:
             system_message += f"Team preferences: {team_preferences}\n"
 
-        # Add team members
+        # Add team members with their directives
         if hasattr(team, 'npcs') and team.npcs:
             members = []
             for name, member in team.npcs.items():
                 if name != npc.name:  # Don't list self
                     directive = getattr(member, 'primary_directive', '')
-                    # Get first line or first 100 chars
-                    desc = directive.split('\n')[0][:100] if directive else ''
-                    members.append(f"  - {name}: {desc}")
+                    # Include full directive (up to 500 chars) for better delegation decisions
+                    desc = directive[:500].strip() if directive else ''
+                    members.append(f"  - @{name}: {desc}")
             if members:
-                system_message += "\nTeam members (use delegate tool to assign tasks):\n" + "\n".join(members) + "\n"
+                system_message += "\nTeam members available for delegation:\n" + "\n".join(members) + "\n"
 
     system_message += """
     IMPORTANT:
