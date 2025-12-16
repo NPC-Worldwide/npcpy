@@ -794,19 +794,23 @@ Instructions:
                 required_inputs = []
 
             if required_inputs:
-                # Get just the parameter names (handle both string and dict formats)
-                required_names = []
+                # Get parameter names, distinguishing required (string) from optional with defaults (dict)
+                required_names = []  # Params without defaults - truly required
+                optional_names = []  # Params with defaults - not required
                 for inp in required_inputs:
                     if isinstance(inp, str):
+                        # String inputs have no default, so they're required
                         required_names.append(inp)
                     elif isinstance(inp, dict):
-                        required_names.extend(inp.keys())
+                        # Dict inputs have defaults (e.g., "backup: true"), so they're optional
+                        optional_names.extend(inp.keys())
 
-                # Check which required params are missing
+                # Only check truly required params (those without defaults)
                 missing = [p for p in required_names if p not in inputs or not inputs.get(p)]
                 provided = list(inputs.keys())
                 if missing:
-                    context = f"Error: jinx '{jinx_name}' requires parameters {required_names} but got {provided}. Missing: {missing}. Please retry with correct parameter names."
+                    all_params = required_names + optional_names
+                    context = f"Error: jinx '{jinx_name}' requires parameters {required_names} but got {provided}. Missing: {missing}. Optional params with defaults: {optional_names}. Please retry with correct parameter names."
                     logger.debug(f"[_react_fallback] Missing required params: {missing}")
                     print(f"[REACT-DEBUG] Missing params for {jinx_name}: {missing}, got: {provided}")
                     continue
