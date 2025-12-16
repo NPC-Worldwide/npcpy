@@ -655,29 +655,10 @@ def _react_fallback(
 
     jinx_list = "\n".join(_jinx_info(n, j) for n, j in jinxs.items()) if jinxs else "None"
 
-    MESSAGE_COMPRESSION_THRESHOLD = 15  # Compress when messages exceed this
+    # Cap iterations - after this, return to orchestrator for review/compression
+    effective_max = min(max_iterations, 7)
 
-    for iteration in range(max_iterations):
-        # Compress messages if they've grown too large
-        if len(current_messages) > MESSAGE_COMPRESSION_THRESHOLD:
-            try:
-                compressed = breathe(
-                    messages=current_messages,
-                    model=model,
-                    provider=provider,
-                    npc=npc
-                )
-                if compressed and compressed.get('messages'):
-                    current_messages = compressed.get('messages')
-                    logger.debug(f"[_react_fallback] Compressed messages from {len(current_messages)} to {len(compressed.get('messages', []))}")
-            except Exception as e:
-                logger.debug(f"[_react_fallback] Message compression failed: {e}")
-                # Fallback: just keep recent messages
-                if current_messages and current_messages[0].get('role') == 'system':
-                    current_messages = [current_messages[0]] + current_messages[-10:]
-                else:
-                    current_messages = current_messages[-10:]
-
+    for iteration in range(effective_max):
         # Build history of what's been tried
         history_text = ""
         if jinx_executions:
