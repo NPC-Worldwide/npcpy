@@ -753,7 +753,7 @@ def get_litellm_response(
             model = model.split('-npc')[0]
         provider = "openai"
 
-    if isinstance(format, BaseModel):
+    if isinstance(format, type) and issubclass(format, BaseModel):
         api_params["response_format"] = format
     if model is None:
         model = os.environ.get("NPCSH_CHAT_MODEL", "llama3.2")

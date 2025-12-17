@@ -781,6 +781,7 @@ Instructions:
                 optional_names = []
                 for inp in required_inputs:
                     if isinstance(inp, str):
+                        # String inputs have no default, so they're required
                         required_names.append(inp)
                     elif isinstance(inp, dict):
                         # Dict inputs have default values, so they're optional
@@ -790,7 +791,8 @@ Instructions:
                 missing = [p for p in required_names if p not in inputs or not inputs.get(p)]
                 provided = list(inputs.keys())
                 if missing:
-                    context = f"Error: jinx '{jinx_name}' requires parameters {required_names} but got {provided}. Missing: {missing}. Please retry with correct parameter names."
+                    all_params = required_names + optional_names
+                    context = f"Error: jinx '{jinx_name}' requires parameters {required_names} but got {provided}. Missing: {missing}. Optional params with defaults: {optional_names}. Please retry with correct parameter names."
                     logger.debug(f"[_react_fallback] Missing required params: {missing}")
                     print(f"[REACT-DEBUG] Missing params for {jinx_name}: {missing}, got: {provided}")
                     continue
