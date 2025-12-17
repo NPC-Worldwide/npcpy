@@ -4746,6 +4746,181 @@ def openai_list_models():
     })
 
 
+# ============== GGUF/GGML Model Scanning ==============
+@app.route('/api/models/gguf/scan', methods=['GET'])
+def scan_gguf_models():
+    """Scan for GGUF/GGML model files in specified or default directories."""
+    directory = request.args.get('directory')
+
+    # Default directories to scan
+    default_dirs = [
+        os.path.expanduser('~/.npcsh/models/gguf'),
+        os.path.expanduser('~/.npcsh/models'),
+        os.path.expanduser('~/models'),
+        os.path.expanduser('~/.cache/huggingface/hub'),
+    ]
+
+    # Add env var directory if set
+    env_dir = os.environ.get('NPCSH_GGUF_DIR')
+    if env_dir:
+        default_dirs.insert(0, os.path.expanduser(env_dir))
+
+    dirs_to_scan = [os.path.expanduser(directory)] if directory else default_dirs
+
+    models = []
+    seen_paths = set()
+
+    for scan_dir in dirs_to_scan:
+        if not os.path.isdir(scan_dir):
+            continue
+
+        for root, dirs, files in os.walk(scan_dir):
+            for f in files:
+                if f.endswith(('.gguf', '.ggml', '.bin')) and not f.startswith('.'):
+                    full_path = os.path.join(root, f)
+                    if full_path not in seen_paths:
+                        seen_paths.add(full_path)
+                        try:
+                            size = os.path.getsize(full_path)
+                            models.append({
+                                'name': f,
+                                'path': full_path,
+                                'size': size,
+                                'size_gb': round(size / (1024**3), 2)
+                            })
+                        except OSError:
+                            pass
+
+    return jsonify({'models': models, 'error': None})
+
+
+@app.route('/api/models/hf/download', methods=['POST'])
+def download_hf_model():
+    """Download a GGUF model from HuggingFace."""
+    data = request.json
+    url = data.get('url', '')
+    target_dir = data.get('target_dir', '~/.npcsh/models/gguf')
+
+    target_dir = os.path.expanduser(target_dir)
+    os.makedirs(target_dir, exist_ok=True)
+
+    try:
+        # Parse HuggingFace URL or model ID
+        # Formats:
+        # - TheBloke/Llama-2-7B-GGUF
+        # - https://huggingface.co/TheBloke/Llama-2-7B-GGUF/resolve/main/llama-2-7b.Q4_K_M.gguf
+
+        if url.startswith('http'):
+            # Direct URL - download the file
+            import requests
+            filename = url.split('/')[-1].split('?')[0]
+            target_path = os.path.join(target_dir, filename)
+
+            print(f"Downloading {url} to {target_path}")
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+
+            with open(target_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            return jsonify({'path': target_path, 'error': None})
+        else:
+            # Model ID - use huggingface_hub to download
+            try:
+                from huggingface_hub import hf_hub_download, list_repo_files
+
+                # List files in repo to find GGUF files
+                files = list_repo_files(url)
+                gguf_files = [f for f in files if f.endswith('.gguf')]
+
+                if not gguf_files:
+                    return jsonify({'error': 'No GGUF files found in repository'}), 400
+
+                # Download the first/smallest Q4 quantized version or first available
+                q4_files = [f for f in gguf_files if 'Q4' in f or 'q4' in f]
+                file_to_download = q4_files[0] if q4_files else gguf_files[0]
+
+                print(f"Downloading {file_to_download} from {url}")
+                path = hf_hub_download(
+                    repo_id=url,
+                    filename=file_to_download,
+                    local_dir=target_dir,
+                    local_dir_use_symlinks=False
+                )
+
+                return jsonify({'path': path, 'error': None})
+            except ImportError:
+                return jsonify({'error': 'huggingface_hub not installed. Run: pip install huggingface_hub'}), 500
+
+    except Exception as e:
+        print(f"Error downloading HF model: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ============== Local Model Provider Status ==============
+@app.route('/api/models/local/scan', methods=['GET'])
+def scan_local_models():
+    """Scan for models from local providers (LM Studio, llama.cpp)."""
+    provider = request.args.get('provider', '')
+
+    if provider == 'lmstudio':
+        # LM Studio typically runs on port 1234
+        try:
+            import requests
+            response = requests.get('http://127.0.0.1:1234/v1/models', timeout=2)
+            if response.ok:
+                data = response.json()
+                models = [{'name': m.get('id', m.get('name', 'unknown'))} for m in data.get('data', [])]
+                return jsonify({'models': models, 'error': None})
+        except:
+            pass
+        return jsonify({'models': [], 'error': 'LM Studio not running or not accessible'})
+
+    elif provider == 'llamacpp':
+        # llama.cpp server typically runs on port 8080
+        try:
+            import requests
+            response = requests.get('http://127.0.0.1:8080/v1/models', timeout=2)
+            if response.ok:
+                data = response.json()
+                models = [{'name': m.get('id', m.get('name', 'unknown'))} for m in data.get('data', [])]
+                return jsonify({'models': models, 'error': None})
+        except:
+            pass
+        return jsonify({'models': [], 'error': 'llama.cpp server not running or not accessible'})
+
+    return jsonify({'models': [], 'error': f'Unknown provider: {provider}'})
+
+
+@app.route('/api/models/local/status', methods=['GET'])
+def get_local_model_status():
+    """Check if a local model provider is running."""
+    provider = request.args.get('provider', '')
+
+    if provider == 'lmstudio':
+        try:
+            import requests
+            response = requests.get('http://127.0.0.1:1234/v1/models', timeout=2)
+            if response.ok:
+                return jsonify({'status': 'running'})
+        except:
+            pass
+        return jsonify({'status': 'not_running'})
+
+    elif provider == 'llamacpp':
+        try:
+            import requests
+            response = requests.get('http://127.0.0.1:8080/v1/models', timeout=2)
+            if response.ok:
+                return jsonify({'status': 'running'})
+        except:
+            pass
+        return jsonify({'status': 'not_running'})
+
+    return jsonify({'status': 'unknown', 'error': f'Unknown provider: {provider}'})
+
+
 def start_flask_server(
     port=5337,
     cors_origins=None,

@@ -776,14 +776,17 @@ Instructions:
 
             if required_inputs:
                 # Get just the parameter names (handle both string and dict formats)
+                # String inputs are required, dict inputs have defaults and are optional
                 required_names = []
+                optional_names = []
                 for inp in required_inputs:
                     if isinstance(inp, str):
                         required_names.append(inp)
                     elif isinstance(inp, dict):
-                        required_names.extend(inp.keys())
+                        # Dict inputs have default values, so they're optional
+                        optional_names.extend(inp.keys())
 
-                # Check which required params are missing
+                # Check which required params are missing (only string inputs, not dict inputs with defaults)
                 missing = [p for p in required_names if p not in inputs or not inputs.get(p)]
                 provided = list(inputs.keys())
                 if missing:
