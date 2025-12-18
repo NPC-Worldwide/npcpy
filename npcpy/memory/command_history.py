@@ -30,7 +30,22 @@ except NameError as e:
     chromadb = None
 
 
-import logging 
+import logging
+
+
+def normalize_path_for_db(path_str):
+    """
+    Normalize a path for consistent database storage.
+    Converts backslashes to forward slashes for cross-platform compatibility.
+    """
+    if not path_str:
+        return path_str
+    # Convert backslashes to forward slashes
+    normalized = path_str.replace('\\', '/')
+    # Remove trailing slashes for consistency
+    normalized = normalized.rstrip('/')
+    return normalized
+
 
 def flush_messages(n: int, messages: list) -> dict:
     if n <= 0:
@@ -852,6 +867,9 @@ class CommandHistory:
         if tool_results is not None and not isinstance(tool_results, str):
             tool_results = json.dumps(tool_results, cls=CustomJSONEncoder)
 
+        # Normalize directory path for cross-platform compatibility
+        normalized_directory_path = normalize_path_for_db(directory_path)
+
         stmt = """
             INSERT INTO conversation_history
             (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results)
@@ -859,7 +877,7 @@ class CommandHistory:
         """
         params = {
             "message_id": message_id, "timestamp": timestamp, "role": role, "content": content,
-            "conversation_id": conversation_id, "directory_path": directory_path, "model": model,
+            "conversation_id": conversation_id, "directory_path": normalized_directory_path, "model": model,
             "provider": provider, "npc": npc, "team": team, "reasoning_content": reasoning_content,
             "tool_calls": tool_calls, "tool_results": tool_results
         }
@@ -879,28 +897,31 @@ class CommandHistory:
 
         return message_id
 
-    def add_memory_to_database(self, message_id: str, conversation_id: str, npc: str, team: str, 
-                            directory_path: str, initial_memory: str, status: str, 
+    def add_memory_to_database(self, message_id: str, conversation_id: str, npc: str, team: str,
+                            directory_path: str, initial_memory: str, status: str,
                             model: str = None, provider: str = None, final_memory: str = None):
         """Store a memory entry in the database"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
+        # Normalize directory path for cross-platform compatibility
+        normalized_directory_path = normalize_path_for_db(directory_path)
+
         stmt = """
-            INSERT INTO memory_lifecycle 
-            (message_id, conversation_id, npc, team, directory_path, timestamp, 
+            INSERT INTO memory_lifecycle
+            (message_id, conversation_id, npc, team, directory_path, timestamp,
             initial_memory, final_memory, status, model, provider)
-            VALUES (:message_id, :conversation_id, :npc, :team, :directory_path, 
+            VALUES (:message_id, :conversation_id, :npc, :team, :directory_path,
                     :timestamp, :initial_memory, :final_memory, :status, :model, :provider)
         """
-        
+
         params = {
             "message_id": message_id, "conversation_id": conversation_id,
-            "npc": npc, "team": team, "directory_path": directory_path,
+            "npc": npc, "team": team, "directory_path": normalized_directory_path,
             "timestamp": timestamp, "initial_memory": initial_memory,
             "final_memory": final_memory, "status": status,
             "model": model, "provider": provider
         }
-        
+
         return self._execute_returning_id(stmt, params)
     def get_memories_for_scope(
         self,

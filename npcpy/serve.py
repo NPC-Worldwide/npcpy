@@ -88,6 +88,21 @@ cancellation_flags = {}
 cancellation_lock = threading.Lock()
 
 
+def normalize_path_for_db(path_str):
+    """
+    Normalize a path for consistent database storage/querying.
+    Converts backslashes to forward slashes for cross-platform compatibility.
+    This ensures Windows paths match Unix paths in the database.
+    """
+    if not path_str:
+        return path_str
+    # Convert backslashes to forward slashes
+    normalized = path_str.replace('\\', '/')
+    # Remove trailing slashes for consistency
+    normalized = normalized.rstrip('/')
+    return normalized
+
+
 # Minimal MCP client (inlined from npcsh corca to avoid corca import)
 class MCPClientNPC:
     def __init__(self, debug: bool = True):
@@ -2120,16 +2135,18 @@ def get_last_used_model_and_npc_in_directory(directory_path):
     engine = get_db_connection()
     try:
         with engine.connect() as conn:
+            # Normalize path for cross-platform compatibility
             query = text("""
                 SELECT model, npc
                 FROM conversation_history
-                WHERE directory_path = :directory_path 
-                AND model IS NOT NULL AND npc IS NOT NULL 
+                WHERE REPLACE(RTRIM(directory_path, '/\\'), '\\', '/') = :normalized_path
+                AND model IS NOT NULL AND npc IS NOT NULL
                 AND model != '' AND npc != ''
                 ORDER BY timestamp DESC, id DESC
                 LIMIT 1
             """)
-            result = conn.execute(query, {"directory_path": directory_path}).fetchone()
+            normalized_path = normalize_path_for_db(directory_path)
+            result = conn.execute(query, {"normalized_path": normalized_path}).fetchone()
             return {"model": result[0], "npc": result[1]} if result else {"model": None, "npc": None}
     except Exception as e:
         print(f"Error getting last used model/NPC for directory {directory_path}: {e}")
@@ -4235,24 +4252,24 @@ def get_conversations():
         engine = get_db_connection()
         try:
             with engine.connect() as conn:
+                # Use REPLACE to normalize paths in the query for cross-platform compatibility
+                # This handles both forward slashes and backslashes stored in the database
                 query = text("""
                 SELECT DISTINCT conversation_id,
                        MIN(timestamp) as start_time,
                        MAX(timestamp) as last_message_timestamp,
                        GROUP_CONCAT(content) as preview
                 FROM conversation_history
-                WHERE directory_path = :path_without_slash OR directory_path = :path_with_slash
+                WHERE REPLACE(RTRIM(directory_path, '/\\'), '\\', '/') = :normalized_path
                 GROUP BY conversation_id
                 ORDER BY MAX(timestamp) DESC
                 """)
 
-                
-                path_without_slash = path.rstrip('/')
-                path_with_slash = path_without_slash + '/'
-                
+                # Normalize the input path (convert backslashes to forward slashes, strip trailing slashes)
+                normalized_path = normalize_path_for_db(path)
+
                 result = conn.execute(query, {
-                    "path_without_slash": path_without_slash,
-                    "path_with_slash": path_with_slash
+                    "normalized_path": normalized_path
                 })
                 conversations = result.fetchall()
 
