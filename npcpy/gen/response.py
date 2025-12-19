@@ -570,6 +570,106 @@ def get_ollama_response(
 import time
 
 
+def get_llamacpp_response(
+    prompt: str = None,
+    model: str = None,
+    images: List[str] = None,
+    tools: list = None,
+    tool_choice: Dict = None,
+    tool_map: Dict = None,
+    think=None,
+    format: Union[str, BaseModel] = None,
+    messages: List[Dict[str, str]] = None,
+    stream: bool = False,
+    attachments: List[str] = None,
+    auto_process_tool_calls: bool = False,
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Generate response using llama-cpp-python for local GGUF/GGML files.
+    """
+    try:
+        from llama_cpp import Llama
+    except ImportError:
+        return {
+            "response": "",
+            "messages": messages or [],
+            "error": "llama-cpp-python not installed. Install with: pip install llama-cpp-python"
+        }
+
+    result = {
+        "response": None,
+        "messages": messages.copy() if messages else [],
+        "raw_response": None,
+        "tool_calls": [],
+        "tool_results": []
+    }
+
+    if prompt:
+        if messages and messages[-1]["role"] == "user":
+            messages[-1]["content"] = prompt
+        else:
+            if not messages:
+                messages = []
+            messages.append({"role": "user", "content": prompt})
+
+    try:
+        # Load model
+        n_ctx = kwargs.get("n_ctx", 4096)
+        n_gpu_layers = kwargs.get("n_gpu_layers", -1)  # -1 = all layers on GPU if available
+
+        llm = Llama(
+            model_path=model,
+            n_ctx=n_ctx,
+            n_gpu_layers=n_gpu_layers,
+            verbose=False
+        )
+
+        # Build params
+        params = {
+            "messages": messages,
+            "stream": stream,
+        }
+        if kwargs.get("temperature"):
+            params["temperature"] = kwargs["temperature"]
+        if kwargs.get("max_tokens"):
+            params["max_tokens"] = kwargs["max_tokens"]
+        if kwargs.get("top_p"):
+            params["top_p"] = kwargs["top_p"]
+        if kwargs.get("stop"):
+            params["stop"] = kwargs["stop"]
+
+        if stream:
+            response = llm.create_chat_completion(**params)
+
+            def generate():
+                for chunk in response:
+                    # Yield the full chunk dict for proper streaming handling
+                    yield chunk
+
+            result["response"] = generate()
+        else:
+            response = llm.create_chat_completion(**params)
+            result["raw_response"] = response
+
+            if response.get("choices"):
+                content = response["choices"][0].get("message", {}).get("content", "")
+                result["response"] = content
+                result["messages"].append({"role": "assistant", "content": content})
+
+            if response.get("usage"):
+                result["usage"] = {
+                    "input_tokens": response["usage"].get("prompt_tokens", 0),
+                    "output_tokens": response["usage"].get("completion_tokens", 0),
+                }
+
+    except Exception as e:
+        result["error"] = f"llama.cpp error: {str(e)}"
+        result["response"] = ""
+
+    return result
+
+
 def get_litellm_response(
     prompt: str = None,
     model: str = None,
@@ -614,22 +714,37 @@ def get_litellm_response(
         )
     elif provider=='transformers':
         return get_transformers_response(
-            prompt, 
-            model, 
-            images=images, 
-            tools=tools, 
-            tool_choice=tool_choice, 
+            prompt,
+            model,
+            images=images,
+            tools=tools,
+            tool_choice=tool_choice,
             tool_map=tool_map,
             think=think,
-            format=format, 
-            messages=messages, 
-            stream=stream, 
-            attachments=attachments, 
-            auto_process_tool_calls=auto_process_tool_calls, 
+            format=format,
+            messages=messages,
+            stream=stream,
+            attachments=attachments,
+            auto_process_tool_calls=auto_process_tool_calls,
             **kwargs
 
         )
-    
+    elif provider == 'llamacpp':
+        return get_llamacpp_response(
+            prompt,
+            model,
+            images=images,
+            tools=tools,
+            tool_choice=tool_choice,
+            tool_map=tool_map,
+            think=think,
+            format=format,
+            messages=messages,
+            stream=stream,
+            attachments=attachments,
+            auto_process_tool_calls=auto_process_tool_calls,
+            **kwargs
+        )
 
     if attachments:
         for attachment in attachments:

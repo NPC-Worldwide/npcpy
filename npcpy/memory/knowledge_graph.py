@@ -594,7 +594,7 @@ def kg_dream_process(existing_kg,
         return existing_kg, {}
     print(f"  - Generated Dream: '{dream_text[:150]}...'")
     
-    dream_kg, _ = kg_evolve_incremental(existing_kg, dream_text, model, provider, npc,  context)
+    dream_kg, _ = kg_evolve_incremental(existing_kg, new_content_text=dream_text, model=model, provider=provider, npc=npc, context=context)
     
     original_fact_stmts = {f['statement'] for f in existing_kg['facts']}
     for fact in dream_kg['facts']:

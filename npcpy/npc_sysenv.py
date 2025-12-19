@@ -305,7 +305,33 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                 available_models[mod] = "ollama"
     except (ImportError, concurrent.futures.TimeoutError, Exception) as e:
         logging.info(f"Error loading Ollama models or timed out: {e}")
-        
+
+    # Scan for local GGUF/GGML models
+    gguf_dirs = [
+        os.path.expanduser('~/.npcsh/models/gguf'),
+        os.path.expanduser('~/.npcsh/models'),
+        os.path.expanduser('~/models'),
+        os.path.expanduser('~/.cache/huggingface/hub'),
+    ]
+    env_gguf_dir = os.environ.get('NPCSH_GGUF_DIR')
+    if env_gguf_dir:
+        gguf_dirs.insert(0, os.path.expanduser(env_gguf_dir))
+
+    seen_paths = set()
+    for scan_dir in gguf_dirs:
+        if not os.path.isdir(scan_dir):
+            continue
+        try:
+            for root, dirs, files in os.walk(scan_dir):
+                for f in files:
+                    if f.endswith(('.gguf', '.ggml')) and not f.startswith('.'):
+                        full_path = os.path.join(root, f)
+                        if full_path not in seen_paths:
+                            seen_paths.add(full_path)
+                            available_models[full_path] = "llamacpp"
+        except Exception as e:
+            logging.info(f"Error scanning GGUF directory {scan_dir}: {e}")
+
     return available_models
 
 

@@ -1187,14 +1187,9 @@ def get_models():
             )
             
             display_model = m
-            if "claude-3-5-haiku-latest" in m:
-                display_model = "claude-3.5-haiku"
-            elif "claude-3-5-sonnet-latest" in m:
-                display_model = "claude-3.5-sonnet"
-            elif "gemini-1.5-flash" in m:
-                display_model = "gemini-1.5-flash"  
-            elif "gemini-2.0-flash-lite-preview-02-05" in m:
-                display_model = "gemini-2.0-flash-lite-preview"
+            if m.endswith(('.gguf', '.ggml')):
+                # For local GGUF/GGML files, show just the filename
+                display_model = os.path.basename(m)
 
             display_name = f"{display_model} | {p} {text_only}".strip()
 
@@ -3376,7 +3371,7 @@ def stream():
     provider = data.get("provider", None)
     if provider is None:
         provider = available_models.get(model)
-        
+
     npc_name = data.get("npc", None)
     npc_source = data.get("npcSource", "global")
     current_path = data.get("currentPath")
@@ -4003,7 +3998,27 @@ def stream():
 
                     print('.', end="", flush=True)
                     dot_count += 1
-                    if "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
+                    if provider == 'llamacpp':
+                        # llama-cpp-python returns OpenAI-format dicts
+                        chunk_content = ""
+                        reasoning_content = None
+                        if isinstance(response_chunk, dict) and response_chunk.get("choices"):
+                            delta = response_chunk["choices"][0].get("delta", {})
+                            chunk_content = delta.get("content", "") or ""
+                            reasoning_content = delta.get("reasoning_content")
+                        if chunk_content:
+                            complete_response.append(chunk_content)
+                        if reasoning_content:
+                            complete_reasoning.append(reasoning_content)
+                        chunk_data = {
+                            "id": response_chunk.get("id"),
+                            "object": response_chunk.get("object"),
+                            "created": response_chunk.get("created"),
+                            "model": response_chunk.get("model", model),
+                            "choices": [{"index": 0, "delta": {"content": chunk_content, "role": "assistant", "reasoning_content": reasoning_content}, "finish_reason": response_chunk.get("choices", [{}])[0].get("finish_reason")}]
+                        }
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
+                    elif "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
                         # Ollama returns ChatResponse objects - support both attribute and dict access
                         msg = getattr(response_chunk, "message", None) or response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {}
                         chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
