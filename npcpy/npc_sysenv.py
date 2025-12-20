@@ -73,6 +73,17 @@ def check_internet_connection(timeout=5):
     except OSError:
         return False
 
+def check_port(port):
+    """
+    Check if a port is open on localhost.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.1)
+        try:
+            s.connect(("localhost", port))
+            return True
+        except (ConnectionRefusedError, socket.timeout):
+            return False
 
 def get_locally_available_models(project_directory, airplane_mode=False):
     available_models = {}
@@ -289,6 +300,25 @@ def get_locally_available_models(project_directory, airplane_mode=False):
             if "DEEPSEEK_API_KEY" in env_vars or os.environ.get("DEEPSEEK_API_KEY"):
                 available_models['deepseek-chat'] = 'deepseek'
                 available_models['deepseek-reasoner'] = 'deepseek'        
+    
+    local_providers = {
+        "lmstudio": 1234,
+        "llama.cpp": 8080,
+        "mlx": 8081,
+    }
+
+    for provider, port in local_providers.items():
+        if check_port(port):
+            try:
+                response = requests.get(f"http://localhost:{port}/v1/models", timeout=0.5)
+                if response.status_code == 200:
+                    models = response.json()
+                    for model in models.get("data", []):
+                        if model.get("id"):
+                            available_models[model["id"]] = f"{provider}-openai-like"
+            except requests.exceptions.RequestException as e:
+                logging.info(f"Could not connect to {provider} on port {port}: {e}")
+
     try:
         import ollama
         timeout_seconds = 0.5 
@@ -299,10 +329,11 @@ def get_locally_available_models(project_directory, airplane_mode=False):
             future = ollama_executor.submit(fetch_ollama_models)
             models = future.result(timeout=timeout_seconds) 
 
-        for model in models.models:
-            if "embed" not in model.model:
-                mod = model.model
-                available_models[mod] = "ollama"
+        for model in models.get('models', []):
+            if "embed" not in model.get('model', ''):
+                mod = model.get('model')
+                if mod:
+                    available_models[mod] = "ollama"
     except (ImportError, concurrent.futures.TimeoutError, Exception) as e:
         logging.info(f"Error loading Ollama models or timed out: {e}")
 
@@ -335,7 +366,6 @@ def get_locally_available_models(project_directory, airplane_mode=False):
     return available_models
 
 
-
 def log_action(action: str, detail: str = "") -> None:
     """
     Function Description:
@@ -349,7 +379,6 @@ def log_action(action: str, detail: str = "") -> None:
         None
     """
     logging.info(f"{action}: {detail}")
-
 
 
 def preprocess_code_block(code_text):
@@ -387,7 +416,6 @@ def preprocess_markdown(md_text):
             processed_lines.append(line)
 
     return "\n".join(processed_lines)
-
 
 
 def request_user_input(input_request: Dict[str, str]) -> str:
@@ -539,7 +567,6 @@ def init_db_tables(db_path="~/npcsh_history.db"):
         """)
         
         conn.commit()
-
 
 
 
@@ -708,7 +735,6 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
     print('\n')
     
     return str_output
-
 
 def print_and_process_stream(response, model, provider):
     
@@ -904,7 +930,6 @@ You only need to answer the user's request based on the attached image(s).
 
 
 
-
 def load_env_from_execution_dir() -> None:
     """
     Function Description:
@@ -925,7 +950,6 @@ def load_env_from_execution_dir() -> None:
         logging.info(f"Loaded .env file from {execution_dir}")
     else:
         logging.warning(f"Warning: No .env file found in {execution_dir}")
-
 
 
 
@@ -1041,4 +1065,3 @@ gemini_api_key = os.getenv("GEMINI_API_KEY", None)
 
 anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", None)
 openai_api_key = os.getenv("OPENAI_API_KEY", None)
-
