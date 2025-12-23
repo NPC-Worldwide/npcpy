@@ -266,6 +266,8 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                             'gemini-2.0-pro', 
                             'gemini-1.5-pro', 
                             'gemini-1.5-flash'
+                            'gemini-3-flash-preview', 
+                            'gemini-3-pro-preview', 
                         ]
                         
                         for m in client.models.list():
@@ -853,8 +855,7 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             db_path = npc.db_conn.url.database
         elif hasattr(npc.db_conn, "database"):
             db_path = npc.db_conn.database
-        system_message += """What follows is in
-        formation about the database connection. If you are asked to execute queries with tools, use this information. 
+        system_message += """What follows is information about the database connection. If you are asked to execute queries with tools, use this information. 
         If you are asked for help with debugging queries, use this information. 
         Do not unnecessarily reference that you possess this information unless it is
         specifically relevant to the request.

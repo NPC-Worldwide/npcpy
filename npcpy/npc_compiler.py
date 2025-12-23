@@ -2114,17 +2114,19 @@ Requirements:
                             context=None,
                             team=None,
                             stream=False,
-                            jinxs=None):
+                            jinxs=None, 
+                            use_jinxs=True):
         """Check if a command is for the LLM"""
         if context is None:
             context = self.shared_context
 
         if team:
             self._current_team = team
-
-        # Use provided jinxs or fall back to NPC's own jinxs
-        jinxs_to_use = jinxs if jinxs is not None else self.jinxs_dict
-
+        if jinxs is None and use_jinxs:
+            jinxs_to_use = self.jinxs_dict
+        elif jinxs is not None and use_jinxs:
+            jinxs_to_use = jinxs
+            
         return npy.llm_funcs.check_llm_command(
             command,
             model=self.model,

@@ -589,8 +589,20 @@ def check_llm_command(
     # If we have jinxs, use ReAct fallback (JSON prompting) instead of tool_calls
     if jinxs:
         return _react_fallback(
-            command, model, provider, api_url, api_key, npc, team,
-            full_messages, images, stream, context, jinxs, extra_globals, max_iterations
+            command, 
+            model, 
+            provider, 
+            api_url, 
+            api_key, 
+            npc, 
+            team,
+            full_messages, 
+            images, 
+            stream, 
+            context, 
+            jinxs, 
+            extra_globals, 
+            max_iterations
         )
 
     # No jinxs - just get a direct response
@@ -633,8 +645,20 @@ def check_llm_command(
 
 
 def _react_fallback(
-    command, model, provider, api_url, api_key, npc, team,
-    messages, images, stream, context, jinxs, extra_globals, max_iterations
+    command, 
+    model, 
+    provider, 
+    api_url, 
+    api_key, 
+    npc, 
+    team,
+    messages, 
+    images, 
+    stream, 
+    context, 
+    jinxs, 
+    extra_globals, 
+    max_iterations
 ):
     """ReAct-style fallback for models without tool calling."""
     import logging
@@ -705,6 +729,12 @@ Instructions:
         print(f"[REACT-DEBUG] Full response keys: {response.keys()}")
         print(f"[REACT-DEBUG] Raw response['response']: {str(response.get('response', 'NONE'))[:500]}")
         print(f"[REACT-DEBUG] Raw decision type: {type(decision)}, value: {str(decision)[:500]}")
+
+        # Handle None response - model decided no action needed
+        if decision is None:
+            logger.debug(f"[_react_fallback] Decision is None, returning current output")
+            return {"messages": current_messages, "output": "", "usage": total_usage, "jinx_executions": jinx_executions}
+
         if isinstance(decision, str):
             try:
                 decision = json.loads(decision)
@@ -712,7 +742,7 @@ Instructions:
                 logger.debug(f"[_react_fallback] Could not parse JSON, returning as text")
                 return {"messages": current_messages, "output": decision, "usage": total_usage, "jinx_executions": jinx_executions}
 
-        logger.debug(f"[_react_fallback] Parsed decision action: {decision.get('action')}")
+        logger.debug(f"[_react_fallback] Parsed decision action: {decision.get('action') if decision else 'None'}")
         if decision.get("action") == "answer":
             output = decision.get("response", "")
 
