@@ -43,7 +43,7 @@ class SilentUndefined(Undefined):
 
 # Import ShellState and helper functions from npcsh
 from npcsh._state import ShellState, initialize_base_npcs_if_needed
-from npcsh.config import is_npcsh_initialized, NPCSH_DB_PATH
+from npcsh.config import NPCSH_DB_PATH
 
 
 from npcpy.memory.knowledge_graph import load_kg_from_db
@@ -2355,10 +2355,14 @@ def init_project_team():
 
 @app.route("/api/npcsh/check", methods=["GET"])
 def check_npcsh_folder():
-    """Check if npcsh has been initialized."""
+    """Check if npcsh has been initialized by looking for actual npc_team content."""
     try:
-        initialized = is_npcsh_initialized()
         npcsh_path = os.path.expanduser("~/.npcsh")
+        npc_team_path = os.path.join(npcsh_path, "npc_team")
+        # Check if npc_team exists and has .npc files (actual initialization)
+        initialized = os.path.isdir(npc_team_path) and any(
+            f.endswith('.npc') for f in os.listdir(npc_team_path)
+        ) if os.path.exists(npc_team_path) else False
         return jsonify({
             "initialized": initialized,
             "path": npcsh_path,
