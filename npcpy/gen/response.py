@@ -745,6 +745,23 @@ def get_litellm_response(
             auto_process_tool_calls=auto_process_tool_calls,
             **kwargs
         )
+    elif provider == 'lmstudio' or (model and '.lmstudio' in str(model)):
+        # LM Studio uses OpenAI-compatible API on port 1234
+        # Also detect models with .lmstudio in path (e.g., /home/user/.lmstudio/models/...)
+        api_url = api_url or "http://127.0.0.1:1234/v1"
+        provider = "openai"
+        api_key = api_key or "lm-studio"  # LM Studio doesn't require real API key
+        # Default timeout for local CPU inference (can be overridden via kwargs)
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = 300  # 5 minutes for CPU inference with large prompts
+    elif provider == 'llamacpp-server':
+        # llama.cpp server uses OpenAI-compatible API on port 8080
+        api_url = api_url or "http://127.0.0.1:8080/v1"
+        provider = "openai"
+        api_key = api_key or "llamacpp"  # llama.cpp server doesn't require real API key
+        # Default timeout for local CPU inference (can be overridden via kwargs)
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = 300  # 5 minutes for CPU inference with large prompts
 
     if attachments:
         for attachment in attachments:
@@ -875,7 +892,16 @@ def get_litellm_response(
     if provider is None:
         provider = os.environ.get("NPCSH_CHAT_PROVIDER")
 
-    api_params["model"] = f"{provider}/{model}" if "/" not in model else model
+    # For OpenAI-compatible endpoints with api_base, always prefix with provider
+    # LiteLLM needs this to know how to route the request
+    # Also handle file paths (starting with /) which contain slashes but still need prefix
+    if "api_base" in api_params and provider == "openai":
+        api_params["model"] = f"openai/{model}"
+    elif "/" not in model or model.startswith("/"):
+        # No provider prefix in model, or model is a file path - add provider prefix
+        api_params["model"] = f"{provider}/{model}"
+    else:
+        api_params["model"] = model
     if api_key is not None: 
         api_params["api_key"] = api_key
     if tools: 
@@ -888,7 +914,7 @@ def get_litellm_response(
             if key in [
                 "stop", "temperature", "top_p", "max_tokens", "max_completion_tokens",
                  "extra_headers", "parallel_tool_calls",
-                "response_format", "user",
+                "response_format", "user", "timeout",
             ]:
                 api_params[key] = value
 

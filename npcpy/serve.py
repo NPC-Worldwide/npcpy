@@ -737,9 +737,10 @@ def get_global_settings():
             "embedding_provider": "ollama",
             "search_provider": "perplexity",
             "default_folder": os.path.expanduser("~/.npcsh/"),
-            "is_predictive_text_enabled": False, # Default value for the new setting
-            "predictive_text_model": "llama3.2", # Default predictive text model
-            "predictive_text_provider": "ollama", # Default predictive text provider
+            "is_predictive_text_enabled": False,
+            "predictive_text_model": "llama3.2",
+            "predictive_text_provider": "ollama",
+            "backend_python_path": "",  # Empty means use bundled backend
         }
         global_vars = {}
 
@@ -772,9 +773,10 @@ def get_global_settings():
                         "NPCSH_SEARCH_PROVIDER": "search_provider",
                         "NPCSH_STREAM_OUTPUT": "NPCSH_STREAM_OUTPUT",
                         "NPC_STUDIO_DEFAULT_FOLDER": "default_folder",
-                        "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED": "is_predictive_text_enabled", # New mapping
-                        "NPC_STUDIO_PREDICTIVE_TEXT_MODEL": "predictive_text_model",         # New mapping
-                        "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER": "predictive_text_provider",   # New mapping
+                        "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED": "is_predictive_text_enabled",
+                        "NPC_STUDIO_PREDICTIVE_TEXT_MODEL": "predictive_text_model",
+                        "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER": "predictive_text_provider",
+                        "BACKEND_PYTHON_PATH": "backend_python_path",  # Custom Python for backend
                     }
 
                     if key in key_mapping:
@@ -1067,9 +1069,10 @@ def save_global_settings():
             "search_provider": "NPCSH_SEARCH_PROVIDER",
             "NPCSH_STREAM_OUTPUT": "NPCSH_STREAM_OUTPUT",
             "default_folder": "NPC_STUDIO_DEFAULT_FOLDER",
-            "is_predictive_text_enabled": "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED", # New mapping
-            "predictive_text_model": "NPC_STUDIO_PREDICTIVE_TEXT_MODEL",         # New mapping
-            "predictive_text_provider": "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER",   # New mapping
+            "is_predictive_text_enabled": "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED",
+            "predictive_text_model": "NPC_STUDIO_PREDICTIVE_TEXT_MODEL",
+            "predictive_text_provider": "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER",
+            "backend_python_path": "BACKEND_PYTHON_PATH",  # Custom Python for backend (requires restart)
         }
 
         os.makedirs(os.path.dirname(npcshrc_path), exist_ok=True)
@@ -2349,6 +2352,43 @@ def init_project_team():
         print(f"Error initializing project team: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/npcsh/check", methods=["GET"])
+def check_npcsh_folder():
+    """Check if ~/.npcsh folder exists and has a valid npc_team."""
+    try:
+        npcsh_path = os.path.expanduser("~/.npcsh")
+        npc_team_path = os.path.join(npcsh_path, "npc_team")
+
+        exists = os.path.exists(npcsh_path)
+        has_npc_team = os.path.exists(npc_team_path)
+        has_forenpc = os.path.exists(os.path.join(npc_team_path, "forenpc.npc")) if has_npc_team else False
+
+        return jsonify({
+            "exists": exists,
+            "has_npc_team": has_npc_team,
+            "has_forenpc": has_forenpc,
+            "path": npcsh_path,
+            "error": None
+        })
+    except Exception as e:
+        print(f"Error checking npcsh folder: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/npcsh/init", methods=["POST"])
+def init_npcsh_folder():
+    """Initialize the ~/.npcsh folder with a default npc_team."""
+    try:
+        npcsh_path = os.path.expanduser("~/.npcsh")
+        result = initialize_npc_project(directory=npcsh_path)
+        return jsonify({
+            "message": result,
+            "path": npcsh_path,
+            "error": None
+        })
+    except Exception as e:
+        print(f"Error initializing npcsh folder: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/context/websites", methods=["GET"])
 def get_context_websites():
     """Gets the websites list from a .ctx file."""
@@ -2537,13 +2577,15 @@ def get_attachment_response():
                                                                                                                                                                                                            
 IMAGE_MODELS = {
     "openai": [
+        {"value": "gpt-image-1.5", "display_name": "GPT-Image-1.5"},
+        {"value": "gpt-image-1", "display_name": "GPT-Image-1"},
         {"value": "dall-e-3", "display_name": "DALL-E 3"},
         {"value": "dall-e-2", "display_name": "DALL-E 2"},
-        {"value": "gpt-image-1", "display_name": "GPT-Image-1"},
     ],
     "gemini": [
+        {"value": "gemini-3-pro-image-preview", "display_name": "Gemini 3 Pro Image"},
         {"value": "gemini-2.5-flash-image-preview", "display_name": "Gemini 2.5 Flash Image"},
-        {"value": "imagen-3.0-generate-002", "display_name": "Imagen 3.0 Generate (Preview)"}, 
+        {"value": "imagen-3.0-generate-002", "display_name": "Imagen 3.0 Generate (Preview)"},
     ],
     "diffusers": [
         {"value": "runwayml/stable-diffusion-v1-5", "display_name": "Stable Diffusion v1.5"},
@@ -3551,7 +3593,15 @@ def stream():
     stream_response = {"output": "", "messages": messages}
 
     exe_mode = data.get('executionMode','chat')
-    
+
+    # Initialize api_url with default before checking npc_object
+    api_url = None
+    if npc_object is not None:
+        try:
+            api_url = npc_object.api_url if npc_object.api_url else None
+        except AttributeError:
+            api_url = None
+
     if exe_mode == 'chat':
         stream_response = get_llm_response(
             commandstr, 
@@ -3560,7 +3610,7 @@ def stream():
             model=model,
             provider=provider, 
             npc=npc_object, 
-            api_url = npc_object.api_url if npc_object.api_url else None,
+            api_url = api_url,
             team=team_object,
             stream=True, 
             attachments=attachment_paths_for_llm,
@@ -4935,22 +4985,37 @@ def get_local_model_status():
             import requests
             response = requests.get('http://127.0.0.1:1234/v1/models', timeout=2)
             if response.ok:
-                return jsonify({'status': 'running'})
+                return jsonify({'status': 'running', 'running': True})
         except:
             pass
-        return jsonify({'status': 'not_running'})
+        return jsonify({'status': 'not_running', 'running': False})
 
     elif provider == 'llamacpp':
         try:
             import requests
             response = requests.get('http://127.0.0.1:8080/v1/models', timeout=2)
             if response.ok:
-                return jsonify({'status': 'running'})
+                return jsonify({'status': 'running', 'running': True})
         except:
             pass
-        return jsonify({'status': 'not_running'})
+        return jsonify({'status': 'not_running', 'running': False})
 
-    return jsonify({'status': 'unknown', 'error': f'Unknown provider: {provider}'})
+    return jsonify({'status': 'unknown', 'running': False, 'error': f'Unknown provider: {provider}'})
+
+
+# ============== Activity Tracking ==============
+@app.route('/api/activity/track', methods=['POST'])
+def track_activity():
+    """Track user activity for predictive features."""
+    try:
+        data = request.json or {}
+        # For now, just acknowledge the activity - can be expanded later
+        # to store in database for RNN-based predictions
+        activity_type = data.get('type', 'unknown')
+        return jsonify({'success': True, 'tracked': activity_type})
+    except Exception as e:
+        print(f"Error tracking activity: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 def start_flask_server(

@@ -334,6 +334,30 @@ def get_locally_available_models(project_directory, airplane_mode=False):
         except Exception as e:
             logging.info(f"Error scanning GGUF directory {scan_dir}: {e}")
 
+    # Check for LM Studio server (OpenAI-compatible API on port 1234)
+    try:
+        import requests
+        response = requests.get('http://127.0.0.1:1234/v1/models', timeout=1)
+        if response.ok:
+            data = response.json()
+            for model in data.get('data', []):
+                model_id = model.get('id', model.get('name', 'unknown'))
+                available_models[model_id] = "lmstudio"
+    except Exception as e:
+        logging.debug(f"LM Studio not available: {e}")
+
+    # Check for llama.cpp server (OpenAI-compatible API on port 8080)
+    try:
+        import requests
+        response = requests.get('http://127.0.0.1:8080/v1/models', timeout=1)
+        if response.ok:
+            data = response.json()
+            for model in data.get('data', []):
+                model_id = model.get('id', model.get('name', 'unknown'))
+                available_models[model_id] = "llamacpp-server"
+    except Exception as e:
+        logging.debug(f"llama.cpp server not available: {e}")
+
     return available_models
 
 

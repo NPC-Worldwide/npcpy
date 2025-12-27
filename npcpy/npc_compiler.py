@@ -185,13 +185,17 @@ def initialize_npc_project(
         directory = os.getcwd()
     directory = os.path.expanduser(os.fspath(directory))
 
+    # Create top-level directories for assets
+    for subdir in ["images", "models", "attachments", "mcp_servers"]:
+        os.makedirs(os.path.join(directory, subdir), exist_ok=True)
+
     npc_team_dir = os.path.join(directory, "npc_team")
     os.makedirs(npc_team_dir, exist_ok=True)
-    
-    for subdir in ["jinxs", 
-                   "assembly_lines", 
-                   "sql_models", 
-                   "jobs", 
+
+    for subdir in ["jinxs",
+                   "assembly_lines",
+                   "sql_models",
+                   "jobs",
                    "triggers",
                    "tools"]:
         os.makedirs(os.path.join(npc_team_dir, subdir), exist_ok=True)

@@ -1,6 +1,5 @@
 import os
 import sys
-sys.path.append('/media/caug/extradrive1/npcww/npcpy')
 
 from npcpy.npc_compiler import NPC, Team
 import tempfile
