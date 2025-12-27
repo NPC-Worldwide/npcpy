@@ -42,7 +42,8 @@ class SilentUndefined(Undefined):
         return ""
 
 # Import ShellState and helper functions from npcsh
-from npcsh._state import ShellState
+from npcsh._state import ShellState, initialize_base_npcs_if_needed
+from npcsh.config import is_npcsh_initialized, NPCSH_DB_PATH
 
 
 from npcpy.memory.knowledge_graph import load_kg_from_db
@@ -2354,39 +2355,33 @@ def init_project_team():
 
 @app.route("/api/npcsh/check", methods=["GET"])
 def check_npcsh_folder():
-    """Check if ~/.npcsh folder exists and has a valid npc_team."""
+    """Check if npcsh has been initialized."""
     try:
+        initialized = is_npcsh_initialized()
         npcsh_path = os.path.expanduser("~/.npcsh")
-        npc_team_path = os.path.join(npcsh_path, "npc_team")
-
-        exists = os.path.exists(npcsh_path)
-        has_npc_team = os.path.exists(npc_team_path)
-        has_forenpc = os.path.exists(os.path.join(npc_team_path, "forenpc.npc")) if has_npc_team else False
-
         return jsonify({
-            "exists": exists,
-            "has_npc_team": has_npc_team,
-            "has_forenpc": has_forenpc,
+            "initialized": initialized,
             "path": npcsh_path,
             "error": None
         })
     except Exception as e:
-        print(f"Error checking npcsh folder: {e}")
+        print(f"Error checking npcsh: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/npcsh/init", methods=["POST"])
 def init_npcsh_folder():
-    """Initialize the ~/.npcsh folder with a default npc_team."""
+    """Initialize npcsh with config and default npc_team."""
     try:
-        npcsh_path = os.path.expanduser("~/.npcsh")
-        result = initialize_npc_project(directory=npcsh_path)
+        db_path = os.path.expanduser(NPCSH_DB_PATH)
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        initialize_base_npcs_if_needed(db_path)
         return jsonify({
-            "message": result,
-            "path": npcsh_path,
+            "message": "npcsh initialized",
+            "path": os.path.expanduser("~/.npcsh"),
             "error": None
         })
     except Exception as e:
-        print(f"Error initializing npcsh folder: {e}")
+        print(f"Error initializing npcsh: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/context/websites", methods=["GET"])
