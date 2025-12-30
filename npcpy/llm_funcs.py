@@ -726,9 +726,6 @@ Instructions:
 
         decision = response.get("response", {})
         logger.debug(f"[_react_fallback] Raw decision: {str(decision)[:200]}")
-        print(f"[REACT-DEBUG] Full response keys: {response.keys()}")
-        print(f"[REACT-DEBUG] Raw response['response']: {str(response.get('response', 'NONE'))[:500]}")
-        print(f"[REACT-DEBUG] Raw decision type: {type(decision)}, value: {str(decision)[:500]}")
 
         # Handle None response - model decided no action needed
         if decision is None:
@@ -787,7 +784,6 @@ Instructions:
                 # Extract all keys except 'action', 'jinx_name', 'inputs' as potential inputs
                 inputs = {k: v for k, v in decision.items() if k not in ('action', 'jinx_name', 'inputs', 'response')}
             logger.debug(f"[_react_fallback] Jinx action: {jinx_name} with inputs: {inputs}")
-            print(f"[REACT-DEBUG] Chose jinx: {jinx_name}, inputs: {str(inputs)[:200]}")
 
             if jinx_name not in jinxs:
                 context = f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}"
@@ -824,7 +820,6 @@ Instructions:
                     all_params = required_names + optional_names
                     context = f"Error: jinx '{jinx_name}' requires parameters {required_names} but got {provided}. Missing: {missing}. Optional params with defaults: {optional_names}. Please retry with correct parameter names."
                     logger.debug(f"[_react_fallback] Missing required params: {missing}")
-                    print(f"[REACT-DEBUG] Missing params for {jinx_name}: {missing}, got: {provided}")
                     continue
 
             logger.debug(f"[_react_fallback] Executing jinx: {jinx_name}")
@@ -847,15 +842,12 @@ Instructions:
                     # Check various possible locations
                     if os.path.exists(local_path):
                         generated_images.append(local_path)
-                        print(f"[REACT-DEBUG] Added generated image: {local_path}")
                     elif os.path.exists(os.path.join(os.getcwd(), local_path)):
                         full_path = os.path.join(os.getcwd(), local_path)
                         generated_images.append(full_path)
-                        print(f"[REACT-DEBUG] Added generated image (cwd): {full_path}")
                     else:
                         # Just add the URL path anyway - let get_llm_response handle it
                         generated_images.append(local_path)
-                        print(f"[REACT-DEBUG] Added generated image (not found, using anyway): {local_path}")
 
             # Truncate output for context to avoid sending huge base64 data back to LLM
             output_for_context = str(output)[:8000] + "..." if len(str(output)) > 8000 else str(output)
@@ -871,12 +863,11 @@ Instructions:
             if not decision or decision == {}:
                 if jinxs and iteration < max_iterations - 1:
                     # Retry with explicit instruction to use a jinx
-                    print(f"[REACT-DEBUG] Empty decision on iteration {iteration}, retrying with clearer prompt")
                     context = f"You MUST use one of these tools to complete the task: {list(jinxs.keys())}. Return JSON with action and inputs."
                     continue
                 else:
                     # Last resort: get a text response
-                    print(f"[REACT-DEBUG] Empty decision, getting text response instead")
+                    pass
                     current_messages.append({"role": "user", "content": command})
                     fallback_response = get_llm_response(
                         command,
