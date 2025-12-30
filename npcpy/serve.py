@@ -815,19 +815,44 @@ def _get_jinx_files_recursively(directory):
 @app.route("/api/jinxs/available", methods=["GET"])
 def get_available_jinxs():
     try:
+        import yaml
         current_path = request.args.get('currentPath')
         jinx_names = set()
 
+        def get_jinx_name_from_file(filepath):
+            """Read jinx_name from file, fallback to filename."""
+            try:
+                with open(filepath, 'r') as f:
+                    data = yaml.safe_load(f)
+                    if data and 'jinx_name' in data:
+                        return data['jinx_name']
+            except:
+                pass
+            return os.path.basename(filepath)[:-5]
+
+        # 1. Project jinxs
         if current_path:
             team_jinxs_dir = os.path.join(current_path, 'npc_team', 'jinxs')
             jinx_paths = _get_jinx_files_recursively(team_jinxs_dir)
             for path in jinx_paths:
-                jinx_names.add(os.path.basename(path)[:-5])
+                jinx_names.add(get_jinx_name_from_file(path))
 
+        # 2. Global user jinxs (~/.npcsh)
         global_jinxs_dir = os.path.expanduser('~/.npcsh/npc_team/jinxs')
         jinx_paths = _get_jinx_files_recursively(global_jinxs_dir)
         for path in jinx_paths:
-            jinx_names.add(os.path.basename(path)[:-5])
+            jinx_names.add(get_jinx_name_from_file(path))
+
+        # 3. Package built-in jinxs (from npcsh package)
+        try:
+            import npcsh
+            package_dir = os.path.dirname(npcsh.__file__)
+            package_jinxs_dir = os.path.join(package_dir, 'npc_team', 'jinxs')
+            jinx_paths = _get_jinx_files_recursively(package_jinxs_dir)
+            for path in jinx_paths:
+                jinx_names.add(get_jinx_name_from_file(path))
+        except Exception as pkg_err:
+            print(f"Could not load package jinxs: {pkg_err}")
 
         return jsonify({'jinxs': sorted(list(jinx_names)), 'error': None})
     except Exception as e:
@@ -2371,6 +2396,66 @@ def check_npcsh_folder():
     except Exception as e:
         print(f"Error checking npcsh: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/npcsh/package-contents", methods=["GET"])
+def get_package_contents():
+    """Get NPCs and jinxs available in the npcsh package for installation."""
+    try:
+        from npcsh._state import get_package_dir
+        package_dir = get_package_dir()
+        package_npc_team_dir = os.path.join(package_dir, "npc_team")
+
+        npcs = []
+        jinxs = []
+
+        if os.path.exists(package_npc_team_dir):
+            # Get NPCs
+            for f in os.listdir(package_npc_team_dir):
+                if f.endswith('.npc'):
+                    npc_path = os.path.join(package_npc_team_dir, f)
+                    try:
+                        with open(npc_path, 'r') as file:
+                            npc_data = yaml.safe_load(file) or {}
+                        npcs.append({
+                            "name": npc_data.get("name", f[:-4]),
+                            "primary_directive": npc_data.get("primary_directive", ""),
+                            "model": npc_data.get("model", ""),
+                            "provider": npc_data.get("provider", ""),
+                        })
+                    except Exception as e:
+                        print(f"Error reading NPC {f}: {e}")
+
+            # Get jinxs recursively
+            jinxs_dir = os.path.join(package_npc_team_dir, "jinxs")
+            if os.path.exists(jinxs_dir):
+                for root, dirs, files in os.walk(jinxs_dir):
+                    for f in files:
+                        if f.endswith('.jinx'):
+                            jinx_path = os.path.join(root, f)
+                            rel_path = os.path.relpath(jinx_path, jinxs_dir)
+                            try:
+                                with open(jinx_path, 'r') as file:
+                                    jinx_data = yaml.safe_load(file) or {}
+                                jinxs.append({
+                                    "name": f[:-5],
+                                    "path": rel_path[:-5],
+                                    "description": jinx_data.get("description", ""),
+                                })
+                            except Exception as e:
+                                print(f"Error reading jinx {f}: {e}")
+
+        return jsonify({
+            "npcs": npcs,
+            "jinxs": jinxs,
+            "package_dir": package_dir,
+            "error": None
+        })
+    except Exception as e:
+        print(f"Error getting package contents: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e), "npcs": [], "jinxs": []}), 500
+
 
 @app.route("/api/npcsh/init", methods=["POST"])
 def init_npcsh_folder():
@@ -4939,6 +5024,140 @@ def download_hf_model():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/models/hf/search', methods=['GET'])
+def search_hf_models():
+    """Search HuggingFace for GGUF models."""
+    query = request.args.get('q', '')
+    limit = int(request.args.get('limit', 20))
+
+    if not query:
+        return jsonify({'models': [], 'error': 'No search query provided'})
+
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        # Search for models with GGUF in name or tags
+        models = api.list_models(
+            search=query,
+            filter="gguf",
+            limit=limit,
+            sort="downloads",
+            direction=-1
+        )
+
+        results = []
+        for model in models:
+            results.append({
+                'id': model.id,
+                'author': model.author,
+                'downloads': model.downloads,
+                'likes': model.likes,
+                'tags': model.tags[:10] if model.tags else [],
+                'last_modified': model.last_modified.isoformat() if model.last_modified else None,
+            })
+
+        return jsonify({'models': results, 'error': None})
+    except ImportError:
+        return jsonify({'error': 'huggingface_hub not installed. Run: pip install huggingface_hub'}), 500
+    except Exception as e:
+        print(f"Error searching HF models: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/models/hf/files', methods=['GET'])
+def list_hf_model_files():
+    """List GGUF files in a HuggingFace repository."""
+    repo_id = request.args.get('repo_id', '')
+
+    if not repo_id:
+        return jsonify({'files': [], 'error': 'No repo_id provided'})
+
+    try:
+        from huggingface_hub import list_repo_files, repo_info
+
+        # Get repo info
+        info = repo_info(repo_id)
+
+        # List all files
+        all_files = list_repo_files(repo_id)
+
+        # Filter for GGUF files and get their sizes
+        gguf_files = []
+        for f in all_files:
+            if f.endswith('.gguf'):
+                # Try to get file size from siblings
+                size = None
+                for sibling in info.siblings or []:
+                    if sibling.rfilename == f:
+                        size = sibling.size
+                        break
+
+                # Parse quantization from filename
+                quant = 'unknown'
+                for q in ['Q2_K', 'Q3_K_S', 'Q3_K_M', 'Q3_K_L', 'Q4_0', 'Q4_1', 'Q4_K_S', 'Q4_K_M', 'Q5_0', 'Q5_1', 'Q5_K_S', 'Q5_K_M', 'Q6_K', 'Q8_0', 'F16', 'F32', 'IQ1', 'IQ2', 'IQ3', 'IQ4']:
+                    if q.lower() in f.lower() or q in f:
+                        quant = q
+                        break
+
+                gguf_files.append({
+                    'filename': f,
+                    'size': size,
+                    'size_gb': round(size / (1024**3), 2) if size else None,
+                    'quantization': quant,
+                })
+
+        # Sort by quantization quality (Q4_K_M is usually best balance)
+        quant_order = {'Q4_K_M': 0, 'Q4_K_S': 1, 'Q5_K_M': 2, 'Q5_K_S': 3, 'Q3_K_M': 4, 'Q6_K': 5, 'Q8_0': 6}
+        gguf_files.sort(key=lambda x: quant_order.get(x['quantization'], 99))
+
+        return jsonify({
+            'repo_id': repo_id,
+            'files': gguf_files,
+            'total_files': len(all_files),
+            'gguf_count': len(gguf_files),
+            'error': None
+        })
+    except ImportError:
+        return jsonify({'error': 'huggingface_hub not installed. Run: pip install huggingface_hub'}), 500
+    except Exception as e:
+        print(f"Error listing HF files: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/models/hf/download_file', methods=['POST'])
+def download_hf_file():
+    """Download a specific file from a HuggingFace repository."""
+    data = request.json
+    repo_id = data.get('repo_id', '')
+    filename = data.get('filename', '')
+    target_dir = data.get('target_dir', '~/.npcsh/models/gguf')
+
+    if not repo_id or not filename:
+        return jsonify({'error': 'repo_id and filename are required'}), 400
+
+    target_dir = os.path.expanduser(target_dir)
+    os.makedirs(target_dir, exist_ok=True)
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        print(f"Downloading {filename} from {repo_id} to {target_dir}")
+        path = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=target_dir,
+            local_dir_use_symlinks=False
+        )
+
+        return jsonify({'path': path, 'error': None})
+    except ImportError:
+        return jsonify({'error': 'huggingface_hub not installed. Run: pip install huggingface_hub'}), 500
+    except Exception as e:
+        print(f"Error downloading HF file: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 # ============== Local Model Provider Status ==============
 @app.route('/api/models/local/scan', methods=['GET'])
 def scan_local_models():
@@ -5002,6 +5221,213 @@ def get_local_model_status():
     return jsonify({'status': 'unknown', 'running': False, 'error': f'Unknown provider: {provider}'})
 
 
+# ============== Audio / Voice ==============
+@app.route('/api/audio/tts', methods=['POST'])
+def text_to_speech_endpoint():
+    """Convert text to speech and return audio file."""
+    try:
+        import base64
+        from npcpy.gen.audio_gen import (
+            text_to_speech, get_available_engines,
+            pcm16_to_wav, KOKORO_VOICES
+        )
+
+        data = request.json or {}
+        text = data.get('text', '')
+        engine = data.get('engine', 'kokoro')  # kokoro, elevenlabs, openai, gemini, gtts
+        voice = data.get('voice', 'af_heart')
+
+        if not text:
+            return jsonify({'success': False, 'error': 'No text provided'}), 400
+
+        # Check engine availability
+        engines = get_available_engines()
+        if engine not in engines:
+            return jsonify({'success': False, 'error': f'Unknown engine: {engine}'}), 400
+
+        if not engines[engine]['available']:
+            # Try fallback to kokoro or gtts
+            if engines.get('kokoro', {}).get('available'):
+                engine = 'kokoro'
+            elif engines.get('gtts', {}).get('available'):
+                engine = 'gtts'
+                voice = 'en'
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': f'{engine} not available. Install: {engines[engine].get("install", engines[engine].get("requires", ""))}'
+                }), 400
+
+        # Generate audio
+        audio_bytes = text_to_speech(text, engine=engine, voice=voice)
+
+        # Determine format
+        if engine in ['kokoro']:
+            audio_format = 'wav'
+        elif engine in ['elevenlabs', 'gtts']:
+            audio_format = 'mp3'
+        elif engine in ['openai', 'gemini']:
+            # These return PCM16, convert to WAV
+            audio_bytes = pcm16_to_wav(audio_bytes, sample_rate=24000)
+            audio_format = 'wav'
+        else:
+            audio_format = 'wav'
+
+        audio_data = base64.b64encode(audio_bytes).decode('utf-8')
+
+        return jsonify({
+            'success': True,
+            'audio': audio_data,
+            'format': audio_format,
+            'engine': engine,
+            'voice': voice
+        })
+
+    except ImportError as e:
+        return jsonify({'success': False, 'error': f'TTS dependency not installed: {e}'}), 500
+    except Exception as e:
+        print(f"TTS error: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/audio/stt', methods=['POST'])
+def speech_to_text_endpoint():
+    """Convert speech audio to text using various STT engines."""
+    try:
+        import tempfile
+        import base64
+        from npcpy.data.audio import speech_to_text, get_available_stt_engines
+
+        data = request.json or {}
+        audio_data = data.get('audio')  # Base64 encoded audio
+        audio_format = data.get('format', 'webm')  # webm, wav, mp3
+        language = data.get('language')  # None for auto-detect
+        engine = data.get('engine', 'whisper')  # whisper, openai, gemini, elevenlabs, groq
+        model_size = data.get('model', 'base')  # For whisper: tiny, base, small, medium, large
+
+        if not audio_data:
+            return jsonify({'success': False, 'error': 'No audio data provided'}), 400
+
+        # Decode base64 audio
+        audio_bytes = base64.b64decode(audio_data)
+
+        # Convert to wav if needed
+        wav_bytes = audio_bytes
+        if audio_format != 'wav':
+            with tempfile.NamedTemporaryFile(suffix=f'.{audio_format}', delete=False) as f:
+                f.write(audio_bytes)
+                temp_path = f.name
+
+            wav_path = temp_path.replace(f'.{audio_format}', '.wav')
+            converted = False
+
+            # Try ffmpeg first
+            try:
+                subprocess.run([
+                    'ffmpeg', '-y', '-i', temp_path,
+                    '-acodec', 'pcm_s16le', '-ac', '1', '-ar', '16000',
+                    wav_path
+                ], check=True, capture_output=True)
+                with open(wav_path, 'rb') as f:
+                    wav_bytes = f.read()
+                converted = True
+                os.unlink(wav_path)
+            except FileNotFoundError:
+                pass
+            except subprocess.CalledProcessError:
+                pass
+
+            # Try pydub as fallback
+            if not converted:
+                try:
+                    from pydub import AudioSegment
+                    audio = AudioSegment.from_file(temp_path, format=audio_format)
+                    audio = audio.set_frame_rate(16000).set_channels(1)
+                    import io
+                    wav_buffer = io.BytesIO()
+                    audio.export(wav_buffer, format='wav')
+                    wav_bytes = wav_buffer.getvalue()
+                    converted = True
+                except ImportError:
+                    pass
+                except Exception as e:
+                    print(f"pydub conversion failed: {e}")
+
+            os.unlink(temp_path)
+
+            if not converted:
+                return jsonify({
+                    'success': False,
+                    'error': 'Audio conversion failed. Install ffmpeg: sudo apt-get install ffmpeg'
+                }), 500
+
+        # Use the unified speech_to_text function
+        result = speech_to_text(
+            wav_bytes,
+            engine=engine,
+            language=language,
+            model_size=model_size
+        )
+
+        return jsonify({
+            'success': True,
+            'text': result.get('text', ''),
+            'language': result.get('language', language or 'en'),
+            'segments': result.get('segments', [])
+        })
+
+    except Exception as e:
+        print(f"STT error: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/audio/stt/engines', methods=['GET'])
+def get_stt_engines_endpoint():
+    """Get available STT engines."""
+    try:
+        from npcpy.data.audio import get_available_stt_engines
+        engines = get_available_stt_engines()
+        return jsonify({'success': True, 'engines': engines})
+    except Exception as e:
+        print(f"Error getting STT engines: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/audio/voices', methods=['GET'])
+def get_available_voices_endpoint():
+    """Get available TTS voices/engines."""
+    try:
+        from npcpy.gen.audio_gen import get_available_engines, get_available_voices
+
+        engines_info = get_available_engines()
+        result = {}
+
+        for engine_id, info in engines_info.items():
+            voices = get_available_voices(engine_id) if info['available'] else []
+            result[engine_id] = {
+                'name': info['name'],
+                'type': info.get('type', 'unknown'),
+                'available': info['available'],
+                'description': info.get('description', ''),
+                'default': engine_id == 'kokoro',
+                'voices': voices
+            }
+            if not info['available']:
+                if 'install' in info:
+                    result[engine_id]['install'] = info['install']
+                if 'requires' in info:
+                    result[engine_id]['requires'] = info['requires']
+
+        return jsonify({'success': True, 'engines': result})
+
+    except Exception as e:
+        print(f"Error getting voices: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ============== Activity Tracking ==============
 @app.route('/api/activity/track', methods=['POST'])
 def track_activity():
@@ -5014,6 +5440,56 @@ def track_activity():
         return jsonify({'success': True, 'tracked': activity_type})
     except Exception as e:
         print(f"Error tracking activity: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============== Studio Action Results ==============
+# Storage for pending action results that agents are waiting for
+_studio_action_results = {}
+
+@app.route('/api/studio/action_result', methods=['POST'])
+def studio_action_result():
+    """
+    Receive action results from the frontend after executing studio.* tool calls.
+    This allows the agent to continue with the result of UI actions.
+    """
+    try:
+        data = request.json or {}
+        stream_id = data.get('streamId')
+        tool_id = data.get('toolId')
+        result = data.get('result', {})
+
+        if not stream_id or not tool_id:
+            return jsonify({'success': False, 'error': 'Missing streamId or toolId'}), 400
+
+        # Store the result keyed by stream_id and tool_id
+        key = f"{stream_id}_{tool_id}"
+        _studio_action_results[key] = result
+
+        print(f"[Studio] Received action result for {key}: {result.get('success', False)}")
+        return jsonify({'success': True, 'stored': key})
+    except Exception as e:
+        print(f"Error storing studio action result: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/studio/action_result/<stream_id>/<tool_id>', methods=['GET'])
+def get_studio_action_result(stream_id, tool_id):
+    """
+    Retrieve a pending action result for the agent to continue.
+    """
+    try:
+        key = f"{stream_id}_{tool_id}"
+        result = _studio_action_results.get(key)
+
+        if result is None:
+            return jsonify({'success': False, 'pending': True}), 202
+
+        # Remove the result after retrieval (one-time use)
+        del _studio_action_results[key]
+        return jsonify({'success': True, 'result': result})
+    except Exception as e:
+        print(f"Error retrieving studio action result: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

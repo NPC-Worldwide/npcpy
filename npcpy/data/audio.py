@@ -210,6 +210,366 @@ def transcribe_audio_file(file_path: str, language=None) -> str:
     return ""
 
 
+# =============================================================================
+# Speech-to-Text: Multi-Engine Support
+# =============================================================================
+
+def stt_whisper(
+    audio_data: bytes,
+    model_size: str = "base",
+    language: str = None,
+    device: str = "auto"
+) -> dict:
+    """
+    Transcribe audio using local Whisper (faster-whisper).
+
+    Args:
+        audio_data: Audio bytes (WAV, MP3, etc.)
+        model_size: Model size (tiny, base, small, medium, large-v3)
+        language: Language code or None for auto-detect
+        device: 'cpu', 'cuda', or 'auto'
+
+    Returns:
+        Dict with 'text', 'language', 'segments'
+    """
+    from faster_whisper import WhisperModel
+
+    if device == "auto":
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
+
+    compute_type = "float16" if device == "cuda" else "int8"
+    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(audio_data)
+        temp_path = f.name
+
+    try:
+        segments, info = model.transcribe(
+            temp_path,
+            language=language,
+            beam_size=5,
+            vad_filter=True
+        )
+
+        segment_list = []
+        text_parts = []
+        for segment in segments:
+            segment_list.append({
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text
+            })
+            text_parts.append(segment.text)
+
+        return {
+            "text": " ".join(text_parts).strip(),
+            "language": info.language,
+            "language_probability": info.language_probability,
+            "segments": segment_list
+        }
+    finally:
+        os.unlink(temp_path)
+
+
+def stt_openai(
+    audio_data: bytes,
+    api_key: str = None,
+    model: str = "whisper-1",
+    language: str = None,
+    response_format: str = "verbose_json",
+    filename: str = "audio.wav"
+) -> dict:
+    """
+    Transcribe audio using OpenAI Whisper API.
+
+    Args:
+        audio_data: Audio bytes
+        api_key: OpenAI API key
+        model: Model name (whisper-1)
+        language: Optional language hint
+        response_format: json, text, srt, verbose_json, vtt
+        filename: Filename hint for format detection
+
+    Returns:
+        Dict with 'text', 'language', 'segments' (if verbose_json)
+    """
+    import requests
+
+    api_key = api_key or os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY not set")
+
+    url = "https://api.openai.com/v1/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    files = {"file": (filename, audio_data)}
+    data = {"model": model, "response_format": response_format}
+    if language:
+        data["language"] = language
+
+    response = requests.post(url, headers=headers, files=files, data=data)
+    response.raise_for_status()
+
+    if response_format == "verbose_json":
+        result = response.json()
+        return {
+            "text": result.get("text", "").strip(),
+            "language": result.get("language", "en"),
+            "duration": result.get("duration"),
+            "segments": result.get("segments", [])
+        }
+    elif response_format == "json":
+        return {"text": response.json().get("text", "").strip()}
+    else:
+        return {"text": response.text.strip()}
+
+
+def stt_gemini(
+    audio_data: bytes,
+    api_key: str = None,
+    model: str = "gemini-1.5-flash",
+    language: str = None,
+    mime_type: str = "audio/wav"
+) -> dict:
+    """
+    Transcribe audio using Gemini API.
+
+    Args:
+        audio_data: Audio bytes
+        api_key: Google/Gemini API key
+        model: Gemini model
+        language: Language hint
+        mime_type: Audio MIME type
+
+    Returns:
+        Dict with 'text'
+    """
+    import google.generativeai as genai
+
+    api_key = api_key or os.environ.get('GOOGLE_API_KEY') or os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY not set")
+
+    genai.configure(api_key=api_key)
+    model_obj = genai.GenerativeModel(model)
+
+    prompt = "Transcribe this audio exactly. Output only the transcription, nothing else."
+    if language:
+        prompt = f"Transcribe this audio in {language}. Output only the transcription, nothing else."
+
+    response = model_obj.generate_content([
+        prompt,
+        {"mime_type": mime_type, "data": audio_data}
+    ])
+
+    return {"text": response.text.strip()}
+
+
+def stt_elevenlabs(
+    audio_data: bytes,
+    api_key: str = None,
+    model_id: str = "scribe_v1",
+    language: str = None
+) -> dict:
+    """
+    Transcribe audio using ElevenLabs Scribe API.
+
+    Args:
+        audio_data: Audio bytes
+        api_key: ElevenLabs API key
+        model_id: Model (scribe_v1)
+        language: Language code (ISO 639-1)
+
+    Returns:
+        Dict with 'text', 'language', 'words'
+    """
+    import requests
+
+    api_key = api_key or os.environ.get('ELEVENLABS_API_KEY')
+    if not api_key:
+        raise ValueError("ELEVENLABS_API_KEY not set")
+
+    url = "https://api.elevenlabs.io/v1/speech-to-text"
+    headers = {"xi-api-key": api_key}
+
+    files = {"file": ("audio.wav", audio_data, "audio/wav")}
+    data = {"model_id": model_id}
+    if language:
+        data["language_code"] = language
+
+    response = requests.post(url, headers=headers, files=files, data=data)
+    response.raise_for_status()
+
+    result = response.json()
+    return {
+        "text": result.get("text", "").strip(),
+        "language": result.get("language_code"),
+        "words": result.get("words", [])
+    }
+
+
+def stt_groq(
+    audio_data: bytes,
+    api_key: str = None,
+    model: str = "whisper-large-v3",
+    language: str = None
+) -> dict:
+    """
+    Transcribe audio using Groq's Whisper API (very fast).
+
+    Args:
+        audio_data: Audio bytes
+        api_key: Groq API key
+        model: whisper-large-v3 or whisper-large-v3-turbo
+        language: Language code
+
+    Returns:
+        Dict with 'text'
+    """
+    import requests
+
+    api_key = api_key or os.environ.get('GROQ_API_KEY')
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not set")
+
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    files = {"file": ("audio.wav", audio_data, "audio/wav")}
+    data = {"model": model}
+    if language:
+        data["language"] = language
+
+    response = requests.post(url, headers=headers, files=files, data=data)
+    response.raise_for_status()
+
+    return {"text": response.json().get("text", "").strip()}
+
+
+def speech_to_text(
+    audio_data: bytes,
+    engine: str = "whisper",
+    language: str = None,
+    **kwargs
+) -> dict:
+    """
+    Unified STT interface.
+
+    Args:
+        audio_data: Audio bytes (WAV, MP3, etc.)
+        engine: STT engine (whisper, openai, gemini, elevenlabs, groq)
+        language: Language hint
+        **kwargs: Engine-specific options
+
+    Returns:
+        Dict with at least 'text' key
+    """
+    engine = engine.lower()
+
+    if engine == "whisper" or engine == "faster-whisper":
+        try:
+            return stt_whisper(audio_data, language=language, **kwargs)
+        except ImportError:
+            # Fallback to openai whisper
+            import whisper
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(audio_data)
+                temp_path = f.name
+            try:
+                model = whisper.load_model(kwargs.get("model_size", "base"))
+                result = model.transcribe(temp_path, language=language)
+                return {"text": result["text"].strip(), "language": result.get("language", "en")}
+            finally:
+                os.unlink(temp_path)
+
+    elif engine == "openai":
+        return stt_openai(audio_data, language=language, **kwargs)
+
+    elif engine == "gemini":
+        return stt_gemini(audio_data, language=language, **kwargs)
+
+    elif engine == "elevenlabs":
+        return stt_elevenlabs(audio_data, language=language, **kwargs)
+
+    elif engine == "groq":
+        return stt_groq(audio_data, language=language, **kwargs)
+
+    else:
+        raise ValueError(f"Unknown STT engine: {engine}")
+
+
+def get_available_stt_engines() -> dict:
+    """Get info about available STT engines."""
+    engines = {
+        "whisper": {
+            "name": "Whisper (Local)",
+            "type": "local",
+            "available": False,
+            "description": "OpenAI Whisper running locally",
+            "install": "pip install faster-whisper"
+        },
+        "openai": {
+            "name": "OpenAI Whisper API",
+            "type": "cloud",
+            "available": False,
+            "description": "OpenAI's cloud Whisper API",
+            "requires": "OPENAI_API_KEY"
+        },
+        "gemini": {
+            "name": "Gemini",
+            "type": "cloud",
+            "available": False,
+            "description": "Google Gemini transcription",
+            "requires": "GOOGLE_API_KEY or GEMINI_API_KEY"
+        },
+        "elevenlabs": {
+            "name": "ElevenLabs Scribe",
+            "type": "cloud",
+            "available": False,
+            "description": "ElevenLabs speech-to-text",
+            "requires": "ELEVENLABS_API_KEY"
+        },
+        "groq": {
+            "name": "Groq Whisper",
+            "type": "cloud",
+            "available": False,
+            "description": "Ultra-fast Whisper via Groq",
+            "requires": "GROQ_API_KEY"
+        }
+    }
+
+    # Check local whisper
+    try:
+        from faster_whisper import WhisperModel
+        engines["whisper"]["available"] = True
+    except ImportError:
+        try:
+            import whisper
+            engines["whisper"]["available"] = True
+        except ImportError:
+            pass
+
+    # Check API keys
+    if os.environ.get('OPENAI_API_KEY'):
+        engines["openai"]["available"] = True
+
+    if os.environ.get('GOOGLE_API_KEY') or os.environ.get('GEMINI_API_KEY'):
+        engines["gemini"]["available"] = True
+
+    if os.environ.get('ELEVENLABS_API_KEY'):
+        engines["elevenlabs"]["available"] = True
+
+    if os.environ.get('GROQ_API_KEY'):
+        engines["groq"]["available"] = True
+
+    return engines
+
+
 
 def load_history():
     global history
