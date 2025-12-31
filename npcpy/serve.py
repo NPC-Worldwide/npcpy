@@ -3597,55 +3597,62 @@ def stream():
 
 
     attachments = data.get("attachments", [])
+    print(f"[DEBUG] Received attachments: {attachments}")
     command_history = CommandHistory(app.config.get('DB_PATH'))
-    images = []     
+    images = []
     attachments_for_db = []
     attachment_paths_for_llm = []
 
     message_id = generate_message_id()
     if attachments:
-        attachment_dir = os.path.expanduser(f"~/.npcsh/attachments/{conversation_id+message_id}/")
-        os.makedirs(attachment_dir, exist_ok=True)
+        print(f"[DEBUG] Processing {len(attachments)} attachments")
 
         for attachment in attachments:
             try:
                 file_name = attachment["name"]
-                
                 extension = file_name.split(".")[-1].upper() if "." in file_name else ""
                 extension_mapped = extension_map.get(extension, "others")
-                
-                save_path = os.path.join(attachment_dir, file_name)
 
-                if "data" in attachment and attachment["data"]:
-                    decoded_data = base64.b64decode(attachment["data"])
-                    with open(save_path, "wb") as f:
-                        f.write(decoded_data)
-                
-                elif "path" in attachment and attachment["path"]:
-                    shutil.copy(attachment["path"], save_path)
-                
-                else:
+                file_path = None
+                file_content_bytes = None
+
+                # Use original path directly if available
+                if "path" in attachment and attachment["path"]:
+                    file_path = attachment["path"]
+                    if os.path.exists(file_path):
+                        with open(file_path, "rb") as f:
+                            file_content_bytes = f.read()
+
+                # Fall back to base64 data if no path
+                elif "data" in attachment and attachment["data"]:
+                    file_content_bytes = base64.b64decode(attachment["data"])
+                    # Save to temp file for LLM processing
+                    import tempfile
+                    temp_dir = tempfile.mkdtemp()
+                    file_path = os.path.join(temp_dir, file_name)
+                    with open(file_path, "wb") as f:
+                        f.write(file_content_bytes)
+
+                if not file_path:
                     continue
 
-                attachment_paths_for_llm.append(save_path)
+                attachment_paths_for_llm.append(file_path)
 
                 if extension_mapped == "images":
-                    images.append(save_path)
-
-                with open(save_path, "rb") as f:
-                    file_content_bytes = f.read()
+                    images.append(file_path)
 
                 attachments_for_db.append({
                     "name": file_name,
-                    "path": save_path,
+                    "path": file_path,
                     "type": extension_mapped,
                     "data": file_content_bytes,
-                    "size": os.path.getsize(save_path)
+                    "size": len(file_content_bytes) if file_content_bytes else 0
                 })
 
             except Exception as e:
                 print(f"Error processing attachment {attachment.get('name', 'N/A')}: {e}")
                 traceback.print_exc()
+    print(f"[DEBUG] After processing - images: {images}, attachment_paths_for_llm: {attachment_paths_for_llm}")
     messages = fetch_messages_for_conversation(conversation_id)
     if len(messages) == 0 and npc_object is not None:
         messages = [{'role': 'system', 
@@ -3687,16 +3694,17 @@ def stream():
             api_url = None
 
     if exe_mode == 'chat':
+        print(f"[DEBUG] Calling get_llm_response with images={images}, attachments={attachment_paths_for_llm}")
         stream_response = get_llm_response(
-            commandstr, 
-            messages=messages, 
-            images=images, 
+            commandstr,
+            messages=messages,
+            images=images,
             model=model,
-            provider=provider, 
-            npc=npc_object, 
+            provider=provider,
+            npc=npc_object,
             api_url = api_url,
             team=team_object,
-            stream=True, 
+            stream=True,
             attachments=attachment_paths_for_llm,
             auto_process_tool_calls=True,
             **tool_args
@@ -4532,6 +4540,157 @@ def get_conversation_messages(conversation_id):
         return jsonify({"error": str(e), "messages": []}), 500
 
 
+# ==================== CONVERSATION BRANCHES ====================
+
+@app.route("/api/conversation/<conversation_id>/branches", methods=["GET"])
+def get_conversation_branches(conversation_id):
+    """Get all branches for a conversation."""
+    try:
+        engine = get_db_connection()
+        with engine.connect() as conn:
+            query = text("""
+                SELECT id, name, parent_branch_id, branch_from_message_id, created_at, metadata
+                FROM conversation_branches
+                WHERE conversation_id = :conversation_id
+                ORDER BY created_at ASC
+            """)
+            result = conn.execute(query, {"conversation_id": conversation_id})
+            branches = result.fetchall()
+
+            return jsonify({
+                "branches": [
+                    {
+                        "id": b[0],
+                        "name": b[1],
+                        "parentBranchId": b[2],
+                        "branchFromMessageId": b[3],
+                        "createdAt": b[4],
+                        "metadata": json.loads(b[5]) if b[5] else None
+                    }
+                    for b in branches
+                ],
+                "error": None
+            })
+    except Exception as e:
+        print(f"Error getting branches: {e}")
+        return jsonify({"branches": [], "error": str(e)}), 500
+
+
+@app.route("/api/conversation/<conversation_id>/branches", methods=["POST"])
+def create_conversation_branch(conversation_id):
+    """Create a new branch for a conversation."""
+    try:
+        data = request.get_json()
+        branch_id = data.get("id") or generate_message_id()
+        name = data.get("name", f"Branch {branch_id[:8]}")
+        parent_branch_id = data.get("parentBranchId", "main")
+        branch_from_message_id = data.get("branchFromMessageId")
+        created_at = data.get("createdAt") or datetime.now().isoformat()
+        metadata = json.dumps(data.get("metadata")) if data.get("metadata") else None
+
+        engine = get_db_connection()
+        with engine.connect() as conn:
+            query = text("""
+                INSERT INTO conversation_branches
+                (id, conversation_id, name, parent_branch_id, branch_from_message_id, created_at, metadata)
+                VALUES (:id, :conversation_id, :name, :parent_branch_id, :branch_from_message_id, :created_at, :metadata)
+            """)
+            conn.execute(query, {
+                "id": branch_id,
+                "conversation_id": conversation_id,
+                "name": name,
+                "parent_branch_id": parent_branch_id,
+                "branch_from_message_id": branch_from_message_id,
+                "created_at": created_at,
+                "metadata": metadata
+            })
+            conn.commit()
+
+        return jsonify({"success": True, "branchId": branch_id})
+    except Exception as e:
+        print(f"Error creating branch: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/conversation/<conversation_id>/branches/<branch_id>", methods=["DELETE"])
+def delete_conversation_branch(conversation_id, branch_id):
+    """Delete a branch."""
+    try:
+        engine = get_db_connection()
+        with engine.connect() as conn:
+            # Delete branch metadata
+            query = text("DELETE FROM conversation_branches WHERE id = :branch_id AND conversation_id = :conversation_id")
+            conn.execute(query, {"branch_id": branch_id, "conversation_id": conversation_id})
+
+            # Optionally delete messages on this branch (or leave them orphaned)
+            # For now, we leave them - they just won't be displayed
+            conn.commit()
+
+        return jsonify({"success": True})
+    except Exception as e:
+        print(f"Error deleting branch: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/conversation/<conversation_id>/messages/branch/<branch_id>", methods=["GET"])
+def get_branch_messages(conversation_id, branch_id):
+    """Get messages for a specific branch."""
+    try:
+        engine = get_db_connection()
+        with engine.connect() as conn:
+            # For 'main' branch, get messages with NULL or 'main' branch_id
+            if branch_id == 'main':
+                query = text("""
+                    SELECT message_id, timestamp, role, content, model, provider, npc, reasoning_content, tool_calls, tool_results
+                    FROM conversation_history
+                    WHERE conversation_id = :conversation_id
+                    AND (branch_id IS NULL OR branch_id = 'main')
+                    ORDER BY timestamp ASC, id ASC
+                """)
+            else:
+                query = text("""
+                    SELECT message_id, timestamp, role, content, model, provider, npc, reasoning_content, tool_calls, tool_results
+                    FROM conversation_history
+                    WHERE conversation_id = :conversation_id
+                    AND branch_id = :branch_id
+                    ORDER BY timestamp ASC, id ASC
+                """)
+
+            result = conn.execute(query, {"conversation_id": conversation_id, "branch_id": branch_id})
+            messages = result.fetchall()
+
+            def parse_json_field(value):
+                if not value:
+                    return None
+                try:
+                    return json.loads(value)
+                except:
+                    return None
+
+            return jsonify({
+                "messages": [
+                    {
+                        "message_id": m[0],
+                        "timestamp": m[1],
+                        "role": m[2],
+                        "content": m[3],
+                        "model": m[4],
+                        "provider": m[5],
+                        "npc": m[6],
+                        "reasoningContent": m[7],
+                        "toolCalls": parse_json_field(m[8]),
+                        "toolResults": parse_json_field(m[9])
+                    }
+                    for m in messages
+                ],
+                "error": None
+            })
+    except Exception as e:
+        print(f"Error getting branch messages: {e}")
+        return jsonify({"messages": [], "error": str(e)}), 500
+
+
+# ==================== END CONVERSATION BRANCHES ====================
 
 @app.after_request
 def after_request(response):
