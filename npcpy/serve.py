@@ -1896,14 +1896,8 @@ def get_jinxs_global():
                 with open(jinx_path, 'r') as f:
                     raw_data = yaml.safe_load(f)
                 
-                inputs = []
-                for inp in raw_data.get("inputs", []):
-                    if isinstance(inp, str):
-                        inputs.append(inp)
-                    elif isinstance(inp, dict):
-                        inputs.append(list(inp.keys())[0])
-                    else:
-                        inputs.append(str(inp))
+                # Preserve full input definitions including defaults
+                inputs = raw_data.get("inputs", [])
                 
                 rel_path = os.path.relpath(jinx_path, global_jinx_directory)
                 path_without_ext = rel_path[:-5]
@@ -1938,14 +1932,8 @@ def get_jinxs_project():
                 with open(jinx_path, 'r') as f:
                     raw_data = yaml.safe_load(f)
                 
-                inputs = []
-                for inp in raw_data.get("inputs", []):
-                    if isinstance(inp, str):
-                        inputs.append(inp)
-                    elif isinstance(inp, dict):
-                        inputs.append(list(inp.keys())[0])
-                    else:
-                        inputs.append(str(inp))
+                # Preserve full input definitions including defaults
+                inputs = raw_data.get("inputs", [])
                 
                 rel_path = os.path.relpath(jinx_path, project_dir)
                 path_without_ext = rel_path[:-5]
@@ -3501,7 +3489,13 @@ def stream():
     npc_name = data.get("npc", None)
     npc_source = data.get("npcSource", "global")
     current_path = data.get("currentPath")
-    is_resend = data.get("isResend", False)  # ADD THIS LINE
+    is_resend = data.get("isResend", False)
+    parent_message_id = data.get("parentMessageId", None)
+    # Accept frontend-generated message IDs to maintain parent-child relationships after reload
+    frontend_user_message_id = data.get("userMessageId", None)
+    frontend_assistant_message_id = data.get("assistantMessageId", None)
+    # For sub-branches: the parent of the user message (points to an assistant message)
+    user_parent_message_id = data.get("userParentMessageId", None)
 
     if current_path:
         loaded_vars = load_project_env(current_path)
@@ -3603,7 +3597,8 @@ def stream():
     attachments_for_db = []
     attachment_paths_for_llm = []
 
-    message_id = generate_message_id()
+    # Use frontend-provided ID if available, otherwise generate new one
+    message_id = frontend_user_message_id if frontend_user_message_id else generate_message_id()
     if attachments:
         print(f"[DEBUG] Processing {len(attachments)} attachments")
 
@@ -4016,25 +4011,27 @@ def stream():
                 user_message_filled += txt
     
     # Only save user message if it's NOT a resend
-    if not is_resend:  # ADD THIS CONDITION
+    if not is_resend:
         save_conversation_message(
-            command_history, 
-            conversation_id, 
-            "user", 
-            user_message_filled if len(user_message_filled) > 0 else commandstr, 
-            wd=current_path, 
-            model=model, 
-            provider=provider, 
+            command_history,
+            conversation_id,
+            "user",
+            user_message_filled if len(user_message_filled) > 0 else commandstr,
+            wd=current_path,
+            model=model,
+            provider=provider,
             npc=npc_name,
-            team=team, 
-            attachments=attachments_for_db, 
+            team=team,
+            attachments=attachments_for_db,
             message_id=message_id,
+            parent_message_id=user_parent_message_id,  # For sub-branches: points to assistant message
         )
 
 
 
 
-    message_id = generate_message_id()
+    # Use frontend-provided assistant message ID if available
+    message_id = frontend_assistant_message_id if frontend_assistant_message_id else generate_message_id()
 
     def event_stream(current_stream_id):
         complete_response = []
@@ -4301,6 +4298,7 @@ def stream():
                 reasoning_content=''.join(complete_reasoning) if complete_reasoning else None,
                 tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
                 tool_results=tool_results_for_db if tool_results_for_db else None,
+                parent_message_id=parent_message_id,
             )
 
             # Start background tasks for memory extraction and context compression
@@ -4480,6 +4478,7 @@ def get_conversation_messages(conversation_id):
                         ch.reasoning_content,
                         ch.tool_calls,
                         ch.tool_results,
+                        ch.parent_message_id,
                         GROUP_CONCAT(ma.id) as attachment_ids,
                         ROW_NUMBER() OVER (
                             PARTITION BY ch.role, strftime('%s', ch.timestamp)
@@ -4523,9 +4522,10 @@ def get_conversation_messages(conversation_id):
                             "reasoningContent": msg[11] if len(msg) > 11 else None,
                             "toolCalls": parse_json_field(msg[12]) if len(msg) > 12 else None,
                             "toolResults": parse_json_field(msg[13]) if len(msg) > 13 else None,
+                            "parentMessageId": msg[14] if len(msg) > 14 else None,
                             "attachments": (
                                 get_message_attachments(msg[1])
-                                if len(msg) > 1 and msg[14]  # attachment_ids is at index 14
+                                if len(msg) > 1 and msg[15]  # attachment_ids is now at index 15
                                 else []
                             ),
                         }
@@ -5705,8 +5705,22 @@ if __name__ == "__main__":
 
     SETTINGS_FILE = Path(os.path.expanduser("~/.npcshrc"))
 
-
-    db_path = os.path.expanduser("~/npcsh_history.db")
+    # Use standard npcsh paths
+    db_path = os.path.expanduser("~/.npcsh/npcsh_history.db")
     user_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
 
-    start_flask_server(db_path=db_path, user_npc_directory=user_npc_directory)
+    # Ensure directories exist
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    os.makedirs(user_npc_directory, exist_ok=True)
+
+    # Initialize base NPCs if needed (creates ~/.npcsh structure)
+    try:
+        initialize_base_npcs_if_needed(db_path)
+        print(f"[SERVE] Base NPCs initialized")
+    except Exception as e:
+        print(f"[SERVE] Warning: Failed to initialize base NPCs: {e}")
+
+    # Get port from environment or use default
+    port = int(os.environ.get('INCOGNIDE_PORT', 5337))
+
+    start_flask_server(db_path=db_path, user_npc_directory=user_npc_directory, port=port)

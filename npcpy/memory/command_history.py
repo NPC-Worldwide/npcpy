@@ -610,7 +610,8 @@ class CommandHistory:
             Column('team', String(100)),
             Column('reasoning_content', Text),  # For thinking tokens / chain of thought
             Column('tool_calls', Text),  # JSON array of tool calls made by assistant
-            Column('tool_results', Text)  # JSON array of tool call results
+            Column('tool_results', Text),  # JSON array of tool call results
+            Column('parent_message_id', String(50))  # Links assistant response to parent user message for broadcast grouping
         )
         
         Table('message_attachments', metadata,
@@ -675,6 +676,14 @@ class CommandHistory:
         
         metadata.create_all(self.engine, checkfirst=True)
         init_kg_schema(self.engine)
+
+        # Add parent_message_id column if it doesn't exist (for broadcast grouping)
+        if 'sqlite' in str(self.engine.url):
+            with self.engine.begin() as conn:
+                try:
+                    conn.execute(text("ALTER TABLE conversation_history ADD COLUMN parent_message_id VARCHAR(50)"))
+                except Exception:
+                    pass  # Column already exists
 
     def _setup_execution_triggers(self):
         if 'sqlite' in str(self.engine.url):
@@ -857,6 +866,7 @@ class CommandHistory:
         reasoning_content=None,
         tool_calls=None,
         tool_results=None,
+        parent_message_id=None,
     ):
         if isinstance(content, (dict, list)):
             content = json.dumps(content, cls=CustomJSONEncoder)
@@ -872,14 +882,14 @@ class CommandHistory:
 
         stmt = """
             INSERT INTO conversation_history
-            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results)
-            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team, :reasoning_content, :tool_calls, :tool_results)
+            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results, parent_message_id)
+            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team, :reasoning_content, :tool_calls, :tool_results, :parent_message_id)
         """
         params = {
             "message_id": message_id, "timestamp": timestamp, "role": role, "content": content,
             "conversation_id": conversation_id, "directory_path": normalized_directory_path, "model": model,
             "provider": provider, "npc": npc, "team": team, "reasoning_content": reasoning_content,
-            "tool_calls": tool_calls, "tool_results": tool_results
+            "tool_calls": tool_calls, "tool_results": tool_results, "parent_message_id": parent_message_id
         }
         with self.engine.begin() as conn:
             conn.execute(text(stmt), params)
@@ -1449,10 +1459,13 @@ def save_conversation_message(
     reasoning_content: str = None,
     tool_calls: List[Dict] = None,
     tool_results: List[Dict] = None,
+    parent_message_id: str = None,
+    skip_if_exists: bool = True,
     ):
     """
     Saves a conversation message linked to a conversation ID with optional attachments.
-    Now also supports reasoning_content, tool_calls, and tool_results.
+    Now also supports reasoning_content, tool_calls, tool_results, and parent_message_id for broadcast grouping.
+    If skip_if_exists is True and message_id already exists, skip saving to prevent duplicates.
     """
     if wd is None:
         wd = os.getcwd()
@@ -1460,6 +1473,12 @@ def save_conversation_message(
     if message_id is None:
         message_id = generate_message_id()
 
+    # Check if message already exists to prevent duplicates
+    if skip_if_exists and message_id:
+        existing = command_history.get_message_by_id(message_id)
+        if existing:
+            print(f"[SAVE_MSG] Skipping save - message_id {message_id} already exists")
+            return None
 
     return command_history.add_conversation(
         message_id,
@@ -1475,7 +1494,8 @@ def save_conversation_message(
         attachments=attachments,
         reasoning_content=reasoning_content,
         tool_calls=tool_calls,
-        tool_results=tool_results)
+        tool_results=tool_results,
+        parent_message_id=parent_message_id)
 def retrieve_last_conversation(
     command_history: CommandHistory, conversation_id: str
     ) -> str:
