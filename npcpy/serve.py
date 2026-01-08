@@ -572,7 +572,7 @@ def fetch_messages_for_conversation(conversation_id):
     try:
         with engine.connect() as conn:
             query = text("""
-                SELECT role, content, timestamp
+                SELECT role, content, timestamp, tool_calls, tool_results
                 FROM conversation_history
                 WHERE conversation_id = :conversation_id
                 ORDER BY timestamp ASC
@@ -580,14 +580,45 @@ def fetch_messages_for_conversation(conversation_id):
             result = conn.execute(query, {"conversation_id": conversation_id})
             messages = result.fetchall()
 
-            return [
-                {
-                    "role": message[0],  
-                    "content": message[1],  
-                    "timestamp": message[2],  
+            parsed_messages = []
+            for message in messages:
+                role = message[0]
+                content = message[1]
+
+                msg_dict = {
+                    "role": role,
+                    "content": content,
+                    "timestamp": message[2],
                 }
-                for message in messages
-            ]
+
+                # Handle tool messages - extract tool_call_id from content JSON
+                if role == "tool" and content:
+                    try:
+                        content_parsed = json.loads(content) if isinstance(content, str) else content
+                        if isinstance(content_parsed, dict):
+                            if "tool_call_id" in content_parsed:
+                                msg_dict["tool_call_id"] = content_parsed["tool_call_id"]
+                            if "tool_name" in content_parsed:
+                                msg_dict["name"] = content_parsed["tool_name"]
+                            if "content" in content_parsed:
+                                msg_dict["content"] = content_parsed["content"]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                # Parse tool_calls JSON if present (for assistant messages)
+                if message[3]:
+                    try:
+                        msg_dict["tool_calls"] = json.loads(message[3]) if isinstance(message[3], str) else message[3]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                # Parse tool_results JSON if present
+                if message[4]:
+                    try:
+                        msg_dict["tool_results"] = json.loads(message[4]) if isinstance(message[4], str) else message[4]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                parsed_messages.append(msg_dict)
+            return parsed_messages
     except Exception as e:
         print(f"Error fetching messages for conversation: {e}")
         return []
@@ -3935,7 +3966,7 @@ def stream():
                                     input_values=tool_args if isinstance(tool_args, dict) else {},
                                     npc=npc_object
                                 )
-                                tool_content = str(jinx_ctx)
+                                tool_content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
                             except Exception as e:
                                 tool_content = f"Jinx execution error: {str(e)}"
                         else:
