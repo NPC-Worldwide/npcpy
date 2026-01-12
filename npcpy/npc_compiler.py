@@ -7,6 +7,41 @@ import sqlite3
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+
+# Professional plot styling (from kg-research matplotlibrc)
+mpl.rcParams.update({
+    'font.family': 'serif',
+    'axes.labelsize': 20,
+    'axes.grid.axis': 'both',
+    'axes.grid.which': 'major',
+    'axes.prop_cycle': mpl.cycler('color', ['k', 'b', 'r', 'g', 'c', 'm', 'y', 'k']),
+    'xtick.top': True,
+    'xtick.direction': 'in',
+    'xtick.major.size': 10,
+    'xtick.minor.size': 5,
+    'xtick.labelsize': 20,
+    'xtick.minor.visible': True,
+    'xtick.major.top': True,
+    'xtick.major.bottom': True,
+    'xtick.minor.top': True,
+    'xtick.minor.bottom': True,
+    'ytick.left': True,
+    'ytick.right': True,
+    'ytick.direction': 'in',
+    'ytick.major.size': 10,
+    'ytick.minor.size': 5,
+    'ytick.labelsize': 20,
+    'ytick.minor.visible': True,
+    'ytick.major.left': True,
+    'ytick.major.right': True,
+    'ytick.minor.left': True,
+    'ytick.minor.right': True,
+    'legend.frameon': False,
+    'legend.fontsize': 12,
+    'image.cmap': 'plasma',
+    'errorbar.capsize': 1,
+})
 import re
 import random
 from datetime import datetime
