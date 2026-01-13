@@ -344,7 +344,6 @@ def kg_evolve_incremental(existing_kg,
 
     current_gen = existing_kg.get('generation', 0)
     next_gen = current_gen + 1
-    print(f"\n--- ABSORBING INFO: Gen {current_gen} -> Gen {next_gen} ---")
 
     newly_added_concepts = []
     concept_links = list(existing_kg.get('concept_links', []))
@@ -359,8 +358,7 @@ def kg_evolve_incremental(existing_kg,
     all_concept_names = list(existing_concept_names)
     
     all_new_facts = []
-    print(npc, npc.model, npc.provider)
-    
+
     if new_facts:
         all_new_facts = new_facts
         print(f'using pre-approved facts: {len(all_new_facts)}')

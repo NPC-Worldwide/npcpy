@@ -5764,7 +5764,7 @@ def text_to_speech_endpoint():
         import base64
         from npcpy.gen.audio_gen import (
             text_to_speech, get_available_engines,
-            pcm16_to_wav, KOKORO_VOICES
+            pcm16_to_wav
         )
 
         data = request.json or {}
