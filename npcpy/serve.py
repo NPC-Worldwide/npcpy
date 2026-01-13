@@ -71,9 +71,11 @@ from npcpy.memory.command_history import (
 from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxs_from_directory, build_jinx_tool_catalog, initialize_npc_project, load_yaml_file
 
 from npcpy.llm_funcs import (
-    get_llm_response, check_llm_command, get_embeddings
+    get_llm_response, check_llm_command
 )
+from npcpy.gen.embeddings import get_embeddings
 from termcolor import cprint
+
 from npcpy.tools import auto_tools
 
 import json
