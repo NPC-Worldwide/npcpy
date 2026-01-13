@@ -259,6 +259,24 @@ def get_ollama_response(
                                 prompt = f"Content from CSV: {os.path.basename(attachment)} (first 100 rows):\n{csv_sample} \n csv description: {csv_data.describe()}"
                     except Exception:
                         pass
+                else:
+                    # Handle text-based files
+                    text_extensions = {'.txt', '.text', '.log', '.md', '.markdown', '.rst', '.json', '.yaml', '.yml', '.toml', '.ini', '.conf', '.cfg', '.xml', '.html', '.htm', '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.h', '.cpp', '.hpp', '.go', '.rs', '.rb', '.php', '.sh', '.bash', '.sql', '.css', '.scss'}
+                    filename = os.path.basename(attachment)
+                    if ext in text_extensions or ext == '':
+                        try:
+                            with open(attachment, 'r', encoding='utf-8', errors='replace') as f:
+                                text_content = f.read()
+                            max_chars = 50000
+                            if len(text_content) > max_chars:
+                                text_content = text_content[:max_chars] + f"\n\n... [truncated]"
+                            if text_content.strip():
+                                if prompt:
+                                    prompt += f"\n\nContent from {filename}:\n```\n{text_content}\n```"
+                                else:
+                                    prompt = f"Content from {filename}:\n```\n{text_content}\n```"
+                        except Exception:
+                            pass
 
 
     if prompt:
@@ -797,6 +815,24 @@ def get_litellm_response(
                                 prompt = f"Content from CSV: {os.path.basename(attachment)} (first 10 rows):\n{csv_sample}"
                     except Exception:
                         pass
+                else:
+                    # Handle text-based files
+                    text_extensions = {'.txt', '.text', '.log', '.md', '.markdown', '.rst', '.json', '.yaml', '.yml', '.toml', '.ini', '.conf', '.cfg', '.xml', '.html', '.htm', '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.h', '.cpp', '.hpp', '.go', '.rs', '.rb', '.php', '.sh', '.bash', '.sql', '.css', '.scss'}
+                    filename = os.path.basename(attachment)
+                    if ext in text_extensions or ext == '':
+                        try:
+                            with open(attachment, 'r', encoding='utf-8', errors='replace') as f:
+                                text_content = f.read()
+                            max_chars = 50000
+                            if len(text_content) > max_chars:
+                                text_content = text_content[:max_chars] + f"\n\n... [truncated]"
+                            if text_content.strip():
+                                if prompt:
+                                    prompt += f"\n\nContent from {filename}:\n```\n{text_content}\n```"
+                                else:
+                                    prompt = f"Content from {filename}:\n```\n{text_content}\n```"
+                        except Exception:
+                            pass
 
     if prompt:
         if result['messages'] and result['messages'][-1]["role"] == "user":
