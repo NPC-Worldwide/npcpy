@@ -66,8 +66,30 @@ from npcpy.npc_sysenv import (
 from npcpy.memory.command_history import CommandHistory, generate_message_id
 
 class SilentUndefined(Undefined):
+    """Undefined that silently returns empty string instead of raising errors"""
     def _fail_with_undefined_error(self, *args, **kwargs):
         return ""
+
+    def __str__(self):
+        return ""
+
+    def __repr__(self):
+        return ""
+
+    def __bool__(self):
+        return False
+
+    def __eq__(self, other):
+        return other == "" or other is None or isinstance(other, Undefined)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __iter__(self):
+        return iter([])
+
+    def __len__(self):
+        return 0
 
 import math
 from PIL import Image
@@ -187,11 +209,35 @@ def get_log_entries(entity_id, entry_type=None, limit=10, db_path="~/npcsh_histo
         ]
 
 
+def _json_dumps_with_undefined(obj, **kwargs):
+    """Custom JSON dumps that handles SilentUndefined objects"""
+    def default_handler(o):
+        if isinstance(o, Undefined):
+            return ""
+        raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+    return json.dumps(obj, default=default_handler, **kwargs)
+
+
 def load_yaml_file(file_path):
-    """Load a YAML file with error handling"""
+    """Load a YAML file with error handling, rendering Jinja2 first"""
     try:
         with open(os.path.expanduser(file_path), 'r') as f:
-            return yaml.safe_load(f)
+            content = f.read()
+
+        # Check if file has Jinja2 control structures that need pre-rendering
+        # Only render if there are {% %} blocks, otherwise parse directly
+        if '{%' not in content:
+            return yaml.safe_load(content)
+
+        # First pass: render Jinja2 templates to produce valid YAML
+        # This allows {% if %} and other control structures to work
+        jinja_env = Environment(undefined=SilentUndefined)
+        # Configure tojson filter to handle SilentUndefined
+        jinja_env.policies['json.dumps_function'] = _json_dumps_with_undefined
+        template = jinja_env.from_string(content)
+        rendered_content = template.render({})
+
+        return yaml.safe_load(rendered_content)
     except Exception as e:
         print(f"Error loading YAML file {file_path}: {e}")
         return None

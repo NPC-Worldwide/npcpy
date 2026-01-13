@@ -46,7 +46,8 @@ from npcsh._state import ShellState, initialize_base_npcs_if_needed
 from npcsh.config import NPCSH_DB_PATH
 
 
-from npcpy.memory.knowledge_graph import load_kg_from_db
+from npcpy.memory.knowledge_graph import load_kg_from_db, find_similar_facts_chroma
+from npcpy.memory.command_history import setup_chroma_db
 from npcpy.memory.search import execute_rag_command, execute_brainblast_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
@@ -67,12 +68,14 @@ from npcpy.memory.command_history import (
     save_conversation_message,
     generate_message_id,
 )
-from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxs_from_directory, build_jinx_tool_catalog, initialize_npc_project
+from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxs_from_directory, build_jinx_tool_catalog, initialize_npc_project, load_yaml_file
 
 from npcpy.llm_funcs import (
     get_llm_response, check_llm_command
 )
+from npcpy.gen.embeddings import get_embeddings
 from termcolor import cprint
+
 from npcpy.tools import auto_tools
 
 import json
@@ -712,6 +715,265 @@ def get_centrality_data():
     concept_degree = {node: cent for node, cent in nx.degree_centrality(G).items() if node in concepts_df['name'].values}
     return jsonify(centrality={'degree': concept_degree})
 
+@app.route('/api/kg/search')
+def search_kg():
+    """Search facts and concepts by keyword"""
+    try:
+        q = request.args.get('q', '').strip().lower()
+        generation = request.args.get('generation', type=int)
+        search_type = request.args.get('type', 'both')  # fact, concept, or both
+        limit = request.args.get('limit', 50, type=int)
+
+        if not q:
+            return jsonify({"error": "Query parameter 'q' is required"}), 400
+
+        concepts_df, facts_df, links_df = load_kg_data(generation)
+        results = {"facts": [], "concepts": [], "query": q}
+
+        # Search facts
+        if search_type in ('both', 'fact'):
+            for _, row in facts_df.iterrows():
+                statement = str(row.get('statement', '')).lower()
+                source_text = str(row.get('source_text', '')).lower()
+                if q in statement or q in source_text:
+                    results["facts"].append({
+                        "statement": row.get('statement'),
+                        "source_text": row.get('source_text'),
+                        "type": row.get('type'),
+                        "generation": row.get('generation'),
+                        "origin": row.get('origin')
+                    })
+                    if len(results["facts"]) >= limit:
+                        break
+
+        # Search concepts
+        if search_type in ('both', 'concept'):
+            for _, row in concepts_df.iterrows():
+                name = str(row.get('name', '')).lower()
+                description = str(row.get('description', '')).lower()
+                if q in name or q in description:
+                    results["concepts"].append({
+                        "name": row.get('name'),
+                        "description": row.get('description'),
+                        "generation": row.get('generation'),
+                        "origin": row.get('origin')
+                    })
+                    if len(results["concepts"]) >= limit:
+                        break
+
+        return jsonify(results)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/kg/embed', methods=['POST'])
+def embed_kg_facts():
+    """Embed existing facts from SQL to Chroma for semantic search"""
+    try:
+        data = request.get_json() or {}
+        generation = data.get('generation')
+        batch_size = data.get('batch_size', 10)
+
+        # Load facts from SQL
+        _, facts_df, _ = load_kg_data(generation)
+
+        if facts_df.empty:
+            return jsonify({"message": "No facts to embed", "count": 0})
+
+        # Setup Chroma
+        chroma_db_path = os.path.expanduser('~/npcsh_chroma_db')
+        _, chroma_collection = setup_chroma_db(
+            "knowledge_graph",
+            "Facts extracted from various sources",
+            chroma_db_path
+        )
+
+        # Process in batches
+        from npcpy.memory.knowledge_graph import store_fact_with_embedding
+        import hashlib
+
+        embedded_count = 0
+        skipped_count = 0
+
+        statements = facts_df['statement'].dropna().tolist()
+
+        for i in range(0, len(statements), batch_size):
+            batch = statements[i:i + batch_size]
+
+            # Get embeddings for batch
+            try:
+                embeddings = get_embeddings(batch)
+            except Exception as e:
+                print(f"Failed to get embeddings for batch {i}: {e}")
+                continue
+
+            for j, statement in enumerate(batch):
+                fact_id = hashlib.md5(statement.encode()).hexdigest()
+
+                # Check if already exists
+                try:
+                    existing = chroma_collection.get(ids=[fact_id])
+                    if existing and existing.get('ids'):
+                        skipped_count += 1
+                        continue
+                except:
+                    pass
+
+                # Get metadata from dataframe
+                row = facts_df[facts_df['statement'] == statement].iloc[0] if len(facts_df[facts_df['statement'] == statement]) > 0 else None
+                metadata = {
+                    "generation": int(row.get('generation', 0)) if row is not None and pd.notna(row.get('generation')) else 0,
+                    "origin": str(row.get('origin', '')) if row is not None else '',
+                    "type": str(row.get('type', '')) if row is not None else '',
+                }
+
+                # Store with embedding
+                result = store_fact_with_embedding(
+                    chroma_collection, statement, metadata, embeddings[j]
+                )
+                if result:
+                    embedded_count += 1
+
+        return jsonify({
+            "message": f"Embedded {embedded_count} facts, skipped {skipped_count} existing",
+            "embedded": embedded_count,
+            "skipped": skipped_count,
+            "total_facts": len(statements)
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/kg/search/semantic')
+def search_kg_semantic():
+    """Semantic search for facts using vector similarity"""
+    try:
+        q = request.args.get('q', '').strip()
+        generation = request.args.get('generation', type=int)
+        limit = request.args.get('limit', 10, type=int)
+
+        if not q:
+            return jsonify({"error": "Query parameter 'q' is required"}), 400
+
+        # Setup Chroma connection
+        chroma_db_path = os.path.expanduser('~/npcsh_chroma_db')
+        try:
+            _, chroma_collection = setup_chroma_db(
+                "knowledge_graph",
+                "Facts extracted from various sources",
+                chroma_db_path
+            )
+        except Exception as e:
+            return jsonify({
+                "error": f"Chroma DB not available: {str(e)}",
+                "facts": [],
+                "query": q
+            }), 200
+
+        # Get query embedding
+        try:
+            query_embedding = get_embeddings([q])[0]
+        except Exception as e:
+            return jsonify({
+                "error": f"Failed to generate embedding: {str(e)}",
+                "facts": [],
+                "query": q
+            }), 200
+
+        # Build metadata filter for generation if specified
+        metadata_filter = None
+        if generation is not None:
+            metadata_filter = {"generation": generation}
+
+        # Search Chroma
+        similar_facts = find_similar_facts_chroma(
+            chroma_collection,
+            q,
+            query_embedding=query_embedding,
+            n_results=limit,
+            metadata_filter=metadata_filter
+        )
+
+        # Format results
+        results = {
+            "facts": [
+                {
+                    "statement": f["fact"],
+                    "distance": f.get("distance"),
+                    "metadata": f.get("metadata", {}),
+                    "id": f.get("id")
+                }
+                for f in similar_facts
+            ],
+            "query": q,
+            "total": len(similar_facts)
+        }
+
+        return jsonify(results)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/kg/facts')
+def get_kg_facts():
+    """Get facts, optionally filtered by generation"""
+    try:
+        generation = request.args.get('generation', type=int)
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+
+        _, facts_df, _ = load_kg_data(generation)
+
+        facts = []
+        for i, row in facts_df.iloc[offset:offset+limit].iterrows():
+            facts.append({
+                "statement": row.get('statement'),
+                "source_text": row.get('source_text'),
+                "type": row.get('type'),
+                "generation": row.get('generation'),
+                "origin": row.get('origin')
+            })
+
+        return jsonify({
+            "facts": facts,
+            "total": len(facts_df),
+            "offset": offset,
+            "limit": limit
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/kg/concepts')
+def get_kg_concepts():
+    """Get concepts, optionally filtered by generation"""
+    try:
+        generation = request.args.get('generation', type=int)
+        limit = request.args.get('limit', 100, type=int)
+
+        concepts_df, _, _ = load_kg_data(generation)
+
+        concepts = []
+        for _, row in concepts_df.head(limit).iterrows():
+            concepts.append({
+                "name": row.get('name'),
+                "description": row.get('description'),
+                "generation": row.get('generation'),
+                "origin": row.get('origin')
+            })
+
+        return jsonify({
+            "concepts": concepts,
+            "total": len(concepts_df)
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/attachments/<message_id>", methods=["GET"])
@@ -853,10 +1115,9 @@ def get_available_jinxs():
         def get_jinx_name_from_file(filepath):
             """Read jinx_name from file, fallback to filename."""
             try:
-                with open(filepath, 'r') as f:
-                    data = yaml.safe_load(f)
-                    if data and 'jinx_name' in data:
-                        return data['jinx_name']
+                data = load_yaml_file(filepath)
+                if data and 'jinx_name' in data:
+                    return data['jinx_name']
             except:
                 pass
             return os.path.basename(filepath)[:-5]
@@ -1924,9 +2185,10 @@ def get_jinxs_global():
         for file in files:
             if file.endswith(".jinx"):
                 jinx_path = os.path.join(root, file)
-                with open(jinx_path, 'r') as f:
-                    raw_data = yaml.safe_load(f)
-                
+                raw_data = load_yaml_file(jinx_path)
+                if raw_data is None:
+                    continue
+
                 # Preserve full input definitions including defaults
                 inputs = raw_data.get("inputs", [])
                 
@@ -1960,9 +2222,10 @@ def get_jinxs_project():
         for file in files:
             if file.endswith(".jinx"):
                 jinx_path = os.path.join(root, file)
-                with open(jinx_path, 'r') as f:
-                    raw_data = yaml.safe_load(f)
-                
+                raw_data = load_yaml_file(jinx_path)
+                if raw_data is None:
+                    continue
+
                 # Preserve full input definitions including defaults
                 inputs = raw_data.get("inputs", [])
                 
@@ -2118,8 +2381,9 @@ def get_npc_team_global():
     for file in os.listdir(global_npc_directory):
         if file.endswith(".npc"):
             npc_path = os.path.join(global_npc_directory, file)
-            with open(npc_path, 'r') as f:
-                raw_data = yaml.safe_load(f)
+            raw_data = load_yaml_file(npc_path)
+            if raw_data is None:
+                continue
             
             npc_data.append({
                 "name": raw_data.get("name", file[:-4]),
@@ -2154,8 +2418,9 @@ def get_npc_team_project():
     for file in os.listdir(project_npc_directory):
         if file.endswith(".npc"):
             npc_path = os.path.join(project_npc_directory, file)
-            with open(npc_path, 'r') as f:
-                raw_npc_data = yaml.safe_load(f)
+            raw_npc_data = load_yaml_file(npc_path)
+            if raw_npc_data is None:
+                continue
             
             serialized_npc = {
                 "name": raw_npc_data.get("name", file[:-4]),
@@ -2433,8 +2698,7 @@ def get_package_contents():
                 if f.endswith('.npc'):
                     npc_path = os.path.join(package_npc_team_dir, f)
                     try:
-                        with open(npc_path, 'r') as file:
-                            npc_data = yaml.safe_load(file) or {}
+                        npc_data = load_yaml_file(npc_path) or {}
                         npcs.append({
                             "name": npc_data.get("name", f[:-4]),
                             "primary_directive": npc_data.get("primary_directive", ""),
@@ -2453,8 +2717,7 @@ def get_package_contents():
                             jinx_path = os.path.join(root, f)
                             rel_path = os.path.relpath(jinx_path, jinxs_dir)
                             try:
-                                with open(jinx_path, 'r') as file:
-                                    jinx_data = yaml.safe_load(file) or {}
+                                jinx_data = load_yaml_file(jinx_path) or {}
                                 jinxs.append({
                                     "name": f[:-5],
                                     "path": rel_path[:-5],
@@ -4392,19 +4655,103 @@ def approve_memories():
     try:
         data = request.json
         approvals = data.get("approvals", [])
-        
+
         command_history = CommandHistory(app.config.get('DB_PATH'))
-        
+
         for approval in approvals:
             command_history.update_memory_status(
                 approval['memory_id'],
                 approval['decision'],
                 approval.get('final_memory')
             )
-        
+
         return jsonify({"success": True, "processed": len(approvals)})
-        
+
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/memory/search", methods=["GET"])
+def search_memories():
+    """Search memories with optional scope filtering"""
+    try:
+        q = request.args.get("q", "")
+        npc = request.args.get("npc")
+        team = request.args.get("team")
+        directory_path = request.args.get("directory_path")
+        status = request.args.get("status")
+        limit = int(request.args.get("limit", 50))
+
+        if not q:
+            return jsonify({"error": "Query parameter 'q' is required"}), 400
+
+        command_history = CommandHistory(app.config.get('DB_PATH'))
+        results = command_history.search_memory(
+            query=q,
+            npc=npc,
+            team=team,
+            directory_path=directory_path,
+            status_filter=status,
+            limit=limit
+        )
+
+        return jsonify({"memories": results, "count": len(results)})
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/memory/pending", methods=["GET"])
+def get_pending_memories():
+    """Get memories awaiting approval"""
+    try:
+        limit = int(request.args.get("limit", 50))
+        npc = request.args.get("npc")
+        team = request.args.get("team")
+        directory_path = request.args.get("directory_path")
+
+        command_history = CommandHistory(app.config.get('DB_PATH'))
+        results = command_history.get_pending_memories(limit=limit)
+
+        # Filter by scope if provided
+        if npc or team or directory_path:
+            filtered = []
+            for mem in results:
+                if npc and mem.get('npc') != npc:
+                    continue
+                if team and mem.get('team') != team:
+                    continue
+                if directory_path and mem.get('directory_path') != directory_path:
+                    continue
+                filtered.append(mem)
+            results = filtered
+
+        return jsonify({"memories": results, "count": len(results)})
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/memory/scope", methods=["GET"])
+def get_memories_by_scope():
+    """Get memories for a specific scope (npc/team/directory)"""
+    try:
+        npc = request.args.get("npc", "")
+        team = request.args.get("team", "")
+        directory_path = request.args.get("directory_path", "")
+        status = request.args.get("status")
+
+        command_history = CommandHistory(app.config.get('DB_PATH'))
+        results = command_history.get_memories_for_scope(
+            npc=npc,
+            team=team,
+            directory_path=directory_path,
+            status=status
+        )
+
+        return jsonify({"memories": results, "count": len(results)})
+
+    except Exception as e:
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
