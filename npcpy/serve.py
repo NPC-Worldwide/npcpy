@@ -51,6 +51,7 @@ from npcpy.memory.command_history import setup_chroma_db
 from npcpy.memory.search import execute_rag_command, execute_brainblast_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
+from npcpy.data.image import capture_screenshot
 
 
 import base64
@@ -1008,7 +1009,7 @@ def get_attachment(attachment_id):
 @app.route("/api/capture_screenshot", methods=["GET"])
 def capture():
     
-    screenshot = capture_screenshot(None, full=True)
+    screenshot = capture_screenshot(full=True)
 
     
     if not screenshot:
@@ -1895,10 +1896,26 @@ def finetune_diffusers():
         'output_dir': output_dir,
         'epochs': num_epochs,
         'current_epoch': 0,
+        'current_batch': 0,
+        'total_batches': 0,
+        'current_loss': None,
+        'loss_history': [],
+        'step': 0,
         'start_time': datetime.datetime.now().isoformat()
     }
     print(f"🌋 Finetuning job {job_id} initialized. Output directory: {output_dir}")
-    
+
+    def progress_callback(progress_data):
+        """Callback to update job progress from training loop."""
+        finetune_jobs[job_id]['current_epoch'] = progress_data.get('epoch', 0)
+        finetune_jobs[job_id]['epochs'] = progress_data.get('total_epochs', num_epochs)
+        finetune_jobs[job_id]['current_batch'] = progress_data.get('batch', 0)
+        finetune_jobs[job_id]['total_batches'] = progress_data.get('total_batches', 0)
+        finetune_jobs[job_id]['step'] = progress_data.get('step', 0)
+        finetune_jobs[job_id]['current_loss'] = progress_data.get('loss')
+        if progress_data.get('loss_history'):
+            finetune_jobs[job_id]['loss_history'] = progress_data['loss_history']
+
     def run_training_async():
         print(f"🌋 Finetuning job {job_id}: Starting asynchronous training thread...")
         try:
@@ -1908,16 +1925,15 @@ def finetune_diffusers():
                 learning_rate=learning_rate,
                 output_model_path=output_dir
             )
-            
+
             print(f"🌋 Finetuning job {job_id}: Calling train_diffusion with config: {config}")
-            # Assuming train_diffusion might print its own progress or allow callbacks
-            # For more granular logging, you'd need to modify train_diffusion itself
             model_path = train_diffusion(
                 expanded_images,
                 captions,
-                config=config
+                config=config,
+                progress_callback=progress_callback
             )
-            
+
             finetune_jobs[job_id]['status'] = 'complete'
             finetune_jobs[job_id]['model_path'] = model_path
             finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
@@ -1947,21 +1963,32 @@ def finetune_diffusers():
 def finetune_status(job_id):
     if job_id not in finetune_jobs:
         return jsonify({'error': 'Job not found'}), 404
-    
+
     job = finetune_jobs[job_id]
-    
+
     if job['status'] == 'complete':
         return jsonify({
+            'status': 'complete',
             'complete': True,
-            'outputPath': job.get('model_path', job['output_dir'])
+            'outputPath': job.get('model_path', job['output_dir']),
+            'loss_history': job.get('loss_history', [])
         })
     elif job['status'] == 'error':
-        return jsonify({'error': job.get('error_msg', 'Unknown error')})
-    
+        return jsonify({
+            'status': 'error',
+            'error': job.get('error_msg', 'Unknown error')
+        })
+
     return jsonify({
-        'step': job.get('current_epoch', 0),
-        'total': job['epochs'],
-        'status': 'running'
+        'status': 'running',
+        'epoch': job.get('current_epoch', 0),
+        'total_epochs': job.get('epochs', 0),
+        'batch': job.get('current_batch', 0),
+        'total_batches': job.get('total_batches', 0),
+        'step': job.get('step', 0),
+        'loss': job.get('current_loss'),
+        'loss_history': job.get('loss_history', []),
+        'start_time': job.get('start_time')
     })
 
 @app.route("/api/ml/train", methods=["POST"])
