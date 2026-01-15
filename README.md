@@ -209,7 +209,7 @@ ggm = NPC(
 isabel = NPC(
     name='Isabel Allende',
     primary_directive='You are Isabel Allende, weaving stories with emotion and history. Analyze texts and provide insight.',
-    model='llama3.2:8b',
+    model='llama3.2',
     provider='ollama',
 
 )
@@ -263,7 +263,7 @@ LLM responses can be obtained without NPCs as well.
 
 ```python
 from npcpy.llm_funcs import get_llm_response
-response = get_llm_response("Who was the celtic Messenger god?", model='mistral:7b', provider='ollama')
+response = get_llm_response("Who was the celtic Messenger god?", model='qwen3:4b', provider='ollama')
 print(response['response'])
 ```
 
@@ -304,7 +304,7 @@ Return structured outputs by specifying `format='json'` or passing a Pydantic sc
 
 ```python
 from npcpy.llm_funcs import get_llm_response
-response = get_llm_response("What is the sentiment of the american people towards the repeal of Roe v Wade? Return a json object with `sentiment` as the key and a float value from -1 to 1 as the value", model='claude-4-5-haiku-latest', provider='deepseek', format='json')
+response = get_llm_response("What is the sentiment of the american people towards the repeal of Roe v Wade? Return a json object with `sentiment` as the key and a float value from -1 to 1 as the value", model='deepseek-chat', provider='deepseek', format='json')
 
 print(response['response'])
 ```

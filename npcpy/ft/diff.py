@@ -180,52 +180,66 @@ if TORCH_AVAILABLE:
             noise = torch.randn_like(x)
             return sqrt_alpha * x + sqrt_one_minus * noise, noise
 
-        def train(self, dataloader):
+        def train(self, dataloader, progress_callback=None):
             optimizer = torch.optim.AdamW(
-                self.model.parameters(), 
+                self.model.parameters(),
                 lr=self.config.learning_rate
             )
-            
+
             os.makedirs(self.config.output_model_path, exist_ok=True)
             checkpoint_dir = os.path.join(
-                self.config.output_model_path, 
+                self.config.output_model_path,
                 'checkpoints'
             )
             os.makedirs(checkpoint_dir, exist_ok=True)
-            
+
             global_step = 0
-            
+            total_batches = len(dataloader)
+            loss_history = []
+
             for epoch in range(self.config.num_epochs):
                 self.model.train()
                 epoch_loss = 0.0
-                
+
                 pbar = tqdm(dataloader, desc=f'Epoch {epoch+1}')
                 for batch_idx, (images, captions) in enumerate(pbar):
                     images = images.to(self.device)
                     batch_size = images.shape[0]
-                    
+
                     t = torch.randint(
-                        0, 
-                        self.config.timesteps, 
-                        (batch_size,), 
+                        0,
+                        self.config.timesteps,
+                        (batch_size,),
                         device=self.device
                     ).long()
-                    
+
                     noisy_images, noise = self.add_noise(images, t)
-                    
+
                     predicted_noise = self.model(noisy_images, t)
-                    
+
                     loss = F.mse_loss(predicted_noise, noise)
-                    
+
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
-                    
+
                     epoch_loss += loss.item()
                     global_step += 1
-                    
+
                     pbar.set_postfix({'loss': loss.item()})
-                    
+
+                    # Report progress via callback
+                    if progress_callback:
+                        progress_callback({
+                            'epoch': epoch + 1,
+                            'total_epochs': self.config.num_epochs,
+                            'batch': batch_idx + 1,
+                            'total_batches': total_batches,
+                            'step': global_step,
+                            'loss': loss.item(),
+                            'loss_history': loss_history[-100:],  # Last 100 losses
+                        })
+
                     if global_step % self.config.checkpoint_frequency == 0:
                         ckpt_path = os.path.join(
                             checkpoint_dir,
@@ -238,8 +252,9 @@ if TORCH_AVAILABLE:
                             'optimizer_state_dict': optimizer.state_dict(),
                             'loss': loss.item(),
                         }, ckpt_path)
-                
+
                 avg_loss = epoch_loss / len(dataloader)
+                loss_history.append(avg_loss)
                 print(f'Epoch {epoch+1} avg loss: {avg_loss:.6f}')
             
             final_path = os.path.join(
@@ -300,35 +315,35 @@ else:
     DiffusionTrainer = None
 
 
-def train_diffusion(image_paths, captions=None, config=None, 
-                    resume_from=None):
+def train_diffusion(image_paths, captions=None, config=None,
+                    resume_from=None, progress_callback=None):
     if not TORCH_AVAILABLE:
         raise ImportError(
             "PyTorch not available. Install: pip install torch torchvision"
         )
-    
+
     if config is None:
         config = DiffusionConfig()
-    
+
     if captions is None:
         captions = [''] * len(image_paths)
-    
+
     dataset = ImageDataset(image_paths, captions, config.image_size)
     dataloader = DataLoader(
-        dataset, 
-        batch_size=config.batch_size, 
+        dataset,
+        batch_size=config.batch_size,
         shuffle=True,
         num_workers=0
     )
-    
+
     trainer = DiffusionTrainer(config)
-    
+
     if resume_from and os.path.exists(resume_from):
         checkpoint = torch.load(resume_from, map_location=trainer.device)
         trainer.model.load_state_dict(checkpoint['model_state_dict'])
         print(f'Resumed from {resume_from}')
-    
-    output_path = trainer.train(dataloader)
+
+    output_path = trainer.train(dataloader, progress_callback=progress_callback)
     
     gc.collect()
     if torch.cuda.is_available():

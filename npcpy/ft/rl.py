@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List
 
 from datetime import datetime
 import glob
@@ -12,7 +13,8 @@ try:
     import torch
     from transformers import (
         AutoModelForCausalLM,
-        AutoTokenizer
+        AutoTokenizer,
+        BitsAndBytesConfig
     )
     from trl import DPOTrainer, DPOConfig
 except:
@@ -23,6 +25,7 @@ except:
     torch = None
     AutoModelForCausalLM = None
     AutoTokenizer = None
+    BitsAndBytesConfig = None
 
     
 import random
@@ -44,6 +47,24 @@ class RLConfig:
     beta: float = 0.5
     max_length: int = 512
     max_prompt_length: int = 256
+    # Quantization options
+    use_4bit: bool = False
+    use_8bit: bool = False
+    # Precision options
+    fp16: bool = False
+    bf16: bool = False
+    # LoRA configuration
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.1
+    lora_target_modules: List[str] = field(
+        default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"]
+    )
+    # Training options
+    max_pairs: int = 200
+    warmup_steps: int = 5
+    logging_steps: int = 5
+    save_steps: int = 20
 
 
 class TaskExecutor:
@@ -207,8 +228,8 @@ def create_preference_pairs(
             f"Warning: Only {len(pairs)} pairs found. "
             "May overfit."
         )
-    
-    return Dataset.from_list(pairs[:100])
+
+    return Dataset.from_list(pairs)
 
 
 def train_with_dpo(
@@ -218,84 +239,121 @@ def train_with_dpo(
 
     if config is None:
         config = RLConfig()
-    
+
     preference_dataset = create_preference_pairs(
         traces,
         min_reward_gap=config.min_reward_gap
     )
-    
+
     if preference_dataset is None or len(preference_dataset) == 0:
         print("No valid preference pairs. Cannot train.")
         return None
-    
+
+    # Limit pairs if specified
+    if config.max_pairs and len(preference_dataset) > config.max_pairs:
+        preference_dataset = preference_dataset.select(range(config.max_pairs))
+
+    print(f"Training with {len(preference_dataset)} preference pairs")
+
+    # Build model loading kwargs
+    model_kwargs = {
+        "device_map": "auto",
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True
+    }
+
+    # Handle quantization
+    if config.use_4bit:
+        if BitsAndBytesConfig is None:
+            raise ImportError("bitsandbytes required for 4-bit. pip install bitsandbytes")
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True
+        )
+        print("Using 4-bit quantization")
+    elif config.use_8bit:
+        if BitsAndBytesConfig is None:
+            raise ImportError("bitsandbytes required for 8-bit. pip install bitsandbytes")
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_8bit=True
+        )
+        print("Using 8-bit quantization")
+    else:
+        # Set dtype based on precision config
+        if config.bf16:
+            model_kwargs["torch_dtype"] = torch.bfloat16
+        elif config.fp16:
+            model_kwargs["torch_dtype"] = torch.float16
+        else:
+            model_kwargs["torch_dtype"] = torch.float32
+
     model = AutoModelForCausalLM.from_pretrained(
         config.base_model_name,
-        torch_dtype=torch.float32,
-        device_map="auto",
-        low_cpu_mem_usage=True
+        **model_kwargs
     )
-    
+
     tokenizer = AutoTokenizer.from_pretrained(
         config.base_model_name,
         trust_remote_code=True
     )
-    
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    
+
     peft_config = LoraConfig(
-        r=8,
-        lora_alpha=16,
-        lora_dropout=0.1,
+        r=config.lora_r,
+        lora_alpha=config.lora_alpha,
+        lora_dropout=config.lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=[
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj"
-        ]
+        target_modules=config.lora_target_modules
     )
-    
+
+    # Select optimizer based on quantization
+    if config.use_4bit or config.use_8bit:
+        optim = "paged_adamw_8bit"
+    else:
+        optim = "adamw_torch"
+
     training_args = DPOConfig(
         output_dir="./dpo_results",
-        per_device_train_batch_size=(
-            config.per_device_train_batch_size
-        ),
-        gradient_accumulation_steps=(
-            config.gradient_accumulation_steps
-        ),
+        per_device_train_batch_size=config.per_device_train_batch_size,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
         learning_rate=config.learning_rate,
         num_train_epochs=config.num_train_epochs,
         weight_decay=0.1,
         beta=config.beta,
-        logging_steps=2,
-        save_steps=10,
+        logging_steps=config.logging_steps,
+        save_steps=config.save_steps,
         remove_unused_columns=False,
         max_length=config.max_length,
         max_prompt_length=config.max_prompt_length,
         dataloader_num_workers=0,
-        fp16=False,
-        bf16=False,
-        optim="adamw_torch",
-        warmup_steps=2,
+        fp16=config.fp16 or config.use_4bit,
+        bf16=config.bf16,
+        optim=optim,
+        warmup_steps=config.warmup_steps,
         save_strategy="steps",
-        save_total_limit=3
+        save_total_limit=2
     )
-    
+
     trainer = DPOTrainer(
         model,
         args=training_args,
         train_dataset=preference_dataset,
-        peft_config=peft_config
+        peft_config=peft_config,
+        tokenizer=tokenizer
     )
-    
+
     print("Starting DPO training...")
     trainer.train()
-    
+
+    os.makedirs(config.adapter_path, exist_ok=True)
     trainer.save_model(config.adapter_path)
     print(f"Adapter saved to {config.adapter_path}")
-    
+
     return config.adapter_path
 
 
@@ -333,28 +391,53 @@ def run_rl_training(
 
 def load_rl_model(
     base_model_id: str,
-    adapter_path: str
+    adapter_path: str,
+    use_4bit: bool = False,
+    use_8bit: bool = False,
+    merge_adapter: bool = True
 ):
-
     print(f"Loading base model: {base_model_id}")
+
+    model_kwargs = {
+        "device_map": "auto",
+        "trust_remote_code": True
+    }
+
+    if use_4bit:
+        if BitsAndBytesConfig is None:
+            raise ImportError("bitsandbytes required for 4-bit")
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True
+        )
+    elif use_8bit:
+        if BitsAndBytesConfig is None:
+            raise ImportError("bitsandbytes required for 8-bit")
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_8bit=True
+        )
+    else:
+        model_kwargs["torch_dtype"] = torch.float16
+
     model = AutoModelForCausalLM.from_pretrained(
         base_model_id,
-        torch_dtype=torch.float32,
-        device_map="auto",
-        attn_implementation='eager'
+        **model_kwargs
     )
-    
+
     tokenizer = AutoTokenizer.from_pretrained(
         base_model_id,
         trust_remote_code=True
     )
-    
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    
+
     if adapter_path and os.path.exists(adapter_path):
         print(f"Loading adapter: {adapter_path}")
         model = PeftModel.from_pretrained(model, adapter_path)
-        model = model.merge_and_unload()
-    
+        if merge_adapter and not (use_4bit or use_8bit):
+            model = model.merge_and_unload()
+
     return model, tokenizer
