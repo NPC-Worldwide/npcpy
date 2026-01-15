@@ -344,7 +344,7 @@ def train_with_dpo(
         args=training_args,
         train_dataset=preference_dataset,
         peft_config=peft_config,
-        tokenizer=tokenizer
+        processing_class=tokenizer
     )
 
     print("Starting DPO training...")
