@@ -153,15 +153,12 @@ class TestLoadAllFiles:
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(
-    not pytest.importorskip("sentence_transformers", reason="sentence_transformers not installed"),
-    reason="sentence_transformers not installed - RAG search unavailable"
-)
 class TestRAGSearch:
     """Test RAG search functionality - requires sentence_transformers (slow, loads model)."""
 
     def test_rag_search_with_string(self):
         """Test RAG search with string input"""
+        pytest.importorskip("sentence_transformers")
         from npcpy.data.text import rag_search
 
         text_data = """
@@ -180,6 +177,7 @@ class TestRAGSearch:
 
     def test_rag_search_with_dict(self):
         """Test RAG search with dictionary input"""
+        pytest.importorskip("sentence_transformers")
         from npcpy.data.text import rag_search
 
         text_data = {
@@ -198,6 +196,7 @@ class TestRAGSearch:
 
     def test_rag_search_high_threshold(self):
         """Test RAG search with high similarity threshold"""
+        pytest.importorskip("sentence_transformers")
         from npcpy.data.text import rag_search
 
         text_data = "The quick brown fox jumps over the lazy dog. Python is great for programming."

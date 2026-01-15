@@ -199,15 +199,12 @@ class TestExtensionMap:
         assert extension_map["MP3"] == "audio"
 
 
-@pytest.mark.skipif(
-    not pytest.importorskip("openpyxl", reason="openpyxl not installed"),
-    reason="openpyxl not installed"
-)
 class TestLoadExcel:
     """Test Excel file loading - requires openpyxl."""
 
     def test_load_excel(self):
         """Test Excel file loading"""
+        pytest.importorskip("openpyxl")
         from npcpy.data.load import load_excel
 
         temp_dir = tempfile.mkdtemp()
@@ -232,16 +229,12 @@ class TestLoadExcel:
             shutil.rmtree(temp_dir)
 
 
-@pytest.mark.skipif(
-    not pytest.importorskip("fitz", reason="PyMuPDF not installed"),
-    reason="PyMuPDF (fitz) not installed"
-)
 class TestLoadPDF:
     """Test PDF file loading - requires PyMuPDF."""
 
     def test_load_pdf(self):
         """Test PDF file loading"""
-        import fitz
+        fitz = pytest.importorskip("fitz")
         from npcpy.data.load import load_pdf
 
         temp_dir = tempfile.mkdtemp()
@@ -261,15 +254,12 @@ class TestLoadPDF:
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(
-    not pytest.importorskip("faster_whisper", reason="faster_whisper not installed"),
-    reason="faster_whisper not installed - audio transcription unavailable"
-)
 class TestLoadAudio:
     """Test audio file loading - requires faster_whisper (slow, loads model)."""
 
     def test_load_audio_wav(self, tmp_path):
         """Ensure audio loader returns text (transcript or fallback) for wav files."""
+        pytest.importorskip("faster_whisper")
         import wave
         import struct
         from npcpy.data.load import load_audio
