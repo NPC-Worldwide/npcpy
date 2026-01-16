@@ -54,7 +54,11 @@ jobs:
       - name: Run core unit tests
         run: |
           # Run tests that don't require LLM or heavy dependencies
-          pytest tests/test_tools.py tests/test_command_history.py -v --tb=short --timeout=60
+          pytest tests/test_tools.py tests/test_command_history.py tests/test_build_funcs.py tests/test_npc_sysenv.py -v --tb=short --timeout=60
+
+      - name: Run ML function tests
+        run: |
+          pytest tests/test_ml_funcs.py -v --tb=short --timeout=60
 
       - name: Run documentation example unit tests
         run: |
@@ -63,6 +67,18 @@ jobs:
       - name: Run data loading tests (skip slow/model tests)
         run: |
           pytest tests/test_load.py tests/test_text.py -v -m "not slow" --tb=short --timeout=60
+
+      - name: Run data model tests
+        run: |
+          pytest tests/test_data_models.py tests/test_video.py -v --tb=short --timeout=60
+
+      - name: Run SQL module tests
+        run: |
+          pytest tests/test_sql_adapters.py tests/test_sql_functions.py tests/test_sql_compiler.py tests/test_model_runner.py -v --tb=short --timeout=60
+
+      - name: Run additional module tests
+        run: |
+          pytest tests/test_genetic_evolver.py tests/test_diff.py tests/test_memory_processor.py tests/test_browser.py -v --tb=short --timeout=60
 
   # =============================================================================
   # Flask Server Tests - Test API endpoints
