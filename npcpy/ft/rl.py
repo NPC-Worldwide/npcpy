@@ -6,26 +6,39 @@ import glob
 import json
 import os
 import pandas as pd
+# Core imports that should always work
 try:
-    from datasets import Dataset
-
-    from peft import LoraConfig, PeftModel
     import torch
-    from transformers import (
-        AutoModelForCausalLM,
-        AutoTokenizer,
-        BitsAndBytesConfig
-    )
-    from trl import DPOTrainer, DPOConfig
-except:
-    Dataset = None
-    PeftModel = None
-    DPOConfig = None
-    DPOTrainer = None
+except ImportError:
     torch = None
+
+try:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+except ImportError:
     AutoModelForCausalLM = None
     AutoTokenizer = None
+
+try:
+    from transformers import BitsAndBytesConfig
+except ImportError:
     BitsAndBytesConfig = None
+
+try:
+    from datasets import Dataset
+except ImportError:
+    Dataset = None
+
+try:
+    from peft import LoraConfig, PeftModel
+except ImportError:
+    LoraConfig = None
+    PeftModel = None
+
+try:
+    from trl import DPOTrainer, DPOConfig
+except ImportError:
+    DPOTrainer = None
+    DPOConfig = None
 
     
 import random

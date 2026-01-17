@@ -5273,7 +5273,7 @@ def openai_chat_completions():
         current_path = request.headers.get("X-Current-Path", os.getcwd())
 
         # Load team and NPC
-        db_path = app.config.get('DB_PATH') or os.path.expanduser("~/.npcsh/npcsh_history.db")
+        db_path = app.config.get('DB_PATH') or os.path.expanduser("~/npcsh_history.db")
         db_conn = create_engine(f'sqlite:///{db_path}')
 
         npc = None
@@ -6110,8 +6110,8 @@ if __name__ == "__main__":
 
     SETTINGS_FILE = Path(os.path.expanduser("~/.npcshrc"))
 
-    # Use standard npcsh paths
-    db_path = os.path.expanduser("~/.npcsh/npcsh_history.db")
+    # Use environment variable for DB path, or fall back to home directory path (matching Electron app)
+    db_path = os.environ.get('INCOGNIDE_DB_PATH', os.path.expanduser("~/npcsh_history.db"))
     user_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
 
     # Ensure directories exist
