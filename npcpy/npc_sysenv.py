@@ -358,6 +358,25 @@ def get_locally_available_models(project_directory, airplane_mode=False):
     except Exception as e:
         logging.debug(f"llama.cpp server not available: {e}")
 
+    # Scan for LoRA adapters (fine-tuned models with adapter_config.json)
+    lora_dirs = [
+        os.path.expanduser('~/.npcsh/models'),
+    ]
+    for scan_dir in lora_dirs:
+        if not os.path.isdir(scan_dir):
+            continue
+        try:
+            for item in os.listdir(scan_dir):
+                item_path = os.path.join(scan_dir, item)
+                if os.path.isdir(item_path):
+                    adapter_config = os.path.join(item_path, 'adapter_config.json')
+                    if os.path.exists(adapter_config):
+                        # This is a LoRA adapter
+                        available_models[item_path] = "lora"
+                        logging.debug(f"Found LoRA adapter: {item_path}")
+        except Exception as e:
+            logging.debug(f"Error scanning LoRA directory {scan_dir}: {e}")
+
     return available_models
 
 
@@ -959,13 +978,19 @@ def lookup_provider(model: str) -> str:
     """
     Determine the provider based on the model name.
     Checks custom providers first, then falls back to known providers.
-    
+
     Args:
         model: The model name
-        
+
     Returns:
         The provider name or None if not found
     """
+    # Check if model is a LoRA adapter path
+    if model and os.path.isdir(os.path.expanduser(model)):
+        adapter_config = os.path.join(os.path.expanduser(model), 'adapter_config.json')
+        if os.path.exists(adapter_config):
+            return "lora"
+
     custom_providers = load_custom_providers()
     
     for provider_name, config in custom_providers.items():

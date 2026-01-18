@@ -447,30 +447,46 @@ def get_db_session():
 
 def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=False):
     """
-    Resolve an MCP server path using npcsh.corca's helper when available.
-    Falls back to ~/.npcsh/npc_team/mcp_server.py.
+    Resolve an MCP server path.
+    1. Use explicit_path if provided and exists
+    2. Check if ~/.npcsh/npc_team/mcp_server.py exists
+    3. If not, find mcp_server.py in npcsh package, copy it, and return the path
     """
+    import shutil
+
+    # 1. Check explicit path first
     if explicit_path:
         abs_path = os.path.abspath(os.path.expanduser(explicit_path))
         if os.path.exists(abs_path):
             return abs_path
+
+    # 2. Check if global mcp_server.py already exists
+    global_mcp_path = os.path.expanduser("~/.npcsh/npc_team/mcp_server.py")
+    if os.path.exists(global_mcp_path):
+        return global_mcp_path
+
+    # 3. Find mcp_server.py in npcsh package and copy it
     try:
-        from npcsh.corca import _resolve_and_copy_mcp_server_path
-        resolved = _resolve_and_copy_mcp_server_path(
-            explicit_path=explicit_path,
-            current_path=current_path,
-            team_ctx_mcp_servers=None,
-            interactive=False,
-            auto_copy_bypass=True,
-            force_global=force_global,
-        )
-        if resolved:
-            return os.path.abspath(resolved)
+        import npcsh
+        npcsh_package_dir = os.path.dirname(npcsh.__file__)
+        package_mcp_server = os.path.join(npcsh_package_dir, "mcp_server.py")
+
+        if os.path.exists(package_mcp_server):
+            # Ensure the target directory exists
+            target_dir = os.path.dirname(global_mcp_path)
+            os.makedirs(target_dir, exist_ok=True)
+
+            # Copy the mcp_server.py to the global location
+            shutil.copy2(package_mcp_server, global_mcp_path)
+            print(f"[MCP] Copied mcp_server.py from {package_mcp_server} to {global_mcp_path}")
+            return global_mcp_path
+        else:
+            print(f"[MCP] mcp_server.py not found in npcsh package at {package_mcp_server}")
     except Exception as e:
-        print(f"resolve_mcp_server_path: fallback path due to error: {e}")
-    
-    fallback = os.path.expanduser("~/.npcsh/npc_team/mcp_server.py")
-    return fallback
+        print(f"[MCP] Error finding/copying mcp_server.py from npcsh package: {e}")
+
+    # Return the global path anyway (caller will handle if it doesn't exist)
+    return global_mcp_path
 
 extension_map = {
     "PNG": "images",
@@ -1512,6 +1528,9 @@ def get_models():
             if m.endswith(('.gguf', '.ggml')):
                 # For local GGUF/GGML files, show just the filename
                 display_model = os.path.basename(m)
+            elif p == 'lora':
+                # For LoRA adapters, show just the folder name
+                display_model = os.path.basename(m.rstrip('/'))
 
             display_name = f"{display_model} | {p} {text_only}".strip()
 
@@ -1990,6 +2009,669 @@ def finetune_status(job_id):
         'loss_history': job.get('loss_history', []),
         'start_time': job.get('start_time')
     })
+
+
+# Instruction fine-tuning jobs storage
+instruction_finetune_jobs = {}
+
+
+@app.route('/api/finetune_instruction', methods=['POST'])
+def finetune_instruction():
+    """
+    Fine-tune an LLM on instruction/conversation data.
+
+    Request body:
+    {
+        "trainingData": [
+            {"input": "user prompt", "output": "assistant response"},
+            // For DPO: include "reward" or "quality" score (0-1)
+            // For memory_classifier: include "status" as "approved"/"rejected"
+            ...
+        ],
+        "outputName": "my_instruction_model",
+        "baseModel": "google/gemma-3-270m-it",
+        "strategy": "sft",  // "sft", "usft", "dpo", or "memory_classifier"
+        "epochs": 20,
+        "learningRate": 3e-5,
+        "batchSize": 2,
+        "loraR": 8,
+        "loraAlpha": 16,
+        "outputPath": "~/.npcsh/models",
+        "systemPrompt": "optional system prompt to prepend",
+        "npc": "optional npc name",
+        "formatStyle": "gemma"  // "gemma", "llama", or "default"
+    }
+
+    Strategies:
+    - sft: Supervised Fine-Tuning with input/output pairs
+    - usft: Unsupervised Fine-Tuning on raw text (domain adaptation)
+    - dpo: Direct Preference Optimization using quality/reward scores
+    - memory_classifier: Train memory approval classifier
+    """
+    from npcpy.ft.sft import run_sft, SFTConfig
+    from npcpy.ft.usft import run_usft, USFTConfig
+    from npcpy.ft.rl import train_with_dpo, RLConfig
+
+    data = request.json
+    training_data = data.get('trainingData', [])
+    output_name = data.get('outputName', 'my_instruction_model')
+    base_model = data.get('baseModel', 'google/gemma-3-270m-it')
+    strategy = data.get('strategy', 'sft')  # sft, usft, dpo, memory_classifier
+    num_epochs = data.get('epochs', 20)
+    learning_rate = data.get('learningRate', 3e-5)
+    batch_size = data.get('batchSize', 2)
+    lora_r = data.get('loraR', 8)
+    lora_alpha = data.get('loraAlpha', 16)
+    output_path = data.get('outputPath', '~/.npcsh/models')
+    system_prompt = data.get('systemPrompt', '')
+    format_style = data.get('formatStyle', 'gemma')
+    npc_name = data.get('npc', None)
+
+    print(f"🎓 Instruction Fine-tune Request Received!")
+    print(f"  Training examples: {len(training_data)}")
+    print(f"  Strategy: {strategy}")
+    print(f"  Base model: {base_model}")
+    print(f"  Output name: {output_name}")
+    print(f"  Epochs: {num_epochs}, LR: {learning_rate}, Batch: {batch_size}")
+
+    if not training_data:
+        print("🎓 Error: No training data provided.")
+        return jsonify({'error': 'No training data provided'}), 400
+
+    min_examples = 10 if strategy == 'memory_classifier' else 3
+    if len(training_data) < min_examples:
+        print(f"🎓 Error: Need at least {min_examples} training examples for {strategy}.")
+        return jsonify({'error': f'Need at least {min_examples} training examples for {strategy}'}), 400
+
+    expanded_output_dir = os.path.expanduser(os.path.join(output_path, output_name))
+
+    job_id = f"ift_{int(time.time())}"
+    instruction_finetune_jobs[job_id] = {
+        'status': 'running',
+        'strategy': strategy,
+        'output_dir': expanded_output_dir,
+        'base_model': base_model,
+        'epochs': num_epochs,
+        'current_epoch': 0,
+        'current_step': 0,
+        'total_steps': 0,
+        'current_loss': None,
+        'loss_history': [],
+        'start_time': datetime.datetime.now().isoformat(),
+        'npc': npc_name,
+        'num_examples': len(training_data)
+    }
+    print(f"🎓 Instruction fine-tuning job {job_id} initialized. Output: {expanded_output_dir}")
+
+    def run_training_async():
+        print(f"🎓 Job {job_id}: Starting {strategy.upper()} training thread...")
+        try:
+            if strategy == 'sft':
+                # Supervised Fine-Tuning with input/output pairs
+                X = []
+                y = []
+                for example in training_data:
+                    inp = example.get('input', example.get('prompt', ''))
+                    out = example.get('output', example.get('response', example.get('completion', '')))
+                    if system_prompt:
+                        inp = f"{system_prompt}\n\n{inp}"
+                    X.append(inp)
+                    y.append(out)
+
+                config = SFTConfig(
+                    base_model_name=base_model,
+                    output_model_path=expanded_output_dir,
+                    num_train_epochs=num_epochs,
+                    learning_rate=learning_rate,
+                    per_device_train_batch_size=batch_size,
+                    lora_r=lora_r,
+                    lora_alpha=lora_alpha
+                )
+
+                print(f"🎓 Job {job_id}: Running SFT with config: {config}")
+                model_path = run_sft(
+                    X=X,
+                    y=y,
+                    config=config,
+                    format_style=format_style
+                )
+
+                instruction_finetune_jobs[job_id]['status'] = 'complete'
+                instruction_finetune_jobs[job_id]['model_path'] = model_path
+                instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
+                print(f"🎓 Job {job_id}: SFT complete! Model saved to: {model_path}")
+
+            elif strategy == 'usft':
+                # Unsupervised Fine-Tuning - domain adaptation on raw text
+                texts = []
+                for example in training_data:
+                    # Combine input and output as training text, or just use text field
+                    if 'text' in example:
+                        texts.append(example['text'])
+                    else:
+                        inp = example.get('input', example.get('prompt', ''))
+                        out = example.get('output', example.get('response', ''))
+                        if inp and out:
+                            texts.append(f"{inp}\n{out}")
+                        elif inp:
+                            texts.append(inp)
+                        elif out:
+                            texts.append(out)
+
+                config = USFTConfig(
+                    base_model_name=base_model,
+                    output_model_path=expanded_output_dir,
+                    num_train_epochs=num_epochs,
+                    learning_rate=learning_rate,
+                    per_device_train_batch_size=batch_size,
+                    lora_r=lora_r,
+                    lora_alpha=lora_alpha
+                )
+
+                print(f"🎓 Job {job_id}: Running USFT with {len(texts)} texts")
+                model_path = run_usft(texts=texts, config=config)
+
+                instruction_finetune_jobs[job_id]['status'] = 'complete'
+                instruction_finetune_jobs[job_id]['model_path'] = model_path
+                instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
+                print(f"🎓 Job {job_id}: USFT complete! Model saved to: {model_path}")
+
+            elif strategy == 'dpo':
+                # Direct Preference Optimization - needs quality/reward scores
+                traces = []
+                for example in training_data:
+                    traces.append({
+                        'task_prompt': example.get('input', example.get('prompt', '')),
+                        'final_output': example.get('output', example.get('response', '')),
+                        'reward': example.get('reward', example.get('quality', 0.5))
+                    })
+
+                config = RLConfig(
+                    base_model_name=base_model,
+                    adapter_path=expanded_output_dir,
+                    num_train_epochs=num_epochs,
+                    learning_rate=learning_rate,
+                    per_device_train_batch_size=batch_size,
+                    lora_r=lora_r,
+                    lora_alpha=lora_alpha
+                )
+
+                print(f"🎓 Job {job_id}: Running DPO with {len(traces)} traces")
+                adapter_path = train_with_dpo(traces, config)
+
+                if adapter_path:
+                    instruction_finetune_jobs[job_id]['status'] = 'complete'
+                    instruction_finetune_jobs[job_id]['model_path'] = adapter_path
+                else:
+                    instruction_finetune_jobs[job_id]['status'] = 'error'
+                    instruction_finetune_jobs[job_id]['error_msg'] = 'Not enough valid preference pairs for DPO training'
+
+                instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
+                print(f"🎓 Job {job_id}: DPO complete! Adapter saved to: {adapter_path}")
+
+            elif strategy == 'memory_classifier':
+                # Train memory approval/rejection classifier
+                from npcpy.ft.memory_trainer import MemoryTrainer
+
+                approved_memories = []
+                rejected_memories = []
+
+                for example in training_data:
+                    status = example.get('status', 'approved')
+                    memory_data = {
+                        'initial_memory': example.get('input', example.get('memory', '')),
+                        'final_memory': example.get('output', example.get('final_memory', '')),
+                        'context': example.get('context', '')
+                    }
+                    if status in ['approved', 'model-approved']:
+                        approved_memories.append(memory_data)
+                    else:
+                        rejected_memories.append(memory_data)
+
+                if len(approved_memories) < 10 or len(rejected_memories) < 10:
+                    instruction_finetune_jobs[job_id]['status'] = 'error'
+                    instruction_finetune_jobs[job_id]['error_msg'] = 'Need at least 10 approved and 10 rejected memories'
+                    instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
+                    return
+
+                trainer = MemoryTrainer(model_name=base_model)
+                success = trainer.train(
+                    approved_memories=approved_memories,
+                    rejected_memories=rejected_memories,
+                    output_dir=expanded_output_dir,
+                    epochs=num_epochs
+                )
+
+                if success:
+                    instruction_finetune_jobs[job_id]['status'] = 'complete'
+                    instruction_finetune_jobs[job_id]['model_path'] = expanded_output_dir
+                else:
+                    instruction_finetune_jobs[job_id]['status'] = 'error'
+                    instruction_finetune_jobs[job_id]['error_msg'] = 'Memory classifier training failed'
+
+                instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
+                print(f"🎓 Job {job_id}: Memory classifier complete!")
+
+            else:
+                raise ValueError(f"Unknown strategy: {strategy}. Supported: sft, usft, dpo, memory_classifier")
+
+        except Exception as e:
+            instruction_finetune_jobs[job_id]['status'] = 'error'
+            instruction_finetune_jobs[job_id]['error_msg'] = str(e)
+            instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
+            print(f"🎓 Job {job_id}: ERROR during training: {e}")
+            traceback.print_exc()
+
+        print(f"🎓 Job {job_id}: Training thread finished.")
+
+    thread = threading.Thread(target=run_training_async)
+    thread.daemon = True
+    thread.start()
+
+    print(f"🎓 Job {job_id} launched in background.")
+    return jsonify({
+        'status': 'started',
+        'jobId': job_id,
+        'strategy': strategy,
+        'message': f"Instruction fine-tuning job '{job_id}' started. Check /api/finetune_instruction_status/{job_id} for updates."
+    })
+
+
+@app.route('/api/finetune_instruction_status/<job_id>', methods=['GET'])
+def finetune_instruction_status(job_id):
+    """Get the status of an instruction fine-tuning job."""
+    if job_id not in instruction_finetune_jobs:
+        return jsonify({'error': 'Job not found'}), 404
+
+    job = instruction_finetune_jobs[job_id]
+
+    if job['status'] == 'complete':
+        return jsonify({
+            'status': 'complete',
+            'complete': True,
+            'outputPath': job.get('model_path', job['output_dir']),
+            'strategy': job.get('strategy'),
+            'loss_history': job.get('loss_history', []),
+            'start_time': job.get('start_time'),
+            'end_time': job.get('end_time')
+        })
+    elif job['status'] == 'error':
+        return jsonify({
+            'status': 'error',
+            'error': job.get('error_msg', 'Unknown error'),
+            'start_time': job.get('start_time'),
+            'end_time': job.get('end_time')
+        })
+
+    return jsonify({
+        'status': 'running',
+        'strategy': job.get('strategy'),
+        'epoch': job.get('current_epoch', 0),
+        'total_epochs': job.get('epochs', 0),
+        'step': job.get('current_step', 0),
+        'total_steps': job.get('total_steps', 0),
+        'loss': job.get('current_loss'),
+        'loss_history': job.get('loss_history', []),
+        'start_time': job.get('start_time'),
+        'num_examples': job.get('num_examples', 0)
+    })
+
+
+@app.route('/api/instruction_models', methods=['GET'])
+def get_instruction_models():
+    """Get list of available instruction-tuned models."""
+    current_path = request.args.get("currentPath")
+
+    potential_root_paths = [
+        os.path.expanduser('~/.npcsh/models'),
+    ]
+    if current_path:
+        project_models_path = os.path.join(current_path, 'models')
+        potential_root_paths.append(project_models_path)
+
+    instruction_models = []
+
+    print(f"🎓 Searching for instruction models in: {set(potential_root_paths)}")
+
+    for root_path in set(potential_root_paths):
+        if not os.path.exists(root_path) or not os.path.isdir(root_path):
+            continue
+
+        for model_dir_name in os.listdir(root_path):
+            full_model_path = os.path.join(root_path, model_dir_name)
+
+            if not os.path.isdir(full_model_path):
+                continue
+
+            # Check for adapter_config.json (LoRA models) or config.json (full models)
+            has_adapter_config = os.path.exists(os.path.join(full_model_path, 'adapter_config.json'))
+            has_config = os.path.exists(os.path.join(full_model_path, 'config.json'))
+            has_tokenizer = os.path.exists(os.path.join(full_model_path, 'tokenizer_config.json'))
+
+            if has_adapter_config or (has_config and has_tokenizer):
+                model_type = 'lora_adapter' if has_adapter_config else 'full_model'
+                print(f"🎓 Found instruction model: {model_dir_name} ({model_type})")
+                instruction_models.append({
+                    "value": full_model_path,
+                    "name": model_dir_name,
+                    "type": model_type,
+                    "display_name": f"{model_dir_name} | Instruction Model"
+                })
+
+    print(f"🎓 Found {len(instruction_models)} instruction models.")
+    return jsonify({"models": instruction_models, "error": None})
+
+
+# Genetic Evolution jobs storage
+ge_jobs = {}
+ge_populations = {}  # Store active populations by ID
+
+
+@app.route('/api/genetic/create_population', methods=['POST'])
+def create_genetic_population():
+    """
+    Create a new genetic evolution population.
+
+    Request body:
+    {
+        "populationId": "optional_id",
+        "populationType": "prompt" | "npc_config" | "model_ensemble" | "custom",
+        "populationSize": 20,
+        "config": {
+            "mutationRate": 0.15,
+            "crossoverRate": 0.7,
+            "tournamentSize": 3,
+            "elitismCount": 2
+        },
+        "initialPopulation": [...],  // Optional initial individuals
+        "fitnessEndpoint": "/api/evaluate_fitness"  // Optional custom fitness endpoint
+    }
+    """
+    from npcpy.ft.ge import GeneticEvolver, GAConfig
+
+    data = request.json
+    population_id = data.get('populationId', f"pop_{int(time.time())}")
+    population_type = data.get('populationType', 'prompt')
+    population_size = data.get('populationSize', 20)
+    config_data = data.get('config', {})
+    initial_population = data.get('initialPopulation', [])
+    npc_name = data.get('npc', None)
+
+    config = GAConfig(
+        population_size=population_size,
+        mutation_rate=config_data.get('mutationRate', 0.15),
+        crossover_rate=config_data.get('crossoverRate', 0.7),
+        tournament_size=config_data.get('tournamentSize', 3),
+        elitism_count=config_data.get('elitismCount', 2),
+        generations=config_data.get('generations', 50)
+    )
+
+    print(f"🧬 Creating genetic population {population_id} (type: {population_type})")
+
+    # Define type-specific functions based on population type
+    if population_type == 'prompt':
+        # Evolve prompts for better responses
+        import random
+
+        def initialize_fn():
+            if initial_population:
+                return random.choice(initial_population)
+            return f"You are a helpful assistant. {random.choice(['Be concise.', 'Be detailed.', 'Be creative.', 'Be precise.'])}"
+
+        def mutate_fn(individual):
+            mutations = [
+                lambda s: s + " Think step by step.",
+                lambda s: s + " Be specific.",
+                lambda s: s.replace("helpful", "expert"),
+                lambda s: s.replace("assistant", "specialist"),
+                lambda s: s + " Provide examples.",
+            ]
+            return random.choice(mutations)(individual)
+
+        def crossover_fn(p1, p2):
+            words1 = p1.split()
+            words2 = p2.split()
+            mid = len(words1) // 2
+            return ' '.join(words1[:mid] + words2[mid:])
+
+        def fitness_fn(individual):
+            # Placeholder - should be overridden with actual evaluation
+            return len(individual) / 100.0  # Longer prompts score higher (placeholder)
+
+    elif population_type == 'npc_config':
+        # Evolve NPC configurations
+        import random
+
+        def initialize_fn():
+            if initial_population:
+                return random.choice(initial_population)
+            return {
+                'temperature': random.uniform(0.1, 1.0),
+                'top_p': random.uniform(0.7, 1.0),
+                'system_prompt_modifier': random.choice(['detailed', 'concise', 'creative']),
+            }
+
+        def mutate_fn(individual):
+            mutated = individual.copy()
+            key = random.choice(list(mutated.keys()))
+            if key == 'temperature':
+                mutated[key] = max(0.1, min(2.0, mutated[key] + random.gauss(0, 0.1)))
+            elif key == 'top_p':
+                mutated[key] = max(0.5, min(1.0, mutated[key] + random.gauss(0, 0.05)))
+            return mutated
+
+        def crossover_fn(p1, p2):
+            child = {}
+            for key in p1:
+                child[key] = random.choice([p1.get(key), p2.get(key)])
+            return child
+
+        def fitness_fn(individual):
+            return 0.5  # Placeholder
+
+    else:
+        # Custom type - use simple string evolution
+        import random
+
+        def initialize_fn():
+            if initial_population:
+                return random.choice(initial_population)
+            return {"value": random.random()}
+
+        def mutate_fn(individual):
+            if isinstance(individual, dict):
+                mutated = individual.copy()
+                mutated['value'] = individual.get('value', 0) + random.gauss(0, 0.1)
+                return mutated
+            return individual
+
+        def crossover_fn(p1, p2):
+            if isinstance(p1, dict) and isinstance(p2, dict):
+                return {'value': (p1.get('value', 0) + p2.get('value', 0)) / 2}
+            return p1
+
+        def fitness_fn(individual):
+            if isinstance(individual, dict):
+                return 1.0 - abs(individual.get('value', 0) - 0.5)  # Closer to 0.5 is better
+            return 0.5
+
+    evolver = GeneticEvolver(
+        fitness_fn=fitness_fn,
+        mutate_fn=mutate_fn,
+        crossover_fn=crossover_fn,
+        initialize_fn=initialize_fn,
+        config=config
+    )
+
+    evolver.initialize_population()
+
+    ge_populations[population_id] = {
+        'evolver': evolver,
+        'type': population_type,
+        'config': config,
+        'generation': 0,
+        'history': [],
+        'npc': npc_name,
+        'created_at': datetime.datetime.now().isoformat()
+    }
+
+    return jsonify({
+        'populationId': population_id,
+        'populationType': population_type,
+        'populationSize': population_size,
+        'generation': 0,
+        'message': f"Population '{population_id}' created with {population_size} individuals"
+    })
+
+
+@app.route('/api/genetic/evolve', methods=['POST'])
+def evolve_population():
+    """
+    Run evolution for N generations.
+
+    Request body:
+    {
+        "populationId": "pop_123",
+        "generations": 10,
+        "fitnessScores": [...]  // Optional: external fitness scores for current population
+    }
+    """
+    data = request.json
+    population_id = data.get('populationId')
+    generations = data.get('generations', 1)
+    fitness_scores = data.get('fitnessScores', None)
+
+    if population_id not in ge_populations:
+        return jsonify({'error': f"Population '{population_id}' not found"}), 404
+
+    pop_data = ge_populations[population_id]
+    evolver = pop_data['evolver']
+
+    print(f"🧬 Evolving population {population_id} for {generations} generations")
+
+    # If external fitness scores provided, inject them
+    if fitness_scores and len(fitness_scores) == len(evolver.population):
+        # Override the fitness function temporarily
+        original_fitness = evolver.fitness_fn
+        score_iter = iter(fitness_scores)
+        evolver.fitness_fn = lambda x: next(score_iter, 0.5)
+
+    results = []
+    for gen in range(generations):
+        gen_stats = evolver.evolve_generation()
+        pop_data['generation'] += 1
+        pop_data['history'].append(gen_stats)
+        results.append({
+            'generation': pop_data['generation'],
+            'bestFitness': gen_stats['best_fitness'],
+            'avgFitness': gen_stats['avg_fitness'],
+            'bestIndividual': gen_stats['best_individual']
+        })
+
+    # Restore original fitness function
+    if fitness_scores:
+        evolver.fitness_fn = original_fitness
+
+    return jsonify({
+        'populationId': population_id,
+        'generationsRun': generations,
+        'currentGeneration': pop_data['generation'],
+        'results': results,
+        'bestIndividual': results[-1]['bestIndividual'] if results else None,
+        'population': evolver.population[:5]  # Return top 5 individuals
+    })
+
+
+@app.route('/api/genetic/population/<population_id>', methods=['GET'])
+def get_population(population_id):
+    """Get current state of a population."""
+    if population_id not in ge_populations:
+        return jsonify({'error': f"Population '{population_id}' not found"}), 404
+
+    pop_data = ge_populations[population_id]
+    evolver = pop_data['evolver']
+
+    return jsonify({
+        'populationId': population_id,
+        'type': pop_data['type'],
+        'generation': pop_data['generation'],
+        'populationSize': len(evolver.population),
+        'population': evolver.population,
+        'history': pop_data['history'][-50:],  # Last 50 generations
+        'createdAt': pop_data['created_at'],
+        'npc': pop_data.get('npc')
+    })
+
+
+@app.route('/api/genetic/populations', methods=['GET'])
+def list_populations():
+    """List all active populations."""
+    populations = []
+    for pop_id, pop_data in ge_populations.items():
+        populations.append({
+            'populationId': pop_id,
+            'type': pop_data['type'],
+            'generation': pop_data['generation'],
+            'populationSize': len(pop_data['evolver'].population),
+            'createdAt': pop_data['created_at'],
+            'npc': pop_data.get('npc')
+        })
+
+    return jsonify({'populations': populations})
+
+
+@app.route('/api/genetic/population/<population_id>', methods=['DELETE'])
+def delete_population(population_id):
+    """Delete a population."""
+    if population_id not in ge_populations:
+        return jsonify({'error': f"Population '{population_id}' not found"}), 404
+
+    del ge_populations[population_id]
+    print(f"🧬 Deleted population {population_id}")
+
+    return jsonify({'message': f"Population '{population_id}' deleted"})
+
+
+@app.route('/api/genetic/inject', methods=['POST'])
+def inject_individuals():
+    """
+    Inject new individuals into a population.
+
+    Request body:
+    {
+        "populationId": "pop_123",
+        "individuals": [...],
+        "replaceWorst": true  // Replace worst individuals or append
+    }
+    """
+    data = request.json
+    population_id = data.get('populationId')
+    individuals = data.get('individuals', [])
+    replace_worst = data.get('replaceWorst', True)
+
+    if population_id not in ge_populations:
+        return jsonify({'error': f"Population '{population_id}' not found"}), 404
+
+    pop_data = ge_populations[population_id]
+    evolver = pop_data['evolver']
+
+    if replace_worst:
+        # Evaluate and sort population, replace worst with new individuals
+        fitness_scores = evolver.evaluate_population()
+        sorted_pop = sorted(zip(evolver.population, fitness_scores), key=lambda x: x[1], reverse=True)
+        keep_count = len(sorted_pop) - len(individuals)
+        evolver.population = [ind for ind, _ in sorted_pop[:keep_count]] + individuals
+    else:
+        evolver.population.extend(individuals)
+
+    print(f"🧬 Injected {len(individuals)} individuals into {population_id}")
+
+    return jsonify({
+        'populationId': population_id,
+        'injectedCount': len(individuals),
+        'newPopulationSize': len(evolver.population)
+    })
+
 
 @app.route("/api/ml/train", methods=["POST"])
 def train_ml_model():
@@ -2969,6 +3651,11 @@ def get_attachment_response():
 
                                                                                                                                                                                                            
 IMAGE_MODELS = {
+    "diffusers": [
+        {"value": "runwayml/stable-diffusion-v1-5", "display_name": "Stable Diffusion v1.5"},
+        {"value": "stabilityai/stable-diffusion-xl-base-1.0", "display_name": "SDXL Base 1.0"},
+        {"value": "black-forest-labs/FLUX.1-schnell", "display_name": "FLUX.1 Schnell"},
+    ],
     "openai": [
         {"value": "gpt-image-1.5", "display_name": "GPT-Image-1.5"},
         {"value": "gpt-image-1", "display_name": "GPT-Image-1"},
@@ -2980,9 +3667,69 @@ IMAGE_MODELS = {
         {"value": "gemini-2.5-flash-image-preview", "display_name": "Gemini 2.5 Flash Image"},
         {"value": "imagen-3.0-generate-002", "display_name": "Imagen 3.0 Generate (Preview)"},
     ],
-    "diffusers": [
-        {"value": "runwayml/stable-diffusion-v1-5", "display_name": "Stable Diffusion v1.5"},
+    "stability": [
+        {"value": "stable-diffusion-xl-1024-v1-0", "display_name": "SDXL 1.0"},
+        {"value": "stable-diffusion-v1-6", "display_name": "SD 1.6"},
+        {"value": "stable-image-core", "display_name": "Stable Image Core"},
+        {"value": "stable-image-ultra", "display_name": "Stable Image Ultra"},
     ],
+    "replicate": [
+        {"value": "stability-ai/sdxl", "display_name": "SDXL (Replicate)"},
+        {"value": "black-forest-labs/flux-schnell", "display_name": "FLUX Schnell"},
+        {"value": "black-forest-labs/flux-dev", "display_name": "FLUX Dev"},
+        {"value": "black-forest-labs/flux-pro", "display_name": "FLUX Pro"},
+    ],
+    "fal": [
+        {"value": "fal-ai/flux/schnell", "display_name": "FLUX Schnell"},
+        {"value": "fal-ai/flux/dev", "display_name": "FLUX Dev"},
+        {"value": "fal-ai/flux-pro", "display_name": "FLUX Pro"},
+        {"value": "fal-ai/stable-diffusion-v3-medium", "display_name": "SD3 Medium"},
+    ],
+    "together": [
+        {"value": "stabilityai/stable-diffusion-xl-base-1.0", "display_name": "SDXL Base"},
+        {"value": "black-forest-labs/FLUX.1-schnell", "display_name": "FLUX.1 Schnell"},
+        {"value": "black-forest-labs/FLUX.1.1-pro", "display_name": "FLUX 1.1 Pro"},
+    ],
+    "fireworks": [
+        {"value": "stable-diffusion-xl-1024-v1-0", "display_name": "SDXL 1.0"},
+        {"value": "playground-v2-1024px-aesthetic", "display_name": "Playground v2"},
+    ],
+    "deepinfra": [
+        {"value": "stability-ai/sdxl", "display_name": "SDXL"},
+        {"value": "black-forest-labs/FLUX-1-schnell", "display_name": "FLUX Schnell"},
+    ],
+    "bfl": [
+        {"value": "flux-pro-1.1", "display_name": "FLUX Pro 1.1"},
+        {"value": "flux-pro", "display_name": "FLUX Pro"},
+        {"value": "flux-dev", "display_name": "FLUX Dev"},
+    ],
+    "bagel": [
+        {"value": "bagel-image-v1", "display_name": "Bagel Image v1"},
+    ],
+    "leonardo": [
+        {"value": "leonardo-diffusion-xl", "display_name": "Leonardo Diffusion XL"},
+        {"value": "leonardo-vision-xl", "display_name": "Leonardo Vision XL"},
+    ],
+    "ideogram": [
+        {"value": "ideogram-v2", "display_name": "Ideogram v2"},
+        {"value": "ideogram-v2-turbo", "display_name": "Ideogram v2 Turbo"},
+    ],
+}
+
+# Map provider names to their environment variable keys
+IMAGE_PROVIDER_API_KEYS = {
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "stability": "STABILITY_API_KEY",
+    "replicate": "REPLICATE_API_TOKEN",
+    "fal": "FAL_KEY",
+    "together": "TOGETHER_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
+    "deepinfra": "DEEPINFRA_API_KEY",
+    "bfl": "BFL_API_KEY",
+    "bagel": "BAGEL_API_KEY",
+    "leonardo": "LEONARDO_API_KEY",
+    "ideogram": "IDEOGRAM_API_KEY",
 }
 # In npcpy/serve.py, find the @app.route('/api/finetuned_models', methods=['GET'])
 # and replace the entire function with this:
@@ -3058,25 +3805,22 @@ def get_available_image_models(current_path=None):
             "display_name": f"{env_image_model} | {env_image_provider} (Configured)"
         })
 
-    # Add predefined models (OpenAI, Gemini, and standard Diffusers)
+    # Add predefined models - diffusers always available, others require API keys
     for provider_key, models_list in IMAGE_MODELS.items():
-        if provider_key == "openai":
-            if os.environ.get("OPENAI_API_KEY"):
-                all_image_models.extend([
-                    {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
-                    for model in models_list
-                ])
-        elif provider_key == "gemini":
-            if os.environ.get("GEMINI_API_KEY"): 
-                all_image_models.extend([
-                    {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
-                    for model in models_list
-                ])
-        elif provider_key == "diffusers": # This entry in IMAGE_MODELS is for standard diffusers
+        if provider_key == "diffusers":
+            # Diffusers (local) is always available
             all_image_models.extend([
                 {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
                 for model in models_list
             ])
+        else:
+            # Check if API key is present for this provider
+            api_key_env = IMAGE_PROVIDER_API_KEYS.get(provider_key)
+            if api_key_env and os.environ.get(api_key_env):
+                all_image_models.extend([
+                    {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
+                    for model in models_list
+                ])
         
     # <--- CRITICAL FIX: Directly call the internal helper function for fine-tuned models
     try:
@@ -3804,8 +4548,10 @@ def stream():
         return jsonify({"error": "conversationId is required"}), 400
     model = data.get("model", None)
     provider = data.get("provider", None)
+    print(f"🔍 Stream request - model: {model}, provider from request: {provider}")
     if provider is None:
         provider = available_models.get(model)
+        print(f"🔍 Provider looked up from available_models: {provider}")
 
     npc_name = data.get("npc", None)
     npc_source = data.get("npcSource", "global")
@@ -3824,8 +4570,10 @@ def stream():
     
     npc_object = None
     team_object = None
-    team = None  
+    team = None
     tool_results_for_db = []
+    # Initialize stream_response early to ensure it's always defined for closures
+    stream_response = {"output": "", "messages": []}
     if npc_name:
         if hasattr(app, 'registered_teams'):
             for team_name, team_object in app.registered_teams.items():
@@ -4449,7 +5197,30 @@ def stream():
                 yield f"data: {json.dumps(chunk_data)}\n\n"
 
             elif isinstance(stream_response, dict):
-                for response_chunk in stream_response.get('response', stream_response.get('output')):
+                # Handle LoRA responses - they return the full response at once, not streaming
+                if provider == 'lora':
+                    lora_text = stream_response.get('response', stream_response.get('output', ''))
+                    if lora_text:
+                        complete_response.append(lora_text)
+                        chunk_data = {
+                            "id": None,
+                            "object": None,
+                            "created": datetime.datetime.now().strftime('YYYY-DD-MM-HHMMSS'),
+                            "model": model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "content": lora_text,
+                                        "role": "assistant"
+                                    },
+                                    "finish_reason": "stop"
+                                }
+                            ]
+                        }
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
+                else:
+                  for response_chunk in stream_response.get('response', stream_response.get('output')):
                     with cancellation_lock:
                         if cancellation_flags.get(current_stream_id, False):
                             print(f"Cancellation flag triggered for {current_stream_id}. Breaking loop.")

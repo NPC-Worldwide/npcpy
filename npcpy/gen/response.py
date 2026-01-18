@@ -588,6 +588,148 @@ def get_ollama_response(
 import time
 
 
+def get_lora_response(
+    prompt: str = None,
+    model: str = None,
+    tools: list = None,
+    tool_map: Dict = None,
+    format: str = None,
+    messages: List[Dict[str, str]] = None,
+    stream: bool = False,
+    auto_process_tool_calls: bool = False,
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Generate response using a LoRA adapter on top of a base model.
+    The adapter path should contain adapter_config.json with base_model_name_or_path.
+    """
+    print(f"🎯 get_lora_response called with model={model}, prompt={prompt[:50] if prompt else 'None'}...")
+
+    result = {
+        "response": None,
+        "messages": messages.copy() if messages else [],
+        "raw_response": None,
+        "tool_calls": [],
+        "tool_results": []
+    }
+
+    try:
+        import torch
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        from peft import PeftModel
+        print("🎯 Successfully imported torch, transformers, peft")
+    except ImportError as e:
+        print(f"🎯 Import error: {e}")
+        return {
+            "response": "",
+            "messages": messages or [],
+            "error": f"Missing dependencies for LoRA. Install with: pip install transformers peft torch. Error: {e}"
+        }
+
+    adapter_path = os.path.expanduser(model)
+    adapter_config_path = os.path.join(adapter_path, 'adapter_config.json')
+
+    if not os.path.exists(adapter_config_path):
+        return {
+            "response": "",
+            "messages": messages or [],
+            "error": f"No adapter_config.json found at {adapter_path}"
+        }
+
+    # Read base model from adapter config
+    try:
+        with open(adapter_config_path, 'r') as f:
+            adapter_config = json.load(f)
+        base_model_id = adapter_config.get('base_model_name_or_path')
+        if not base_model_id:
+            return {
+                "response": "",
+                "messages": messages or [],
+                "error": "adapter_config.json missing base_model_name_or_path"
+            }
+    except Exception as e:
+        return {
+            "response": "",
+            "messages": messages or [],
+            "error": f"Failed to read adapter config: {e}"
+        }
+
+    if prompt:
+        if result['messages'] and result['messages'][-1]["role"] == "user":
+            result['messages'][-1]["content"] = prompt
+        else:
+            result['messages'].append({"role": "user", "content": prompt})
+
+    if format == "json":
+        json_instruction = """If you are returning a json object, begin directly with the opening {.
+Do not include any additional markdown formatting or leading ```json tags in your response."""
+        if result["messages"] and result["messages"][-1]["role"] == "user":
+            result["messages"][-1]["content"] += "\n" + json_instruction
+
+    try:
+        logger.info(f"Loading base model: {base_model_id}")
+        tokenizer = AutoTokenizer.from_pretrained(base_model_id, trust_remote_code=True)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_id,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto" if torch.cuda.is_available() else None,
+            trust_remote_code=True
+        )
+
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        logger.info(f"Loading LoRA adapter: {adapter_path}")
+        model_with_adapter = PeftModel.from_pretrained(base_model, adapter_path)
+
+        # Apply chat template
+        chat_text = tokenizer.apply_chat_template(
+            result["messages"],
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        device = next(model_with_adapter.parameters()).device
+        inputs = tokenizer(chat_text, return_tensors="pt", padding=True, truncation=True)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        max_new_tokens = kwargs.get("max_tokens", 512)
+        temperature = kwargs.get("temperature", 0.7)
+
+        with torch.no_grad():
+            outputs = model_with_adapter.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=True,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        response_content = tokenizer.decode(
+            outputs[0][inputs['input_ids'].shape[1]:],
+            skip_special_tokens=True
+        ).strip()
+
+        result["response"] = response_content
+        result["raw_response"] = response_content
+        result["messages"].append({"role": "assistant", "content": response_content})
+
+        if format == "json":
+            try:
+                if response_content.startswith("```json"):
+                    response_content = response_content.replace("```json", "").replace("```", "").strip()
+                parsed_response = json.loads(response_content)
+                result["response"] = parsed_response
+            except json.JSONDecodeError:
+                result["error"] = f"Invalid JSON response: {response_content}"
+
+    except Exception as e:
+        logger.error(f"LoRA inference error: {e}")
+        result["error"] = f"LoRA inference error: {str(e)}"
+        result["response"] = ""
+
+    return result
+
+
 def get_llamacpp_response(
     prompt: str = None,
     model: str = None,
@@ -730,7 +872,7 @@ def get_litellm_response(
             auto_process_tool_calls=auto_process_tool_calls, 
             **kwargs
         )
-    elif provider=='transformers':
+    elif provider == 'transformers':
         return get_transformers_response(
             prompt,
             model,
@@ -745,8 +887,24 @@ def get_litellm_response(
             attachments=attachments,
             auto_process_tool_calls=auto_process_tool_calls,
             **kwargs
-
         )
+    elif provider == 'lora':
+        print(f"🔧 LoRA provider detected, calling get_lora_response with model: {model}")
+        result = get_lora_response(
+            prompt=prompt,
+            model=model,
+            tools=tools,
+            tool_map=tool_map,
+            format=format,
+            messages=messages,
+            stream=stream,
+            auto_process_tool_calls=auto_process_tool_calls,
+            **kwargs
+        )
+        print(f"🔧 LoRA response: {result.get('response', 'NO RESPONSE')[:200] if result.get('response') else 'EMPTY'}")
+        if result.get('error'):
+            print(f"🔧 LoRA error: {result.get('error')}")
+        return result
     elif provider == 'llamacpp':
         return get_llamacpp_response(
             prompt,
