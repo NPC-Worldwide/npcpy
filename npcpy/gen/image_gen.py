@@ -34,27 +34,21 @@ def generate_image_diffusers(
             if os.path.exists(checkpoint_path):
                 print(f"🌋 Found model_final.pt at {checkpoint_path}.")
                 
-                # Load checkpoint to inspect it
                 checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
                 
-                # Check if this is a custom SimpleUNet model (from your training code)
-                # vs a Stable Diffusion UNet2DConditionModel
                 if 'config' in checkpoint and hasattr(checkpoint['config'], 'image_size'):
                     print(f"🌋 Detected custom SimpleUNet model, using custom generation")
-                    # Use your custom generate_image function from npcpy.ft.diff
                     from npcpy.ft.diff import generate_image as custom_generate_image
                     
-                    # Your custom model ignores prompts and generates based on training data
                     image = custom_generate_image(
                         model_path=checkpoint_path,
                         prompt=prompt,
                         num_samples=1,
-                        image_size=height  # Use the requested height
+                        image_size=height
                     )
                     return image
                 
                 else:
-                    # This is a Stable Diffusion checkpoint
                     print(f"🌋 Detected Stable Diffusion UNet checkpoint")
                     base_model_id = "runwayml/stable-diffusion-v1-5"
                     print(f"🌋 Loading base pipeline: {base_model_id}")
@@ -67,7 +61,6 @@ def generate_image_diffusers(
                     
                     print(f"🌋 Loading custom UNet weights from {checkpoint_path}")
                     
-                    # Extract the actual model state dict
                     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                         unet_state_dict = checkpoint['model_state_dict']
                         print(f"🌋 Extracted model_state_dict from checkpoint")
@@ -75,7 +68,6 @@ def generate_image_diffusers(
                         unet_state_dict = checkpoint
                         print(f"🌋 Using checkpoint directly as state_dict")
                     
-                    # Load the state dict into the UNet
                     pipe.unet.load_state_dict(unet_state_dict)
                     pipe = pipe.to(device)
                     print(f"🌋 Successfully loaded fine-tuned UNet weights")
@@ -100,7 +92,6 @@ def generate_image_diffusers(
                     variant="fp16" if torch_dtype == torch.float16 else None,
                 )
         
-        # Common pipeline setup for Stable Diffusion models
         if hasattr(pipe, 'enable_attention_slicing'):
             pipe.enable_attention_slicing()
         
@@ -409,7 +400,7 @@ def generate_image(
     Args:
         prompt (str): The prompt for generating/editing the image.
         model (str): The model to use.
-        provider (str): The provider to use ('openai', 'diffusers', 'gemini', 'ollama-image-gen').
+        provider (str): The provider to use ('openai', 'diffusers', 'gemini', 'ollama').
         height (int): The height of the output image.
         width (int): The width of the output image.
         n_images (int): Number of images to generate.
@@ -432,7 +423,7 @@ def generate_image(
             model = "runwayml/stable-diffusion-v1-5"
         elif provider == "gemini":
             model = "gemini-2.5-flash-image-preview"
-        elif provider == "ollama-image-gen":
+        elif provider == "ollama":
             model = "stable-diffusion"
     
     all_generated_pil_images = []
@@ -482,7 +473,7 @@ def generate_image(
         )
         all_generated_pil_images.extend(images)
 
-    elif provider == "ollama-image-gen":
+    elif provider == "ollama":
         images = ollama_image_gen(
             prompt=prompt,
             model=model,
