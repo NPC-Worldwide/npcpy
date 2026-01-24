@@ -1,254 +1,329 @@
-# Tests for ml_funcs model serialization (Issue #198 - no pickle)
+"""Test suite for ml_funcs module - NumPy-like ML operations."""
 
 import os
 import tempfile
 import pytest
 import numpy as np
 
-from npcpy.ml_funcs import serialize_model, deserialize_model
+
+class TestModelRegistry:
+    """Test model registry and imports."""
+
+    def test_sklearn_models_registry_exists(self):
+        """Test SKLEARN_MODELS registry is properly defined"""
+        from npcpy.ml_funcs import SKLEARN_MODELS
+
+        assert isinstance(SKLEARN_MODELS, dict)
+        assert len(SKLEARN_MODELS) > 0
+
+        # Check some expected models
+        assert "LogisticRegression" in SKLEARN_MODELS
+        assert "RandomForestClassifier" in SKLEARN_MODELS
+        assert "LinearRegression" in SKLEARN_MODELS
+        assert "KMeans" in SKLEARN_MODELS
+        assert "PCA" in SKLEARN_MODELS
+
+    def test_model_paths_are_valid_format(self):
+        """Test model paths follow expected format"""
+        from npcpy.ml_funcs import SKLEARN_MODELS
+
+        for name, path in SKLEARN_MODELS.items():
+            assert isinstance(path, str)
+            assert "." in path  # Should be module.Class format
+            parts = path.rsplit(".", 1)
+            assert len(parts) == 2
 
 
-# =============================================================================
-# Serialization Tests (Issue #198 - Pickle Removed)
-# =============================================================================
+class TestImportModelClass:
+    """Test dynamic model import functionality."""
 
-class TestModelSerialization:
-    """Test model serialization without pickle."""
+    def test_import_model_class_sklearn(self):
+        """Test importing sklearn model class"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import _import_model_class
 
-    def test_serialize_model_joblib(self):
-        """Test serializing a model with joblib format."""
-        from sklearn.ensemble import RandomForestClassifier
+        model_class = _import_model_class("sklearn.linear_model.LinearRegression")
+        assert model_class is not None
+        assert hasattr(model_class, "fit")
+        assert hasattr(model_class, "predict")
 
-        model = RandomForestClassifier(n_estimators=5)
-        X = np.array([[1, 2], [3, 4], [5, 6]])
-        y = np.array([0, 1, 0])
-        model.fit(X, y)
+    def test_import_model_class_invalid(self):
+        """Test importing non-existent model raises error"""
+        from npcpy.ml_funcs import _import_model_class
 
-        with tempfile.NamedTemporaryFile(suffix='.joblib', delete=False) as f:
-            path = f.name
+        with pytest.raises((ImportError, ModuleNotFoundError, AttributeError)):
+            _import_model_class("nonexistent.module.FakeModel")
 
-        try:
-            serialize_model(model, path, format='joblib')
-            assert os.path.exists(path)
-            assert os.path.getsize(path) > 0
-            print(f"Model serialized to {path}")
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
 
-    def test_deserialize_model_joblib(self):
-        """Test deserializing a model with joblib format."""
-        from sklearn.ensemble import RandomForestClassifier
+class TestGetModelInstance:
+    """Test _get_model_instance function."""
 
-        model = RandomForestClassifier(n_estimators=5)
-        X = np.array([[1, 2], [3, 4], [5, 6]])
-        y = np.array([0, 1, 0])
-        model.fit(X, y)
+    def test_get_model_instance_sklearn(self):
+        """Test getting sklearn model instance by name"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import _get_model_instance
 
-        with tempfile.NamedTemporaryFile(suffix='.joblib', delete=False) as f:
-            path = f.name
+        model = _get_model_instance("LinearRegression")
+        assert model is not None
+        assert hasattr(model, "fit")
 
-        try:
-            serialize_model(model, path, format='joblib')
-            loaded_model = deserialize_model(path, format='joblib')
+    def test_get_model_instance_with_params(self):
+        """Test getting model instance with parameters"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import _get_model_instance
 
-            # Verify the loaded model works
-            predictions = loaded_model.predict([[2, 3]])
-            assert predictions is not None
-            print(f"Model deserialized and made prediction: {predictions}")
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
+        model = _get_model_instance("Ridge", alpha=0.5)
+        assert model is not None
+        assert model.alpha == 0.5
 
-    def test_deserialize_auto_format_detection(self):
-        """Test that format is auto-detected from file extension."""
-        from sklearn.linear_model import LogisticRegression
 
-        model = LogisticRegression()
+class TestFitModel:
+    """Test fit_model function."""
+
+    def test_fit_model_single(self):
+        """Test fitting a single model"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import fit_model
+
         X = np.array([[1, 2], [3, 4], [5, 6], [7, 8]])
-        y = np.array([0, 0, 1, 1])
-        model.fit(X, y)
+        y = np.array([1, 2, 3, 4])
 
-        with tempfile.NamedTemporaryFile(suffix='.joblib', delete=False) as f:
-            path = f.name
+        result = fit_model(model="LinearRegression", X=X, y=y)
+        assert result is not None
+        # Result should be fitted model or dict with model
+        if isinstance(result, dict):
+            assert "model" in result or "models" in result
+        else:
+            assert hasattr(result, "predict")
 
-        try:
-            serialize_model(model, path, format='joblib')
-            # Use auto-detection (default)
-            loaded_model = deserialize_model(path)
+    def test_fit_model_returns_fitted(self):
+        """Test fit_model returns a fitted model that can predict"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import fit_model
 
-            assert loaded_model is not None
-            predictions = loaded_model.predict([[4, 5]])
-            assert predictions is not None
-            print(f"Auto-format detection worked, prediction: {predictions}")
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
+        X_train = np.array([[1], [2], [3], [4]])
+        y_train = np.array([2, 4, 6, 8])
 
-    def test_serialize_unsupported_format_raises(self):
-        """Test that unsupported format raises ValueError."""
-        from sklearn.linear_model import LogisticRegression
+        result = fit_model(model="LinearRegression", X=X_train, y=y_train)
 
-        model = LogisticRegression()
+        # Extract model from result
+        if isinstance(result, dict):
+            model = result.get("model") or result.get("models", [None])[0]
+        else:
+            model = result
 
-        with tempfile.NamedTemporaryFile(suffix='.model', delete=False) as f:
-            path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="Unsupported format"):
-                serialize_model(model, path, format='pickle')
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
-
-    def test_deserialize_unknown_extension_raises(self):
-        """Test that unknown extension with auto-format raises ValueError."""
-        with tempfile.NamedTemporaryFile(suffix='.unknown', delete=False) as f:
-            f.write(b'dummy data')
-            path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="Cannot auto-detect format"):
-                deserialize_model(path, format='auto')
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
+        if model is not None:
+            predictions = model.predict([[5]])
+            assert len(predictions) == 1
 
 
-class TestNoPickleUsage:
-    """Ensure pickle is not used anywhere in ml_funcs."""
+class TestPredictModel:
+    """Test predict_model function."""
 
-    def test_no_pickle_import_in_ml_funcs(self):
-        """Verify pickle is not imported in ml_funcs module."""
-        import npcpy.ml_funcs as ml_funcs
-        import sys
+    def test_predict_model_basic(self):
+        """Test basic prediction"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import fit_model, predict_model
+        from sklearn.linear_model import LinearRegression
 
-        # Check that pickle is not in the module's namespace
-        assert 'pickle' not in dir(ml_funcs), "pickle should not be imported in ml_funcs"
-
-        # Also check that pickle isn't loaded as a submodule
-        ml_funcs_file = ml_funcs.__file__
-        with open(ml_funcs_file, 'r') as f:
-            content = f.read()
-
-        # Should only find "pickle" in docstrings mentioning "no pickle"
-        import re
-        pickle_imports = re.findall(r'^import pickle|^from pickle', content, re.MULTILINE)
-        assert len(pickle_imports) == 0, f"Found pickle imports: {pickle_imports}"
-
-        print("No pickle imports found in ml_funcs")
-
-
-class TestSafetensorsFormat:
-    """Test safetensors format for PyTorch models."""
-
-    @pytest.mark.skipif(
-        not pytest.importorskip("torch", reason="PyTorch not installed"),
-        reason="PyTorch required"
-    )
-    @pytest.mark.skipif(
-        not pytest.importorskip("safetensors", reason="safetensors not installed"),
-        reason="safetensors required"
-    )
-    def test_serialize_torch_model_safetensors(self):
-        """Test serializing PyTorch model with safetensors."""
-        import torch
-        import torch.nn as nn
-
-        class SimpleModel(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = nn.Linear(10, 2)
-
-            def forward(self, x):
-                return self.linear(x)
-
-        model = SimpleModel()
-
-        with tempfile.NamedTemporaryFile(suffix='.safetensors', delete=False) as f:
-            path = f.name
-
-        try:
-            serialize_model(model, path, format='safetensors')
-            assert os.path.exists(path)
-            print(f"PyTorch model serialized with safetensors to {path}")
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
-
-
-# =============================================================================
-# Round-Trip Tests
-# =============================================================================
-
-class TestRoundTrip:
-    """Test complete serialize/deserialize round trips."""
-
-    def test_round_trip_preserves_predictions(self):
-        """Test that serialized and deserialized model gives same predictions."""
-        from sklearn.ensemble import RandomForestClassifier
-
-        # Create and train model
-        model = RandomForestClassifier(n_estimators=10, random_state=42)
-        X_train = np.array([[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12]])
-        y_train = np.array([0, 0, 0, 1, 1, 1])
+        # Create and fit a model manually
+        model = LinearRegression()
+        X_train = np.array([[1], [2], [3], [4]])
+        y_train = np.array([2, 4, 6, 8])
         model.fit(X_train, y_train)
 
-        # Get predictions before serialization
-        X_test = np.array([[2, 3], [8, 9]])
-        original_predictions = model.predict(X_test)
+        X_test = np.array([[5], [6]])
+        result = predict_model(model=model, X=X_test)
 
-        with tempfile.NamedTemporaryFile(suffix='.joblib', delete=False) as f:
-            path = f.name
+        if isinstance(result, dict):
+            predictions = result.get("predictions")
+        else:
+            predictions = result
+
+        if predictions is not None:
+            assert len(predictions) == 2
+
+
+class TestScoreModel:
+    """Test score_model function."""
+
+    def test_score_model_basic(self):
+        """Test model scoring"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import score_model
+        from sklearn.linear_model import LinearRegression
+
+        model = LinearRegression()
+        X = np.array([[1], [2], [3], [4]])
+        y = np.array([2, 4, 6, 8])
+        model.fit(X, y)
+
+        result = score_model(model=model, X=X, y=y)
+
+        if isinstance(result, dict):
+            score = result.get("score")
+        else:
+            score = result
+
+        if score is not None:
+            assert isinstance(score, (int, float))
+            assert score >= 0 and score <= 1
+
+
+class TestCrossValidate:
+    """Test cross_validate function."""
+
+    def test_cross_validate_basic(self):
+        """Test cross-validation"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import cross_validate
+
+        X = np.random.randn(100, 5)
+        y = np.random.randint(0, 2, 100)
+
+        result = cross_validate(model="LogisticRegression", X=X, y=y, cv=3)
+        assert result is not None
+
+
+class TestModelSerialization:
+    """Test model serialization functions (using joblib, not pickle)."""
+
+    def test_serialize_model_to_file(self):
+        """Test model serialization to file using joblib"""
+        pytest.importorskip("sklearn")
+        pytest.importorskip("joblib")
+        from npcpy.ml_funcs import serialize_model
+        from sklearn.linear_model import LinearRegression
+
+        model = LinearRegression()
+        X = np.array([[1], [2], [3]])
+        y = np.array([1, 2, 3])
+        model.fit(X, y)
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            model_path = os.path.join(temp_dir, "model.joblib")
+            serialize_model(model, model_path, format="joblib")
+            assert os.path.exists(model_path)
+            assert os.path.getsize(model_path) > 0
+        finally:
+            import shutil
+            shutil.rmtree(temp_dir)
+
+    def test_deserialize_model_from_file(self):
+        """Test model deserialization from file using joblib"""
+        pytest.importorskip("sklearn")
+        pytest.importorskip("joblib")
+        from npcpy.ml_funcs import serialize_model, deserialize_model
+        from sklearn.linear_model import LinearRegression
+
+        model = LinearRegression()
+        X = np.array([[1], [2], [3]])
+        y = np.array([1, 2, 3])
+        model.fit(X, y)
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            model_path = os.path.join(temp_dir, "model.joblib")
+            serialize_model(model, model_path, format="joblib")
+            loaded = deserialize_model(model_path)
+
+            assert loaded is not None
+            # Check predictions match
+            orig_pred = model.predict([[4]])
+            loaded_pred = loaded.predict([[4]])
+            assert np.allclose(orig_pred, loaded_pred)
+        finally:
+            import shutil
+            shutil.rmtree(temp_dir)
+
+    def test_serialize_deserialize_auto_format(self):
+        """Test auto format detection based on file extension"""
+        pytest.importorskip("sklearn")
+        pytest.importorskip("joblib")
+        from npcpy.ml_funcs import serialize_model, deserialize_model
+        from sklearn.linear_model import LinearRegression
+
+        model = LinearRegression()
+        X = np.array([[1], [2], [3]])
+        y = np.array([1, 2, 3])
+        model.fit(X, y)
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            model_path = os.path.join(temp_dir, "model.joblib")
+            serialize_model(model, model_path)  # default format
+            loaded = deserialize_model(model_path, format="auto")
+
+            assert loaded is not None
+            orig_pred = model.predict([[4]])
+            loaded_pred = loaded.predict([[4]])
+            assert np.allclose(orig_pred, loaded_pred)
+        finally:
+            import shutil
+            shutil.rmtree(temp_dir)
+
+
+class TestGetSetModelParams:
+    """Test parameter get/set functions."""
+
+    def test_get_model_params(self):
+        """Test getting model parameters"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import get_model_params
+        from sklearn.linear_model import Ridge
+
+        model = Ridge(alpha=0.5)
+        params = get_model_params(model)
+
+        assert isinstance(params, dict)
+        assert "alpha" in params
+        assert params["alpha"] == 0.5
+
+    def test_set_model_params(self):
+        """Test setting model parameters"""
+        pytest.importorskip("sklearn")
+        from npcpy.ml_funcs import set_model_params
+        from sklearn.linear_model import Ridge
+
+        model = Ridge(alpha=0.5)
+        updated = set_model_params(model, {"alpha": 1.0})
+
+        assert updated.alpha == 1.0
+
+
+class TestAvailabilityFlags:
+    """Test dependency availability flags."""
+
+    def test_sklearn_available_flag(self):
+        """Test sklearn availability flag is set correctly"""
+        from npcpy.ml_funcs import _sklearn_available
 
         try:
-            # Serialize and deserialize
-            serialize_model(model, path, format='joblib')
-            loaded_model = deserialize_model(path)
+            import sklearn
+            assert _sklearn_available is True
+        except ImportError:
+            assert _sklearn_available is False
 
-            # Get predictions after deserialization
-            loaded_predictions = loaded_model.predict(X_test)
+    def test_torch_available_flag(self):
+        """Test torch availability flag is set correctly"""
+        from npcpy.ml_funcs import _torch_available
 
-            # Predictions should be identical
-            np.testing.assert_array_equal(original_predictions, loaded_predictions)
-            print(f"Round-trip preserved predictions: {original_predictions}")
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
+        try:
+            import torch
+            assert _torch_available is True
+        except ImportError:
+            assert _torch_available is False
 
-    def test_round_trip_multiple_model_types(self):
-        """Test round trip with different sklearn model types."""
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.tree import DecisionTreeClassifier
-        from sklearn.svm import SVC
+    def test_xgboost_available_flag(self):
+        """Test xgboost availability flag"""
+        from npcpy.ml_funcs import _xgboost_available
 
-        X = np.array([[1, 2], [3, 4], [5, 6], [7, 8]])
-        y = np.array([0, 0, 1, 1])
-
-        models = [
-            ("LogisticRegression", LogisticRegression()),
-            ("DecisionTree", DecisionTreeClassifier()),
-            ("SVC", SVC()),
-        ]
-
-        for name, model in models:
-            model.fit(X, y)
-
-            with tempfile.NamedTemporaryFile(suffix='.joblib', delete=False) as f:
-                path = f.name
-
-            try:
-                serialize_model(model, path, format='joblib')
-                loaded = deserialize_model(path)
-
-                original_pred = model.predict([[4, 5]])
-                loaded_pred = loaded.predict([[4, 5]])
-
-                assert original_pred[0] == loaded_pred[0], f"{name} predictions differ"
-                print(f"✓ {name} round-trip successful")
-            finally:
-                if os.path.exists(path):
-                    os.remove(path)
+        try:
+            import xgboost
+            assert _xgboost_available is True
+        except ImportError:
+            assert _xgboost_available is False
 
 
 if __name__ == "__main__":

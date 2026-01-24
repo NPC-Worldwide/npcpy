@@ -1,0 +1,294 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      run_integration_tests:
+        description: 'Run integration tests with Ollama'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  # =============================================================================
+  # Unit Tests - Run on every push/PR (no external dependencies)
+  # =============================================================================
+  unit-tests:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('setup.py') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-timeout
+          pip install -e ".[lite]"
+
+      - name: Run core unit tests
+        run: |
+          # Run tests that don't require LLM or heavy dependencies
+          pytest tests/test_tools.py tests/test_command_history.py tests/test_build_funcs.py tests/test_npc_sysenv.py -v --tb=short --timeout=60
+
+      - name: Run ML function tests
+        run: |
+          pytest tests/test_ml_funcs.py -v --tb=short --timeout=60
+
+      - name: Run documentation example unit tests
+        run: |
+          pytest tests/test_documentation_examples.py -v -m "not requires_ollama" --tb=short --timeout=60
+
+      - name: Run data loading tests (skip slow/model tests)
+        run: |
+          pytest tests/test_load.py tests/test_text.py -v -m "not slow" --tb=short --timeout=60
+
+      - name: Run data model tests
+        run: |
+          pytest tests/test_data_models.py tests/test_video.py -v --tb=short --timeout=60
+
+      - name: Run SQL module tests
+        run: |
+          pytest tests/test_sql_adapters.py tests/test_sql_functions.py tests/test_sql_compiler.py tests/test_model_runner.py -v --tb=short --timeout=60
+
+      - name: Run additional module tests
+        run: |
+          pytest tests/test_genetic_evolver.py tests/test_diff.py tests/test_memory_processor.py tests/test_browser.py -v --tb=short --timeout=60
+
+  # =============================================================================
+  # Flask Server Tests - Test API endpoints
+  # =============================================================================
+  server-tests:
+    name: Server Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-timeout
+          pip install -e ".[lite]"
+
+      - name: Run Flask server tests
+        run: |
+          pytest tests/test_serve.py -v --tb=short --timeout=120 || true
+        continue-on-error: true
+
+  # =============================================================================
+  # Integration Tests with Ollama - Optional, triggered manually or on main
+  # =============================================================================
+  integration-tests:
+    name: Integration Tests (Ollama)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.run_integration_tests == 'true' ||
+      github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-integration-${{ hashFiles('setup.py') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-integration-
+            ${{ runner.os }}-pip-
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama service
+        run: |
+          ollama serve &
+          sleep 5
+
+      - name: Pull required models
+        run: |
+          # Pull smaller models for CI testing
+          ollama pull gemma3:1b
+          ollama pull qwen3:0.6b
+          ollama pull llama3.2:latest
+        timeout-minutes: 20
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-timeout
+          pip install -e ".[lite]"
+
+      - name: Run documentation example integration tests
+        run: |
+          pytest tests/test_documentation_examples.py -v -m "requires_ollama" --timeout=180 --tb=short
+        timeout-minutes: 30
+        continue-on-error: true
+
+      - name: Run LLM function tests
+        run: |
+          pytest tests/test_llm_funcs.py -v --timeout=180 --tb=short
+        timeout-minutes: 20
+        continue-on-error: true
+
+      - name: Run NPC compiler tests
+        run: |
+          pytest tests/test_npc_compiler.py -v --timeout=180 --tb=short
+        timeout-minutes: 20
+        continue-on-error: true
+
+      - name: Run response tests
+        run: |
+          pytest tests/test_response.py -v --timeout=180 --tb=short
+        timeout-minutes: 20
+        continue-on-error: true
+
+  # =============================================================================
+  # Web Search Tests - Tests that require network access
+  # =============================================================================
+  web-tests:
+    name: Web Search Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-timeout
+          pip install -e ".[lite]"
+
+      - name: Run web search tests
+        run: |
+          pytest tests/test_web.py -v --tb=short --timeout=60
+        timeout-minutes: 10
+        continue-on-error: true
+
+  # =============================================================================
+  # Lint
+  # =============================================================================
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Run Ruff linter
+        run: |
+          ruff check . --select=E,F,W --ignore=E501,E402,F401 --exit-zero
+        continue-on-error: true
+
+  # =============================================================================
+  # Build Check
+  # =============================================================================
+  build:
+    name: Build Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build package
+        run: |
+          python -m build
+
+      - name: Check package
+        run: |
+          twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # =============================================================================
+  # Summary Job
+  # =============================================================================
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [unit-tests, lint, build]
+    if: always()
+
+    steps:
+      - name: Check unit test results
+        if: needs.unit-tests.result == 'failure'
+        run: |
+          echo "Unit tests failed!"
+          exit 1
+
+      - name: Check build results
+        if: needs.build.result == 'failure'
+        run: |
+          echo "Build failed!"
+          exit 1
+
+      - name: Success
+        run: |
+          echo "All required checks passed!"

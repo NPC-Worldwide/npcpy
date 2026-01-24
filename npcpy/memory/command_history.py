@@ -611,7 +611,9 @@ class CommandHistory:
             Column('reasoning_content', Text),  # For thinking tokens / chain of thought
             Column('tool_calls', Text),  # JSON array of tool calls made by assistant
             Column('tool_results', Text),  # JSON array of tool call results
-            Column('parent_message_id', String(50))  # Links assistant response to parent user message for broadcast grouping
+            Column('parent_message_id', String(50)),  # Links assistant response to parent user message for broadcast grouping
+            Column('device_id', String(255)),  # UUID of the device that created this message
+            Column('device_name', String(255))  # Human-readable device name
         )
         
         Table('message_attachments', metadata,
@@ -867,6 +869,8 @@ class CommandHistory:
         tool_calls=None,
         tool_results=None,
         parent_message_id=None,
+        device_id=None,
+        device_name=None,
     ):
         if isinstance(content, (dict, list)):
             content = json.dumps(content, cls=CustomJSONEncoder)
@@ -882,14 +886,15 @@ class CommandHistory:
 
         stmt = """
             INSERT INTO conversation_history
-            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results, parent_message_id)
-            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team, :reasoning_content, :tool_calls, :tool_results, :parent_message_id)
+            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results, parent_message_id, device_id, device_name)
+            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team, :reasoning_content, :tool_calls, :tool_results, :parent_message_id, :device_id, :device_name)
         """
         params = {
             "message_id": message_id, "timestamp": timestamp, "role": role, "content": content,
             "conversation_id": conversation_id, "directory_path": normalized_directory_path, "model": model,
             "provider": provider, "npc": npc, "team": team, "reasoning_content": reasoning_content,
-            "tool_calls": tool_calls, "tool_results": tool_results, "parent_message_id": parent_message_id
+            "tool_calls": tool_calls, "tool_results": tool_results, "parent_message_id": parent_message_id,
+            "device_id": device_id, "device_name": device_name
         }
         with self.engine.begin() as conn:
             conn.execute(text(stmt), params)
@@ -1461,6 +1466,8 @@ def save_conversation_message(
     tool_results: List[Dict] = None,
     parent_message_id: str = None,
     skip_if_exists: bool = True,
+    device_id: str = None,
+    device_name: str = None,
     ):
     """
     Saves a conversation message linked to a conversation ID with optional attachments.
@@ -1495,7 +1502,9 @@ def save_conversation_message(
         reasoning_content=reasoning_content,
         tool_calls=tool_calls,
         tool_results=tool_results,
-        parent_message_id=parent_message_id)
+        parent_message_id=parent_message_id,
+        device_id=device_id,
+        device_name=device_name)
 def retrieve_last_conversation(
     command_history: CommandHistory, conversation_id: str
     ) -> str:
