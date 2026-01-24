@@ -466,6 +466,104 @@ def test_full_pipeline_sklearn():
     print(f"Full sklearn pipeline predictions: {predictions.data}")
 
 
+# =============================================================================
+# NPCArray.from_matrix Tests (Issue #196)
+# =============================================================================
+
+def test_npc_array_from_matrix():
+    """Test creating NPCArray from a matrix of configurations."""
+    matrix = [
+        {'model': 'llama3.2:latest', 'provider': 'ollama', 'temperature': 0.7},
+        {'model': 'gemma3:1b', 'provider': 'ollama', 'temperature': 0.5},
+    ]
+
+    arr = NPCArray.from_matrix(matrix)
+
+    assert len(arr) == 2
+    assert arr.shape == (2,)
+    assert arr.specs[0].model_ref == 'llama3.2:latest'
+    assert arr.specs[0].provider == 'ollama'
+    assert arr.specs[0].config.get('temperature') == 0.7
+    assert arr.specs[1].model_ref == 'gemma3:1b'
+    print(f"Created NPCArray from matrix with {len(arr)} models")
+
+
+def test_npc_array_from_matrix_mixed_types():
+    """Test from_matrix with different model types."""
+    from sklearn.ensemble import RandomForestClassifier
+
+    rf = RandomForestClassifier(n_estimators=5)
+    matrix = [
+        {'model': 'llama3.2:latest', 'type': 'llm', 'provider': 'ollama'},
+        {'model': rf, 'type': 'sklearn'},
+    ]
+
+    arr = NPCArray.from_matrix(matrix)
+
+    assert len(arr) == 2
+    assert arr.specs[0].model_type == 'llm'
+    assert arr.specs[1].model_type == 'sklearn'
+    print(f"Created mixed-type NPCArray with {len(arr)} models")
+
+
+def test_npc_array_from_matrix_empty():
+    """Test from_matrix with empty list."""
+    arr = NPCArray.from_matrix([])
+    assert len(arr) == 0
+    assert arr.shape == (0,)
+    print("Created empty NPCArray from matrix")
+
+
+# =============================================================================
+# NPCArray.jinx() Tests (Issue #196)
+# =============================================================================
+
+def test_npc_array_jinx_method_exists():
+    """Test that jinx() method exists on NPCArray."""
+    arr = NPCArray.from_llms(['llama3.2:latest'], providers='ollama')
+
+    assert hasattr(arr, 'jinx')
+    assert callable(arr.jinx)
+    print("NPCArray has jinx() method")
+
+
+def test_npc_array_jinx_creates_lazy_result():
+    """Test that jinx() returns a LazyResult."""
+    arr = NPCArray.from_llms(['llama3.2:latest'], providers='ollama')
+
+    lazy = arr.jinx('test_workflow', inputs={'key': 'value'})
+
+    assert isinstance(lazy, LazyResult)
+    assert lazy._graph.op_type.value == 'jinx'
+    print("jinx() creates LazyResult with JINX operation type")
+
+
+def test_npc_array_jinx_params():
+    """Test that jinx() properly stores parameters."""
+    arr = NPCArray.from_llms(['llama3.2:latest'], providers='ollama')
+
+    inputs = {'topic': 'AI', 'length': 100}
+    lazy = arr.jinx('analyze', inputs=inputs, extra_param='value')
+
+    assert lazy._graph.params['jinx_name'] == 'analyze'
+    assert lazy._graph.params['inputs'] == inputs
+    assert lazy._graph.params['extra_param'] == 'value'
+    print("jinx() properly stores parameters in graph node")
+
+
+# =============================================================================
+# OpType.JINX Tests
+# =============================================================================
+
+def test_jinx_op_type_exists():
+    """Test that JINX operation type exists."""
+    from npcpy.npc_array import OpType
+
+    assert hasattr(OpType, 'JINX')
+    assert OpType.JINX.value == 'jinx'
+    print("OpType.JINX exists")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("NPCArray Integration Tests")
@@ -517,6 +615,19 @@ if __name__ == "__main__":
         # End-to-end tests
         ("Full LLM pipeline", test_full_pipeline_llm),
         ("Full sklearn pipeline", test_full_pipeline_sklearn),
+
+        # from_matrix tests (Issue #196)
+        ("NPCArray from_matrix", test_npc_array_from_matrix),
+        ("NPCArray from_matrix mixed types", test_npc_array_from_matrix_mixed_types),
+        ("NPCArray from_matrix empty", test_npc_array_from_matrix_empty),
+
+        # jinx() method tests (Issue #196)
+        ("NPCArray jinx method exists", test_npc_array_jinx_method_exists),
+        ("NPCArray jinx creates LazyResult", test_npc_array_jinx_creates_lazy_result),
+        ("NPCArray jinx params", test_npc_array_jinx_params),
+
+        # OpType tests
+        ("OpType.JINX exists", test_jinx_op_type_exists),
     ]
 
     passed = 0

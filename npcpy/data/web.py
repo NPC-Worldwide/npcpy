@@ -66,7 +66,6 @@ def search_perplexity(
         "top_p": top_p,
         "return_images": False,
         "return_related_questions": False,
-        "search_recency_filter": "month",
         "top_k": 0,
         "stream": False,
         "presence_penalty": 0,

@@ -62,7 +62,7 @@ from npcpy.llm_funcs import gen_image, breathe
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from npcpy.npc_sysenv import get_locally_available_models
+from npcpy.npc_sysenv import get_locally_available_models, get_data_dir, get_models_dir, get_cache_dir
 from npcpy.memory.command_history import (
     CommandHistory,
     save_conversation_message,
@@ -1966,7 +1966,7 @@ def finetune_status(job_id):
 
 @app.route("/api/ml/train", methods=["POST"])
 def train_ml_model():
-    import pickle
+    import joblib
     import numpy as np
     from sklearn.linear_model import LinearRegression, LogisticRegression
     from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
@@ -1974,7 +1974,7 @@ def train_ml_model():
     from sklearn.cluster import KMeans
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import mean_squared_error, r2_score, accuracy_score
-    
+
     data = request.json
     model_name = data.get("name")
     model_type = data.get("type")
@@ -1982,13 +1982,13 @@ def train_ml_model():
     features = data.get("features")
     training_data = data.get("data")
     hyperparams = data.get("hyperparameters", {})
-    
+
     df = pd.DataFrame(training_data)
     X = df[features].values
-    
+
     metrics = {}
     model = None
-    
+
     if model_type == "linear_regression":
         y = df[target].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -1999,7 +1999,7 @@ def train_ml_model():
             "r2_score": r2_score(y_test, y_pred),
             "rmse": np.sqrt(mean_squared_error(y_test, y_pred))
         }
-    
+
     elif model_type == "logistic_regression":
         y = df[target].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -2007,7 +2007,7 @@ def train_ml_model():
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         metrics = {"accuracy": accuracy_score(y_test, y_pred)}
-    
+
     elif model_type == "random_forest":
         y = df[target].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -2018,13 +2018,13 @@ def train_ml_model():
             "r2_score": r2_score(y_test, y_pred),
             "rmse": np.sqrt(mean_squared_error(y_test, y_pred))
         }
-    
+
     elif model_type == "clustering":
         n_clusters = hyperparams.get("n_clusters", 3)
         model = KMeans(n_clusters=n_clusters)
         labels = model.fit_predict(X)
         metrics = {"inertia": model.inertia_, "n_clusters": n_clusters}
-    
+
     elif model_type == "gradient_boost":
         y = df[target].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -2035,19 +2035,18 @@ def train_ml_model():
             "r2_score": r2_score(y_test, y_pred),
             "rmse": np.sqrt(mean_squared_error(y_test, y_pred))
         }
-    
+
     model_id = f"{model_name}_{int(time.time())}"
-    model_path = os.path.expanduser(f"~/.npcsh/models/{model_id}.pkl")
+    model_path = os.path.join(get_models_dir(), f"{model_id}.joblib")
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
-    
-    with open(model_path, 'wb') as f:
-        pickle.dump({
-            "model": model,
-            "features": features,
-            "target": target,
-            "type": model_type
-        }, f)
-    
+
+    joblib.dump({
+        "model": model,
+        "features": features,
+        "target": target,
+        "type": model_type
+    }, model_path)
+
     return jsonify({
         "model_id": model_id,
         "metrics": metrics,
@@ -2057,26 +2056,25 @@ def train_ml_model():
 
 @app.route("/api/ml/predict", methods=["POST"])
 def ml_predict():
-    import pickle
-    
+    import joblib
+
     data = request.json
     model_name = data.get("model_name")
     input_data = data.get("input_data")
-    
-    model_dir = os.path.expanduser("~/.npcsh/models/")
+
+    model_dir = get_models_dir()
     model_files = [f for f in os.listdir(model_dir) if f.startswith(model_name)]
-    
+
     if not model_files:
         return jsonify({"error": f"Model {model_name} not found"})
-    
+
     model_path = os.path.join(model_dir, model_files[0])
-    
-    with open(model_path, 'rb') as f:
-        model_data = pickle.load(f)
-    
+
+    model_data = joblib.load(model_path)
+
     model = model_data["model"]
     prediction = model.predict([input_data])
-    
+
     return jsonify({
         "prediction": prediction.tolist(),
         "error": None
@@ -5455,12 +5453,14 @@ def scan_gguf_models():
     """Scan for GGUF/GGML model files in specified or default directories."""
     directory = request.args.get('directory')
 
-    # Default directories to scan
+    # Default directories to scan (using platform-specific paths)
+    models_dir = get_models_dir()
     default_dirs = [
-        os.path.expanduser('~/.npcsh/models/gguf'),
-        os.path.expanduser('~/.npcsh/models'),
+        os.path.join(models_dir, 'gguf'),
+        models_dir,
         os.path.expanduser('~/models'),
-        os.path.expanduser('~/.cache/huggingface/hub'),
+        os.path.join(get_cache_dir(), 'huggingface/hub'),
+        os.path.expanduser('~/.cache/huggingface/hub'),  # Fallback
     ]
 
     # Add env var directory if set
@@ -5502,7 +5502,8 @@ def download_hf_model():
     """Download a GGUF model from HuggingFace."""
     data = request.json
     url = data.get('url', '')
-    target_dir = data.get('target_dir', '~/.npcsh/models/gguf')
+    default_target = os.path.join(get_models_dir(), 'gguf')
+    target_dir = data.get('target_dir', default_target)
 
     target_dir = os.path.expanduser(target_dir)
     os.makedirs(target_dir, exist_ok=True)
@@ -5668,7 +5669,8 @@ def download_hf_file():
     data = request.json
     repo_id = data.get('repo_id', '')
     filename = data.get('filename', '')
-    target_dir = data.get('target_dir', '~/.npcsh/models/gguf')
+    default_target = os.path.join(get_models_dir(), 'gguf')
+    target_dir = data.get('target_dir', default_target)
 
     if not repo_id or not filename:
         return jsonify({'error': 'repo_id and filename are required'}), 400

@@ -52,6 +52,7 @@ import fnmatch
 import subprocess
 from typing import Any, Dict, List, Optional, Union, Callable, Tuple
 from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoader
+from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy import create_engine, text
 import npcpy as npy 
 from npcpy.tools import auto_tools
@@ -231,7 +232,8 @@ def load_yaml_file(file_path):
 
         # First pass: render Jinja2 templates to produce valid YAML
         # This allows {% if %} and other control structures to work
-        jinja_env = Environment(undefined=SilentUndefined)
+        # Use SandboxedEnvironment to prevent template injection attacks
+        jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
         # Configure tojson filter to handle SilentUndefined
         jinja_env.policies['json.dumps_function'] = _json_dumps_with_undefined
         template = jinja_env.from_string(content)
@@ -694,7 +696,8 @@ class Jinx:
                 jinja_env: Optional[Environment] = None):
         
         if jinja_env is None:
-            jinja_env = Environment(
+            # Use SandboxedEnvironment to prevent template injection attacks
+            jinja_env = SandboxedEnvironment(
                 loader=DictLoader({}),
                 undefined=SilentUndefined,
             )
@@ -771,21 +774,24 @@ class Jinx:
         
         self._log_debug(f"DEBUG: Executing step '{step_name}' with rendered code: {rendered_code}")
 
+        # Import NPCArray for array operations in jinx
+        from npcpy.npc_array import NPCArray, infer_matrix, ensemble_vote
+
         exec_globals = {
             "__builtins__": __builtins__,
             "npc": active_npc,
             "context": context, # Pass context by reference
-            "math": math, 
-            "random": random, 
+            "math": math,
+            "random": random,
             "datetime": datetime,
             "Image": Image,
             "pd": pd,
             "plt": plt,
-            "sys": sys, 
+            "sys": sys,
             "subprocess": subprocess,
             "np": np,
             "os": os,
-            're': re, 
+            're': re,
             "json": json,
             "Path": pathlib.Path,
             "fnmatch": fnmatch,
@@ -793,6 +799,10 @@ class Jinx:
             "subprocess": subprocess,
             "get_llm_response": npy.llm_funcs.get_llm_response,
             "CommandHistory": CommandHistory,
+            # NPCArray support for compute graph operations in jinx
+            "NPCArray": NPCArray,
+            "infer_matrix": infer_matrix,
+            "ensemble_vote": ensemble_vote,
         }
         
         if extra_globals:
@@ -1261,7 +1271,8 @@ class NPC:
             dirs.append(self.jinxs_directory)
             
         # This jinja_env is for the *second pass* (runtime variable resolution in Jinx.execute)
-        self.jinja_env = Environment(
+        # Use SandboxedEnvironment to prevent template injection attacks
+        self.jinja_env = SandboxedEnvironment(
             loader=FileSystemLoader([
                 os.path.expanduser(d) for d in dirs
             ]),
@@ -1389,13 +1400,13 @@ class NPC:
 
             combined_raw_jinxs_dict = {j.jinx_name: j for j in all_available_raw_jinxs}
 
-            npc_first_pass_jinja_env = Environment(undefined=SilentUndefined)
-            
+            npc_first_pass_jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
+
             jinx_macro_globals = {}
             for raw_jinx in combined_raw_jinxs_dict.values():
                 def create_jinx_callable(jinx_obj_in_closure):
                     def callable_jinx(**kwargs):
-                        temp_jinja_env = Environment(undefined=SilentUndefined)
+                        temp_jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
                         rendered_target_steps = []
                         for target_step in jinx_obj_in_closure._raw_steps:
                             temp_rendered_step = {}
@@ -2506,7 +2517,7 @@ class Team:
         self._raw_jinxs_list: List['Jinx'] = [] # Temporary storage for raw Team-level Jinx objects
         self.jinx_tool_catalog: Dict[str, Dict[str, Any]] = {}  # Jinx-derived tool defs ready for MCP/LLM
         
-        self.jinja_env_for_first_pass = Environment(undefined=SilentUndefined) # Env for macro expansion
+        self.jinja_env_for_first_pass = SandboxedEnvironment(undefined=SilentUndefined) # Env for macro expansion
 
         self.db_conn = db_conn
         self.team_path = os.path.expanduser(team_path) if team_path else None
@@ -2700,7 +2711,7 @@ class Team:
                 def callable_jinx(**kwargs):
                     # This callable will be invoked by the Jinja renderer during the first pass.
                     # It needs to render the target Jinx's *raw* steps with the provided kwargs.
-                    temp_jinja_env = Environment(undefined=SilentUndefined)
+                    temp_jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
                     
                     rendered_target_steps = []
                     for target_step in jinx_obj_in_closure._raw_steps:

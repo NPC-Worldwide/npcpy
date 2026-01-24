@@ -20,7 +20,6 @@ Example:
 from __future__ import annotations
 import copy
 import itertools
-import pickle
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import (
@@ -47,6 +46,7 @@ class OpType(Enum):
     REDUCE = "reduce"
     CHAIN = "chain"
     EVOLVE = "evolve"
+    JINX = "jinx"  # Execute a Jinx workflow across models
 
 
 @dataclass
@@ -328,6 +328,61 @@ class NPCArray:
 
         return cls(specs)
 
+    @classmethod
+    def from_matrix(
+        cls,
+        matrix: List[Dict[str, Any]]
+    ) -> 'NPCArray':
+        """
+        Create NPCArray from a matrix of model configurations.
+
+        This is particularly useful for defining model arrays in Jinx templates
+        where you want explicit control over each model configuration.
+
+        Args:
+            matrix: List of model configuration dicts. Each dict should have:
+                - 'model': model name/reference (required)
+                - 'provider': provider name (optional)
+                - 'type': model type - 'llm', 'npc', 'sklearn', 'torch' (default: 'llm')
+                - Any additional config parameters
+
+        Example:
+            >>> # In a Jinx template, define a matrix of models:
+            >>> matrix = [
+            ...     {'model': 'gpt-4', 'provider': 'openai', 'temperature': 0.7},
+            ...     {'model': 'claude-3-opus', 'provider': 'anthropic', 'temperature': 0.5},
+            ...     {'model': 'llama3.2', 'provider': 'ollama', 'temperature': 0.8},
+            ... ]
+            >>> arr = NPCArray.from_matrix(matrix)
+
+            >>> # Mixed model types:
+            >>> matrix = [
+            ...     {'model': 'gpt-4', 'type': 'llm', 'provider': 'openai'},
+            ...     {'model': my_npc, 'type': 'npc'},
+            ...     {'model': sklearn_model, 'type': 'sklearn'},
+            ... ]
+        """
+        specs = []
+        for config in matrix:
+            model_type = config.get('type', 'llm')
+            model_ref = config.get('model')
+            provider = config.get('provider')
+
+            # Extract config params (everything except type, model, provider)
+            extra_config = {
+                k: v for k, v in config.items()
+                if k not in ('type', 'model', 'provider')
+            }
+
+            specs.append(ModelSpec(
+                model_type=model_type,
+                model_ref=model_ref,
+                provider=provider,
+                config=extra_config
+            ))
+
+        return cls(specs)
+
     # ==================== Properties ====================
 
     @property
@@ -489,6 +544,43 @@ class NPCArray:
         )
 
         return NPCArray(self._specs, new_node)
+
+    def jinx(
+        self,
+        jinx_name: str,
+        inputs: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> 'LazyResult':
+        """
+        Execute a Jinx workflow across all models in the array.
+
+        Each model in the array will be used as the 'npc' context for the jinx,
+        allowing you to run the same workflow template with different models.
+
+        Args:
+            jinx_name: Name of the jinx workflow to execute (e.g., 'analyze', 'summarize')
+            inputs: Input values for the jinx template variables
+            **kwargs: Additional execution parameters
+
+        Returns:
+            LazyResult with workflow outputs from each model
+
+        Example:
+            >>> models = NPCArray.from_llms(['gpt-4', 'claude-3'])
+            >>> results = models.jinx('analyze', inputs={'topic': 'AI safety'}).collect()
+        """
+        new_node = GraphNode(
+            op_type=OpType.JINX,
+            params={
+                "jinx_name": jinx_name,
+                "inputs": inputs or {},
+                **kwargs
+            },
+            parents=[self._graph],
+            shape=(len(self._specs),)
+        )
+
+        return LazyResult(self._specs, new_node)
 
 
 class LazyResult:
@@ -792,6 +884,7 @@ class GraphExecutor:
             OpType.REDUCE: self._exec_reduce,
             OpType.CHAIN: self._exec_chain,
             OpType.EVOLVE: self._exec_evolve,
+            OpType.JINX: self._exec_jinx,
         }
 
         handler = handlers.get(node.op_type)
@@ -1134,6 +1227,61 @@ class GraphExecutor:
             data=np.array([s.model_ref for s in new_specs], dtype=object),
             model_specs=new_specs,
             metadata={"operation": "evolve", "generation": 1}
+        )
+
+    def _exec_jinx(self, node, specs, prompts, parents) -> ResponseTensor:
+        """Execute a Jinx workflow across models"""
+        from npcpy.npc_compiler import NPC, Jinx
+
+        jinx_name = node.params.get("jinx_name")
+        inputs = node.params.get("inputs", {})
+        extra_kwargs = {k: v for k, v in node.params.items()
+                       if k not in ("jinx_name", "inputs")}
+
+        results = []
+
+        def run_jinx_single(spec: ModelSpec) -> str:
+            """Run jinx for a single model spec"""
+            try:
+                if spec.model_type == "npc":
+                    # Use the NPC directly
+                    npc = spec.model_ref
+                else:
+                    # Create a temporary NPC with the model
+                    npc = NPC(
+                        name=f"array_npc_{spec.model_ref}",
+                        model=spec.model_ref,
+                        provider=spec.provider
+                    )
+
+                # Execute the jinx
+                result = npc.execute_jinx(
+                    jinx_name=jinx_name,
+                    input_values=inputs,
+                    **extra_kwargs
+                )
+                return result.get("output", str(result))
+            except Exception as e:
+                return f"Error: {e}"
+
+        if self.parallel and len(specs) > 1:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = {executor.submit(run_jinx_single, spec): i
+                          for i, spec in enumerate(specs)}
+                results = [None] * len(specs)
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        results[idx] = future.result()
+                    except Exception as e:
+                        results[idx] = f"Error: {e}"
+        else:
+            results = [run_jinx_single(spec) for spec in specs]
+
+        return ResponseTensor(
+            data=np.array(results, dtype=object),
+            model_specs=specs,
+            metadata={"operation": "jinx", "jinx_name": jinx_name, **inputs}
         )
 
 

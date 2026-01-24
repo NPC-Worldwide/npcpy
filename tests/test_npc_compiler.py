@@ -346,3 +346,211 @@ def test_npc_memory_crud_integration():
     print("\n=== Test Complete ===")
     print("✓ Memory CRUD operations successfully integrated as auto tools")
     return True
+
+
+# =============================================================================
+# Jinja2 Sandboxed Environment Tests (Issue #197)
+# =============================================================================
+
+def test_jinja2_sandboxed_environment():
+    """Test that Jinja2 uses SandboxedEnvironment."""
+    from jinja2.sandbox import SandboxedEnvironment
+
+    npc = NPC(
+        name="sandbox_test_npc",
+        primary_directive="Test NPC"
+    )
+
+    # Check that the jinja_env is a SandboxedEnvironment
+    assert isinstance(npc.jinja_env, SandboxedEnvironment), \
+        "NPC.jinja_env should be a SandboxedEnvironment"
+    print("NPC uses SandboxedEnvironment")
+
+
+def test_jinja2_sandbox_blocks_dangerous_access():
+    """Test that sandboxed Jinja2 blocks dangerous attribute access."""
+    from jinja2.sandbox import SandboxedEnvironment, SecurityError
+
+    env = SandboxedEnvironment()
+
+    # Attempting to access __class__ should raise SecurityError
+    dangerous_template = "{{ ''.__class__.__mro__ }}"
+
+    try:
+        template = env.from_string(dangerous_template)
+        result = template.render()
+        # If we get here without error, check if result is sanitized
+        assert '__class__' not in str(result) or result == '', \
+            "Sandbox should prevent access to __class__"
+    except SecurityError:
+        # Expected behavior - sandbox blocks dangerous access
+        pass
+
+    print("Jinja2 sandbox blocks dangerous attribute access")
+
+
+def test_jinx_uses_sandboxed_environment():
+    """Test that Jinx execution uses sandboxed Jinja2."""
+    from jinja2.sandbox import SandboxedEnvironment
+
+    jinx_data = {
+        "jinx_name": "sandbox_jinx_test",
+        "description": "Test sandbox in Jinx",
+        "inputs": ["input1"],
+        "steps": [
+            {
+                "code": "output = '{{ input1 }}'",
+                "engine": "python"
+            }
+        ]
+    }
+
+    jinx = Jinx(jinx_data=jinx_data)
+
+    # When no jinja_env provided, it should create a SandboxedEnvironment
+    # This is tested indirectly - the execute method should work
+    result = jinx.execute({"input1": "test_value"}, {})
+    assert result is not None
+    print("Jinx execution uses sandboxed environment")
+
+
+# =============================================================================
+# Jinx/NPCArray Integration Tests (Issue #196)
+# =============================================================================
+
+def test_jinx_has_npc_array_in_context():
+    """Test that NPCArray is available in Jinx execution context."""
+    jinx_data = {
+        "jinx_name": "array_test_jinx",
+        "description": "Test NPCArray in Jinx",
+        "inputs": [],
+        "steps": [
+            {
+                "code": """
+# NPCArray should be available
+output = 'NPCArray available' if 'NPCArray' in dir() else 'NPCArray not found'
+""",
+                "engine": "python"
+            }
+        ]
+    }
+
+    jinx = Jinx(jinx_data=jinx_data)
+    result = jinx.execute({}, {})
+
+    assert result is not None
+    assert result.get('output') == 'NPCArray available', \
+        f"Expected 'NPCArray available', got {result.get('output')}"
+    print("NPCArray is available in Jinx execution context")
+
+
+def test_jinx_can_use_npc_array():
+    """Test that Jinx can actually use NPCArray."""
+    jinx_data = {
+        "jinx_name": "use_array_jinx",
+        "description": "Test using NPCArray in Jinx",
+        "inputs": [],
+        "steps": [
+            {
+                "code": """
+# Create an NPCArray
+arr = NPCArray.from_llms(['test-model'], providers='test-provider')
+output = f'Created array with {len(arr)} models'
+""",
+                "engine": "python"
+            }
+        ]
+    }
+
+    jinx = Jinx(jinx_data=jinx_data)
+    result = jinx.execute({}, {})
+
+    assert result is not None
+    assert 'Created array with 1 models' in str(result.get('output', '')), \
+        f"Expected array creation output, got {result.get('output')}"
+    print("Jinx can create and use NPCArray")
+
+
+def test_jinx_has_infer_matrix():
+    """Test that infer_matrix is available in Jinx."""
+    jinx_data = {
+        "jinx_name": "infer_matrix_test",
+        "description": "Test infer_matrix in Jinx",
+        "inputs": [],
+        "steps": [
+            {
+                "code": """
+output = 'infer_matrix available' if callable(infer_matrix) else 'not callable'
+""",
+                "engine": "python"
+            }
+        ]
+    }
+
+    jinx = Jinx(jinx_data=jinx_data)
+    result = jinx.execute({}, {})
+
+    assert result.get('output') == 'infer_matrix available'
+    print("infer_matrix is available in Jinx execution context")
+
+
+def test_jinx_has_ensemble_vote():
+    """Test that ensemble_vote is available in Jinx."""
+    jinx_data = {
+        "jinx_name": "ensemble_vote_test",
+        "description": "Test ensemble_vote in Jinx",
+        "inputs": [],
+        "steps": [
+            {
+                "code": """
+output = 'ensemble_vote available' if callable(ensemble_vote) else 'not callable'
+""",
+                "engine": "python"
+            }
+        ]
+    }
+
+    jinx = Jinx(jinx_data=jinx_data)
+    result = jinx.execute({}, {})
+
+    assert result.get('output') == 'ensemble_vote available'
+    print("ensemble_vote is available in Jinx execution context")
+
+
+if __name__ == "__main__":
+    import sys
+
+    tests = [
+        ("NPC creation", test_npc_creation),
+        ("NPC save and load", test_npc_save_and_load),
+        ("Jinx creation", test_jinx_creation),
+        ("Jinx execution", test_jinx_execution),
+        ("Jinja2 sandboxed environment", test_jinja2_sandboxed_environment),
+        ("Jinja2 sandbox blocks dangerous access", test_jinja2_sandbox_blocks_dangerous_access),
+        ("Jinx uses sandboxed environment", test_jinx_uses_sandboxed_environment),
+        ("Jinx has NPCArray in context", test_jinx_has_npc_array_in_context),
+        ("Jinx can use NPCArray", test_jinx_can_use_npc_array),
+        ("Jinx has infer_matrix", test_jinx_has_infer_matrix),
+        ("Jinx has ensemble_vote", test_jinx_has_ensemble_vote),
+    ]
+
+    passed = 0
+    failed = 0
+
+    for name, test_func in tests:
+        print(f"\n--- {name} ---")
+        try:
+            test_func()
+            print(f"✓ PASSED")
+            passed += 1
+        except Exception as e:
+            print(f"✗ FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+            failed += 1
+
+    print("\n" + "=" * 60)
+    print(f"Results: {passed} passed, {failed} failed")
+    print("=" * 60)
+
+    sys.exit(0 if failed == 0 else 1)

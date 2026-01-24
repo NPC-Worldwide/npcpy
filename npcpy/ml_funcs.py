@@ -16,7 +16,6 @@ Same interface pattern as llm_funcs:
 from __future__ import annotations
 import copy
 import itertools
-import pickle
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -708,21 +707,67 @@ def cross_validate(
 
 # ==================== Utility Functions ====================
 
-def serialize_model(model: Any, path: str = None) -> bytes:
-    """Serialize model to bytes or file"""
-    data = pickle.dumps(model)
-    if path:
-        with open(path, 'wb') as f:
-            f.write(data)
-    return data
+def serialize_model(model: Any, path: str, format: str = "joblib") -> None:
+    """
+    Serialize model to file using safe formats (no pickle).
+
+    Args:
+        model: The model to serialize
+        path: File path to write to (required)
+        format: Serialization format - "joblib" (default) or "safetensors"
+
+    Raises:
+        ImportError: If required library is not installed
+        ValueError: If format is not supported for the model type
+    """
+    if format == "safetensors":
+        from safetensors.torch import save_file
+        if hasattr(model, 'state_dict'):
+            save_file(model.state_dict(), path)
+        else:
+            raise ValueError("safetensors format requires model with state_dict (PyTorch)")
+    elif format == "joblib":
+        import joblib
+        joblib.dump(model, path)
+    else:
+        raise ValueError(f"Unsupported format: {format}. Use 'joblib' or 'safetensors'.")
 
 
-def deserialize_model(data: Union[bytes, str]) -> Any:
-    """Deserialize model from bytes or file path"""
-    if isinstance(data, str):
-        with open(data, 'rb') as f:
-            data = f.read()
-    return pickle.loads(data)
+def deserialize_model(path: str, format: str = "auto") -> Any:
+    """
+    Deserialize model from file using safe formats (no pickle).
+
+    Args:
+        path: File path to load from
+        format: "auto" (detect from extension), "joblib", or "safetensors"
+
+    Returns:
+        The deserialized model
+
+    Raises:
+        ImportError: If required library is not installed
+        ValueError: If format cannot be determined
+    """
+    # Auto-detect format from extension
+    if format == "auto":
+        if path.endswith('.safetensors'):
+            format = "safetensors"
+        elif path.endswith('.joblib'):
+            format = "joblib"
+        else:
+            raise ValueError(
+                f"Cannot auto-detect format for {path}. "
+                "Use .joblib or .safetensors extension, or specify format explicitly."
+            )
+
+    if format == "safetensors":
+        from safetensors.torch import load_file
+        return load_file(path)
+    elif format == "joblib":
+        import joblib
+        return joblib.load(path)
+    else:
+        raise ValueError(f"Unsupported format: {format}. Use 'joblib' or 'safetensors'.")
 
 
 def get_model_params(model: Any) -> Dict[str, Any]:

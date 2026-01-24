@@ -15,6 +15,129 @@ import json
 
 import requests
 ON_WINDOWS = platform.system() == "Windows"
+ON_MACOS = platform.system() == "Darwin"
+
+
+# ==================== XDG/Platform-Specific Paths ====================
+
+def get_data_dir() -> str:
+    """
+    Get the platform-specific data directory for npcsh.
+
+    Returns:
+        - Linux: $XDG_DATA_HOME/npcsh or ~/.local/share/npcsh
+        - macOS: ~/Library/Application Support/npcsh
+        - Windows: %LOCALAPPDATA%/npcsh or ~/AppData/Local/npcsh
+
+    Falls back to ~/.npcsh for backwards compatibility if the new location
+    doesn't exist but the old one does.
+    """
+    if ON_WINDOWS:
+        base = os.environ.get('LOCALAPPDATA', os.path.expanduser('~/AppData/Local'))
+        new_path = os.path.join(base, 'npcsh')
+    elif ON_MACOS:
+        new_path = os.path.expanduser('~/Library/Application Support/npcsh')
+    else:
+        # Linux/Unix - use XDG Base Directory Specification
+        xdg_data = os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))
+        new_path = os.path.join(xdg_data, 'npcsh')
+
+    # Backwards compatibility: if old path exists but new doesn't, use old
+    old_path = os.path.expanduser('~/.npcsh')
+    if os.path.exists(old_path) and not os.path.exists(new_path):
+        return old_path
+
+    return new_path
+
+
+def get_config_dir() -> str:
+    """
+    Get the platform-specific config directory for npcsh.
+
+    Returns:
+        - Linux: $XDG_CONFIG_HOME/npcsh or ~/.config/npcsh
+        - macOS: ~/Library/Application Support/npcsh (same as data on macOS)
+        - Windows: %APPDATA%/npcsh or ~/AppData/Roaming/npcsh
+
+    Falls back to ~/.npcsh for backwards compatibility if the new location
+    doesn't exist but the old one does.
+    """
+    if ON_WINDOWS:
+        base = os.environ.get('APPDATA', os.path.expanduser('~/AppData/Roaming'))
+        new_path = os.path.join(base, 'npcsh')
+    elif ON_MACOS:
+        new_path = os.path.expanduser('~/Library/Application Support/npcsh')
+    else:
+        # Linux/Unix - use XDG Base Directory Specification
+        xdg_config = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
+        new_path = os.path.join(xdg_config, 'npcsh')
+
+    # Backwards compatibility: if old path exists but new doesn't, use old
+    old_path = os.path.expanduser('~/.npcsh')
+    if os.path.exists(old_path) and not os.path.exists(new_path):
+        return old_path
+
+    return new_path
+
+
+def get_cache_dir() -> str:
+    """
+    Get the platform-specific cache directory for npcsh.
+
+    Returns:
+        - Linux: $XDG_CACHE_HOME/npcsh or ~/.cache/npcsh
+        - macOS: ~/Library/Caches/npcsh
+        - Windows: %LOCALAPPDATA%/npcsh/cache
+    """
+    if ON_WINDOWS:
+        base = os.environ.get('LOCALAPPDATA', os.path.expanduser('~/AppData/Local'))
+        return os.path.join(base, 'npcsh', 'cache')
+    elif ON_MACOS:
+        return os.path.expanduser('~/Library/Caches/npcsh')
+    else:
+        xdg_cache = os.environ.get('XDG_CACHE_HOME', os.path.expanduser('~/.cache'))
+        return os.path.join(xdg_cache, 'npcsh')
+
+
+def get_npcshrc_path() -> str:
+    """
+    Get the path to the npcshrc config file.
+
+    Returns the platform-appropriate config file path.
+    Falls back to ~/.npcshrc for backwards compatibility.
+    """
+    old_path = os.path.expanduser('~/.npcshrc')
+    if os.path.exists(old_path):
+        return old_path
+
+    config_dir = get_config_dir()
+    return os.path.join(config_dir, 'npcshrc')
+
+
+def get_history_db_path() -> str:
+    """
+    Get the path to the history database.
+
+    Returns the platform-appropriate database path.
+    Falls back to ~/npcsh_history.db for backwards compatibility.
+    """
+    old_path = os.path.expanduser('~/npcsh_history.db')
+    if os.path.exists(old_path):
+        return old_path
+
+    data_dir = get_data_dir()
+    return os.path.join(data_dir, 'history.db')
+
+
+def get_models_dir() -> str:
+    """Get the directory for storing models."""
+    return os.path.join(get_data_dir(), 'models')
+
+
+def ensure_npcsh_dirs() -> None:
+    """Ensure all npcsh directories exist."""
+    for dir_path in [get_data_dir(), get_config_dir(), get_cache_dir(), get_models_dir()]:
+        os.makedirs(dir_path, exist_ok=True)
 
 try:
     if not ON_WINDOWS:
@@ -309,11 +432,13 @@ def get_locally_available_models(project_directory, airplane_mode=False):
         logging.info(f"Error loading Ollama models or timed out: {e}")
 
     # Scan for local GGUF/GGML models
+    models_dir = get_models_dir()
     gguf_dirs = [
-        os.path.expanduser('~/.npcsh/models/gguf'),
-        os.path.expanduser('~/.npcsh/models'),
+        os.path.join(models_dir, 'gguf'),
+        models_dir,
         os.path.expanduser('~/models'),
-        os.path.expanduser('~/.cache/huggingface/hub'),
+        os.path.join(get_cache_dir(), 'huggingface/hub'),
+        os.path.expanduser('~/.cache/huggingface/hub'),  # Fallback for existing installs
     ]
     env_gguf_dir = os.environ.get('NPCSH_GGUF_DIR')
     if env_gguf_dir:
@@ -357,6 +482,31 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                 available_models[model_id] = "llamacpp-server"
     except Exception as e:
         logging.debug(f"llama.cpp server not available: {e}")
+
+    # Check for MLX server (OpenAI-compatible API on port 8000)
+    try:
+        import requests
+        response = requests.get('http://127.0.0.1:8000/v1/models', timeout=1)
+        if response.ok:
+            data = response.json()
+            for model in data.get('data', []):
+                model_id = model.get('id', model.get('name', 'unknown'))
+                available_models[model_id] = "mlx"
+    except Exception as e:
+        logging.debug(f"MLX server not available: {e}")
+
+    # Also check common alternative MLX port 5000
+    try:
+        import requests
+        response = requests.get('http://127.0.0.1:5000/v1/models', timeout=1)
+        if response.ok:
+            data = response.json()
+            for model in data.get('data', []):
+                model_id = model.get('id', model.get('name', 'unknown'))
+                if model_id not in available_models:  # Avoid duplicates
+                    available_models[model_id] = "mlx"
+    except Exception as e:
+        logging.debug(f"MLX server (port 5000) not available: {e}")
 
     return available_models
 
@@ -1030,13 +1180,13 @@ def lookup_provider(model: str) -> str:
 
 def load_custom_providers():
     """
-    Load custom provider configurations from .npcshrc
-    
+    Load custom provider configurations from npcshrc config file.
+
     Returns:
         dict: Custom provider configurations keyed by provider name
     """
     custom_providers = {}
-    npcshrc_path = os.path.expanduser("~/.npcshrc")
+    npcshrc_path = get_npcshrc_path()
     
     if os.path.exists(npcshrc_path):
         with open(npcshrc_path, "r") as f:
