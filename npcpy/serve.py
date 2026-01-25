@@ -4344,15 +4344,18 @@ def generate_video_api():
         model = data.get("model", "veo-3.1-generate-preview")
         provider = data.get("provider", "gemini")
         duration = data.get("duration", 5)
-        current_path = data.get("currentPath", os.getcwd())
+        output_dir = data.get("output_dir")  # Optional user-specified path
         negative_prompt = data.get("negative_prompt", "")
         reference_image = data.get("reference_image")  # Optional base64 image
 
         if not prompt:
             return jsonify({"error": "Prompt is required"}), 400
 
-        # Create output directory
-        save_dir = os.path.join(current_path, "generated_videos")
+        # Create output directory - use user-specified path or default to ~/.npcsh/videos
+        if output_dir:
+            save_dir = os.path.expanduser(output_dir)
+        else:
+            save_dir = os.path.expanduser("~/.npcsh/videos")
         os.makedirs(save_dir, exist_ok=True)
 
         # Generate unique filename
