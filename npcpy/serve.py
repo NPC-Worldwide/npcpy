@@ -58,7 +58,7 @@ import base64
 import shutil
 import uuid
 
-from npcpy.llm_funcs import gen_image, breathe                                                                                                                                                                
+from npcpy.llm_funcs import gen_image, gen_video, breathe                                                                                                                                                                
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -4333,6 +4333,86 @@ def get_image_models_api():
         return jsonify({"models": [], "error": str(e)}), 500
 
 
+@app.route("/api/generate_video", methods=["POST"])
+def generate_video_api():
+    """
+    API endpoint for video generation.
+    """
+    try:
+        data = request.get_json()
+        prompt = data.get("prompt", "")
+        model = data.get("model", "veo-3.1-generate-preview")
+        provider = data.get("provider", "gemini")
+        duration = data.get("duration", 5)
+        current_path = data.get("currentPath", os.getcwd())
+        negative_prompt = data.get("negative_prompt", "")
+        reference_image = data.get("reference_image")  # Optional base64 image
+
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
+
+        # Create output directory
+        save_dir = os.path.join(current_path, "generated_videos")
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Generate unique filename
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"video_{timestamp}.mp4"
+        output_path = os.path.join(save_dir, output_filename)
+
+        # Calculate num_frames based on duration (assuming ~25fps for diffusers)
+        num_frames = int(duration * 25) if provider == "diffusers" else 25
+
+        print(f"Generating video with model={model}, provider={provider}, duration={duration}s")
+
+        result = gen_video(
+            prompt=prompt,
+            model=model,
+            provider=provider,
+            output_path=output_path,
+            num_frames=num_frames,
+            negative_prompt=negative_prompt,
+        )
+
+        if result and "output" in result:
+            # Read the generated video file and encode to base64
+            video_path = output_path
+            if os.path.exists(video_path):
+                with open(video_path, "rb") as f:
+                    video_data = f.read()
+                video_base64 = base64.b64encode(video_data).decode("utf-8")
+
+                return jsonify({
+                    "success": True,
+                    "video_path": video_path,
+                    "video_base64": f"data:video/mp4;base64,{video_base64}",
+                    "message": result.get("output", "Video generated successfully")
+                })
+            else:
+                return jsonify({"error": "Video file was not created"}), 500
+        else:
+            return jsonify({"error": result.get("output", "Video generation failed")}), 500
+
+    except Exception as e:
+        print(f"Error generating video: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/video_models", methods=["GET"])
+def get_video_models_api():
+    """
+    API endpoint to retrieve available video generation models.
+    """
+    video_models = [
+        # Google Veo via Gemini API (requires GEMINI_API_KEY)
+        {"value": "veo-3.1-generate-preview", "display_name": "Veo 3.1 | gemini", "provider": "gemini", "max_duration": 8},
+        {"value": "veo-3.1-fast-generate-preview", "display_name": "Veo 3.1 Fast | gemini", "provider": "gemini", "max_duration": 8},
+        {"value": "veo-2.0-generate-001", "display_name": "Veo 2 | gemini", "provider": "gemini", "max_duration": 8},
+        # Diffusers - damo-vilab/text-to-video-ms-1.7b (local)
+        {"value": "damo-vilab/text-to-video-ms-1.7b", "display_name": "ModelScope 1.7B (Local) | diffusers", "provider": "diffusers", "max_duration": 4},
+    ]
+    return jsonify({"models": video_models, "error": None})
 
 
 
