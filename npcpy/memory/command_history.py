@@ -613,7 +613,8 @@ class CommandHistory:
             Column('tool_results', Text),  # JSON array of tool call results
             Column('parent_message_id', String(50)),  # Links assistant response to parent user message for broadcast grouping
             Column('device_id', String(255)),  # UUID of the device that created this message
-            Column('device_name', String(255))  # Human-readable device name
+            Column('device_name', String(255)),  # Human-readable device name
+            Column('params', Text)  # JSON object for LLM params: temperature, top_p, top_k, max_tokens, etc.
         )
         
         Table('message_attachments', metadata,
@@ -679,11 +680,15 @@ class CommandHistory:
         metadata.create_all(self.engine, checkfirst=True)
         init_kg_schema(self.engine)
 
-        # Add parent_message_id column if it doesn't exist (for broadcast grouping)
+        # Add columns if they don't exist (migrations for existing databases)
         if 'sqlite' in str(self.engine.url):
             with self.engine.begin() as conn:
                 try:
                     conn.execute(text("ALTER TABLE conversation_history ADD COLUMN parent_message_id VARCHAR(50)"))
+                except Exception:
+                    pass  # Column already exists
+                try:
+                    conn.execute(text("ALTER TABLE conversation_history ADD COLUMN params TEXT"))
                 except Exception:
                     pass  # Column already exists
 
@@ -871,6 +876,7 @@ class CommandHistory:
         parent_message_id=None,
         device_id=None,
         device_name=None,
+        gen_params=None,
     ):
         if isinstance(content, (dict, list)):
             content = json.dumps(content, cls=CustomJSONEncoder)
@@ -880,21 +886,27 @@ class CommandHistory:
             tool_calls = json.dumps(tool_calls, cls=CustomJSONEncoder)
         if tool_results is not None and not isinstance(tool_results, str):
             tool_results = json.dumps(tool_results, cls=CustomJSONEncoder)
+        # Serialize gen_params as JSON
+        gen_params_json = None
+        if gen_params is not None and not isinstance(gen_params, str):
+            gen_params_json = json.dumps(gen_params, cls=CustomJSONEncoder)
+        elif isinstance(gen_params, str):
+            gen_params_json = gen_params
 
         # Normalize directory path for cross-platform compatibility
         normalized_directory_path = normalize_path_for_db(directory_path)
 
         stmt = """
             INSERT INTO conversation_history
-            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results, parent_message_id, device_id, device_name)
-            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team, :reasoning_content, :tool_calls, :tool_results, :parent_message_id, :device_id, :device_name)
+            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results, parent_message_id, device_id, device_name, params)
+            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team, :reasoning_content, :tool_calls, :tool_results, :parent_message_id, :device_id, :device_name, :params)
         """
         params = {
             "message_id": message_id, "timestamp": timestamp, "role": role, "content": content,
             "conversation_id": conversation_id, "directory_path": normalized_directory_path, "model": model,
             "provider": provider, "npc": npc, "team": team, "reasoning_content": reasoning_content,
             "tool_calls": tool_calls, "tool_results": tool_results, "parent_message_id": parent_message_id,
-            "device_id": device_id, "device_name": device_name
+            "device_id": device_id, "device_name": device_name, "params": gen_params_json
         }
         with self.engine.begin() as conn:
             conn.execute(text(stmt), params)
@@ -1050,7 +1062,35 @@ class CommandHistory:
         
         with self.engine.begin() as conn:
             conn.execute(text(stmt), params)
-            
+
+    def get_approved_memories_by_scope(self):
+        """Get all approved/edited memories grouped by (npc, team, path) scope."""
+        stmt = """
+            SELECT id, npc, team, directory_path, initial_memory, final_memory, status
+            FROM memory_lifecycle
+            WHERE status IN ('human-approved', 'human-edited')
+            ORDER BY npc, team, directory_path, created_at
+        """
+        rows = self._fetch_all(stmt, {})
+
+        from collections import defaultdict
+        memories_by_scope = defaultdict(list)
+        for row in rows:
+            statement = row.get('final_memory') or row.get('initial_memory')
+            scope_key = (
+                row.get('npc') or 'default',
+                row.get('team') or 'global_team',
+                row.get('directory_path') or os.getcwd()
+            )
+            memories_by_scope[scope_key].append({
+                'id': row.get('id'),
+                'statement': statement,
+                'source_text': '',
+                'type': 'explicit',
+                'generation': 0
+            })
+        return dict(memories_by_scope)
+
     def add_attachment(self, message_id, name, attachment_type, data, size, file_path=None):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         stmt = """
@@ -1239,7 +1279,7 @@ class CommandHistory:
         stmt = """
             SELECT id, message_id, timestamp, role, content, conversation_id,
                     directory_path, model, provider, npc, team,
-                    reasoning_content, tool_calls, tool_results
+                    reasoning_content, tool_calls, tool_results, parent_message_id, params
             FROM conversation_history WHERE conversation_id = :conversation_id
             ORDER BY timestamp ASC
         """
@@ -1258,6 +1298,11 @@ class CommandHistory:
             if message_dict.get("tool_results"):
                 try:
                     message_dict["tool_results"] = json.loads(message_dict["tool_results"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if message_dict.get("params"):
+                try:
+                    message_dict["params"] = json.loads(message_dict["params"])
                 except (json.JSONDecodeError, TypeError):
                     pass
         return results
@@ -1468,10 +1513,12 @@ def save_conversation_message(
     skip_if_exists: bool = True,
     device_id: str = None,
     device_name: str = None,
+    gen_params: Dict = None,
     ):
     """
     Saves a conversation message linked to a conversation ID with optional attachments.
-    Now also supports reasoning_content, tool_calls, tool_results, and parent_message_id for broadcast grouping.
+    Now also supports reasoning_content, tool_calls, tool_results, parent_message_id for broadcast grouping,
+    and gen_params for temperature, top_p, top_k, max_tokens, etc.
     If skip_if_exists is True and message_id already exists, skip saving to prevent duplicates.
     """
     if wd is None:
@@ -1504,7 +1551,8 @@ def save_conversation_message(
         tool_results=tool_results,
         parent_message_id=parent_message_id,
         device_id=device_id,
-        device_name=device_name)
+        device_name=device_name,
+        gen_params=gen_params)
 def retrieve_last_conversation(
     command_history: CommandHistory, conversation_id: str
     ) -> str:

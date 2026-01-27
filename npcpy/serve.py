@@ -4644,6 +4644,17 @@ def stream():
     frontend_assistant_message_id = data.get("assistantMessageId", None)
     # For sub-branches: the parent of the user message (points to an assistant message)
     user_parent_message_id = data.get("userParentMessageId", None)
+    # LLM generation parameters - build params dict if any are provided
+    params = {}
+    if data.get("temperature") is not None:
+        params["temperature"] = data.get("temperature")
+    if data.get("top_p") is not None:
+        params["top_p"] = data.get("top_p")
+    if data.get("top_k") is not None:
+        params["top_k"] = data.get("top_k")
+    if data.get("max_tokens") is not None:
+        params["max_tokens"] = data.get("max_tokens")
+    params = params if params else None
 
     if current_path:
         loaded_vars = load_project_env(current_path)
@@ -4767,6 +4778,16 @@ def stream():
                     if os.path.exists(file_path):
                         with open(file_path, "rb") as f:
                             file_content_bytes = f.read()
+                    else:
+                        print(f"Warning: Attachment file does not exist: {file_path}")
+                        # Try data fallback if path doesn't exist
+                        if "data" in attachment and attachment["data"]:
+                            file_content_bytes = base64.b64decode(attachment["data"])
+                            import tempfile
+                            temp_dir = tempfile.mkdtemp()
+                            file_path = os.path.join(temp_dir, file_name)
+                            with open(file_path, "wb") as f:
+                                f.write(file_content_bytes)
 
                 # Fall back to base64 data if no path
                 elif "data" in attachment and attachment["data"]:
@@ -4778,7 +4799,8 @@ def stream():
                     with open(file_path, "wb") as f:
                         f.write(file_content_bytes)
 
-                if not file_path:
+                if not file_path or file_content_bytes is None:
+                    print(f"Warning: Skipping attachment {file_name} - no valid path or data")
                     continue
 
                 attachment_paths_for_llm.append(file_path)
@@ -5175,6 +5197,7 @@ def stream():
             attachments=attachments_for_db,
             message_id=message_id,
             parent_message_id=user_parent_message_id,  # For sub-branches: points to assistant message
+            gen_params=params,
         )
 
 
@@ -5472,6 +5495,7 @@ def stream():
                 tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
                 tool_results=tool_results_for_db if tool_results_for_db else None,
                 parent_message_id=parent_message_id,
+                gen_params=params,
             )
 
             # Start background tasks for memory extraction and context compression
