@@ -24,20 +24,116 @@ except:
 
 
 
-def search_exa(query:str, 
-               api_key:str = None, 
+def search_exa(query:str,
+               api_key:str = None,
                top_k = 5,
                **kwargs):
     from exa_py import Exa
     if api_key is None:
-        api_key = os.environ.get('EXA_API_KEY') 
+        api_key = os.environ.get('EXA_API_KEY')
     exa = Exa(api_key)
 
     results = exa.search_and_contents(
-        query, 
-        text=True   
+        query,
+        text=True
     )
     return results.results[0:top_k]
+
+
+def search_searxng(query: str, num_results: int = 5, instance_url: str = None):
+    """Search using SearXNG public instances."""
+    instances = [instance_url] if instance_url else [
+        os.environ.get('SEARXNG_URL'),
+        'https://search.sapti.me',
+        'https://searx.work',
+        'https://search.ononoki.org',
+    ]
+    instances = [i for i in instances if i]
+
+    for instance in instances:
+        try:
+            response = requests.get(
+                f"{instance}/search",
+                params={'q': query, 'format': 'json', 'categories': 'general'},
+                headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0'},
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                results = []
+                for r in data.get('results', [])[:num_results]:
+                    results.append({
+                        'title': r.get('title', ''),
+                        'link': r.get('url', ''),
+                        'content': r.get('content', '')
+                    })
+                if results:
+                    return results
+        except Exception as e:
+            print(f"SearXNG {instance} failed: {e}")
+            continue
+    return []
+
+
+def search_startpage(query: str, num_results: int = 5):
+    """Search using Startpage (scraping)."""
+    try:
+        response = requests.post(
+            'https://www.startpage.com/sp/search',
+            data={'query': query, 'cat': 'web'},
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html',
+            },
+            timeout=10
+        )
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            results = []
+            for item in soup.select('.result')[:num_results]:
+                title_el = item.select_one('h2') or item.select_one('a')
+                link_el = item.select_one('a[href^="http"]')
+                desc_el = item.select_one('p') or item.select_one('.description')
+                if link_el:
+                    results.append({
+                        'title': title_el.get_text(strip=True) if title_el else '',
+                        'link': link_el.get('href', ''),
+                        'content': desc_el.get_text(strip=True) if desc_el else ''
+                    })
+            return results
+    except Exception as e:
+        print(f"Startpage search failed: {e}")
+    return []
+
+
+def search_brave(query: str, num_results: int = 5, api_key: str = None):
+    """Search using Brave Search API."""
+    if api_key is None:
+        api_key = os.environ.get('BRAVE_API_KEY')
+    if not api_key:
+        print("Brave API key not set")
+        return []
+
+    try:
+        response = requests.get(
+            'https://api.search.brave.com/res/v1/web/search',
+            params={'q': query, 'count': num_results},
+            headers={'X-Subscription-Token': api_key, 'Accept': 'application/json'},
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for r in data.get('web', {}).get('results', [])[:num_results]:
+                results.append({
+                    'title': r.get('title', ''),
+                    'link': r.get('url', ''),
+                    'content': r.get('description', '')
+                })
+            return results
+    except Exception as e:
+        print(f"Brave search failed: {e}")
+    return []
 
 
 def search_perplexity(
@@ -134,10 +230,19 @@ def search_web(
             print("DuckDuckGo search failed: ", e)
             urls = []
             results = []
-    elif provider =='exa':
-        return search_exa(query, api_key=api_key, )
+    elif provider == 'exa':
+        return search_exa(query, api_key=api_key, top_k=num_results)
 
-    elif provider =='google':  
+    elif provider == 'searxng':
+        results = search_searxng(query, num_results=num_results)
+
+    elif provider == 'startpage':
+        results = search_startpage(query, num_results=num_results)
+
+    elif provider == 'brave':
+        results = search_brave(query, num_results=num_results, api_key=api_key)
+
+    elif provider == 'google':
         urls = list(search(query, num_results=num_results))
         
         

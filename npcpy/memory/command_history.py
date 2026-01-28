@@ -614,7 +614,10 @@ class CommandHistory:
             Column('parent_message_id', String(50)),  # Links assistant response to parent user message for broadcast grouping
             Column('device_id', String(255)),  # UUID of the device that created this message
             Column('device_name', String(255)),  # Human-readable device name
-            Column('params', Text)  # JSON object for LLM params: temperature, top_p, top_k, max_tokens, etc.
+            Column('params', Text),  # JSON object for LLM params: temperature, top_p, top_k, max_tokens, etc.
+            Column('input_tokens', Integer),  # Input/prompt token count
+            Column('output_tokens', Integer),  # Output/completion token count
+            Column('cost', String(50))  # Cost in USD (stored as string for precision)
         )
         
         Table('message_attachments', metadata,
@@ -689,6 +692,18 @@ class CommandHistory:
                     pass  # Column already exists
                 try:
                     conn.execute(text("ALTER TABLE conversation_history ADD COLUMN params TEXT"))
+                except Exception:
+                    pass  # Column already exists
+                try:
+                    conn.execute(text("ALTER TABLE conversation_history ADD COLUMN input_tokens INTEGER"))
+                except Exception:
+                    pass  # Column already exists
+                try:
+                    conn.execute(text("ALTER TABLE conversation_history ADD COLUMN output_tokens INTEGER"))
+                except Exception:
+                    pass  # Column already exists
+                try:
+                    conn.execute(text("ALTER TABLE conversation_history ADD COLUMN cost VARCHAR(50)"))
                 except Exception:
                     pass  # Column already exists
 
@@ -877,6 +892,9 @@ class CommandHistory:
         device_id=None,
         device_name=None,
         gen_params=None,
+        input_tokens=None,
+        output_tokens=None,
+        cost=None,
     ):
         if isinstance(content, (dict, list)):
             content = json.dumps(content, cls=CustomJSONEncoder)
@@ -896,17 +914,21 @@ class CommandHistory:
         # Normalize directory path for cross-platform compatibility
         normalized_directory_path = normalize_path_for_db(directory_path)
 
+        # Convert cost to string for precision
+        cost_str = str(cost) if cost is not None else None
+
         stmt = """
             INSERT INTO conversation_history
-            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results, parent_message_id, device_id, device_name, params)
-            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team, :reasoning_content, :tool_calls, :tool_results, :parent_message_id, :device_id, :device_name, :params)
+            (message_id, timestamp, role, content, conversation_id, directory_path, model, provider, npc, team, reasoning_content, tool_calls, tool_results, parent_message_id, device_id, device_name, params, input_tokens, output_tokens, cost)
+            VALUES (:message_id, :timestamp, :role, :content, :conversation_id, :directory_path, :model, :provider, :npc, :team, :reasoning_content, :tool_calls, :tool_results, :parent_message_id, :device_id, :device_name, :params, :input_tokens, :output_tokens, :cost)
         """
         params = {
             "message_id": message_id, "timestamp": timestamp, "role": role, "content": content,
             "conversation_id": conversation_id, "directory_path": normalized_directory_path, "model": model,
             "provider": provider, "npc": npc, "team": team, "reasoning_content": reasoning_content,
             "tool_calls": tool_calls, "tool_results": tool_results, "parent_message_id": parent_message_id,
-            "device_id": device_id, "device_name": device_name, "params": gen_params_json
+            "device_id": device_id, "device_name": device_name, "params": gen_params_json,
+            "input_tokens": input_tokens, "output_tokens": output_tokens, "cost": cost_str
         }
         with self.engine.begin() as conn:
             conn.execute(text(stmt), params)
@@ -1514,6 +1536,9 @@ def save_conversation_message(
     device_id: str = None,
     device_name: str = None,
     gen_params: Dict = None,
+    input_tokens: int = None,
+    output_tokens: int = None,
+    cost: float = None,
     ):
     """
     Saves a conversation message linked to a conversation ID with optional attachments.
@@ -1552,7 +1577,10 @@ def save_conversation_message(
         parent_message_id=parent_message_id,
         device_id=device_id,
         device_name=device_name,
-        gen_params=gen_params)
+        gen_params=gen_params,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost=cost)
 def retrieve_last_conversation(
     command_history: CommandHistory, conversation_id: str
     ) -> str:
