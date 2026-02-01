@@ -1010,7 +1010,7 @@ def print_and_process_stream(response, model, provider):
 
                 
     return thinking_str+str_output   
-def get_system_message(npc, team=None) -> str:
+def get_system_message(npc, team=None, tool_capable=False) -> str:
 
     if npc is None:
         return "You are a helpful assistant"
@@ -1080,6 +1080,28 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             if members:
                 system_message += "\nTeam members available for delegation:\n" + "\n".join(members) + "\n"
 
+    # Add tool descriptions from NPC's jinxs
+    if hasattr(npc, 'jinxs_dict') and npc.jinxs_dict:
+        tool_lines = []
+        for jname, jinx in npc.jinxs_dict.items():
+            desc = getattr(jinx, 'description', '') or ''
+            tool_lines.append(f"  - {jname}: {desc.strip()}")
+        if tool_lines:
+            system_message += "\nYou have access to the following tools:\n"
+            system_message += "\n".join(tool_lines) + "\n"
+            if tool_capable:
+                system_message += (
+                    "\nYou MUST use function calls to invoke tools. "
+                    "Call one tool at a time. You will see its result, then you can call the next tool or respond. "
+                    "NEVER write JSON tool calls in your response text. ONLY use the provided function calling interface. "
+                    "For multi-step tasks, call the first tool, wait for the result, then call the next.\n"
+                )
+            else:
+                system_message += (
+                    '\nTo use a tool, respond with JSON: {"action": "jinx", "jinx_name": "tool_name", "inputs": {"param": "value"}}\n'
+                    'When you have a final answer, respond with: {"action": "answer", "response": "your answer"}\n'
+                )
+
     system_message += """
     IMPORTANT:
 Some users may attach images to their request.
@@ -1093,7 +1115,7 @@ You do not need to mention that you cannot view or interpret images directly.
 They understand that you can view them multimodally.
 You only need to answer the user's request based on the attached image(s).
 """
-    
+
     return system_message
 
 
