@@ -6,45 +6,22 @@ import time
 import queue
 import re
 import json
-
 import subprocess
+import logging
 
+from typing import Optional, List, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+# Audio constants
 try:
-    import torch
     import pyaudio
-    import wave
-    from typing import Optional, List, Dict, Any
-    from gtts import gTTS
-    from faster_whisper import WhisperModel
-    os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
-    
-    import pygame
-
     FORMAT = pyaudio.paInt16
-    CHANNELS = 1
-    RATE = 16000
-    CHUNK = 512
-
-    
-    is_speaking = False
-    should_stop_speaking = False
-    tts_sequence = 0
-    recording_data = []
-    buffer_data = []
-    is_recording = False
-    last_speech_time = 0
-    running = True
-
-    
-    audio_queue = queue.Queue()
-    tts_queue = queue.PriorityQueue()
-    cleanup_files = []
-
-    
-    pygame.mixer.quit()
-    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
-except:
-    print("audio dependencies not installed")
+except ImportError:
+    FORMAT = 8  # paInt16 value fallback
+CHANNELS = 1
+RATE = 16000
+CHUNK = 512
 
 
 def convert_mp3_to_wav(mp3_file, wav_file):
@@ -90,49 +67,9 @@ def check_ffmpeg():
         return False
 
 
-def get_context_string():
-    context = []
-    for exchange in history:
-        context.append(f"User: {exchange['user']}")
-        context.append(f"Assistant: {exchange['assistant']}")
-    return "\n".join(context)
-
-
-
-def cleanup_temp_files():
-    global cleanup_files
-    for file in list(cleanup_files):
-        try:
-            if os.path.exists(file):
-                os.remove(file)
-                cleanup_files.remove(file)
-        except Exception:
-            pass
-
-
-def interrupt_speech():
-    global should_stop_speaking
-    should_stop_speaking = True
-    pygame.mixer.music.stop()
-    pygame.mixer.music.unload()
-
-    while not tts_queue.empty():
-        try:
-            _, temp_filename = tts_queue.get_nowait()
-            try:
-                if os.path.exists(temp_filename):
-                    os.remove(temp_filename)
-            except:
-                if temp_filename not in cleanup_files:
-                    cleanup_files.append(temp_filename)
-        except queue.Empty:
-            break
-
-    global tts_sequence
-    tts_sequence = 0
-
-
 def audio_callback(in_data, frame_count, time_info, status):
+    import pyaudio
+    audio_queue = queue.Queue()
     audio_queue.put(in_data)
     return (in_data, pyaudio.paContinue)
 
@@ -571,218 +508,67 @@ def get_available_stt_engines() -> dict:
 
 
 
-def load_history():
-    global history
-    try:
-        if os.path.exists(memory_file):
-            with open(memory_file, "r") as f:
-                history = json.load(f)
-    except Exception as e:
-        print(f"Error loading conversation history: {e}")
-        history = []
 
+# =============================================================================
+# TTS Playback Helpers (use unified audio_gen.text_to_speech)
+# =============================================================================
 
-def save_history():
-    try:
-        with open(memory_file, "w") as f:
-            json.dump(history, f)
-    except Exception as e:
-        print(f"Error saving conversation history: {e}")
+def create_and_queue_audio(text, state, engine="kokoro", voice=None):
+    """Create and play TTS audio using the unified engine interface.
 
+    Args:
+        text: Text to speak
+        state: Dict with 'tts_is_speaking', 'tts_just_finished', 'running' keys
+        engine: TTS engine name (kokoro, qwen3, elevenlabs, openai, gemini, gtts)
+        voice: Voice ID (engine-specific)
+    """
+    import wave
+    import uuid
 
-def add_exchange(user_input, assistant_response):
-    global history
-    exchange = {
-        "user": user_input,
-        "assistant": assistant_response,
-        "timestamp": time.time(),
-    }
-    history.append(exchange)
-    if len(history) > max_history:
-        history.pop(0)
-    save_history()
-
-
-def get_context_string():
-    context = []
-    for exchange in history:
-        context.append(f"User: {exchange['user']}")
-        context.append(f"Assistant: {exchange['assistant']}")
-    return "\n".join(context)
-
-
-
-def cleanup_temp_files():
-    global cleanup_files
-    for file in list(cleanup_files):
-        try:
-            if os.path.exists(file):
-                os.remove(file)
-                cleanup_files.remove(file)
-        except Exception:
-            pass
-
-
-def interrupt_speech():
-    global should_stop_speaking, response_generator, is_speaking, tts_sequence
-    should_stop_speaking = True
-    pygame.mixer.music.stop()
-    pygame.mixer.music.unload()
-
-    while not tts_queue.empty():
-        try:
-            _, temp_filename = tts_queue.get_nowait()
-            try:
-                if os.path.exists(temp_filename):
-                    os.remove(temp_filename)
-            except:
-                if temp_filename not in cleanup_files:
-                    cleanup_files.append(temp_filename)
-        except queue.Empty:
-            break
-
-    tts_sequence = 0
-    is_speaking = False
-
-
-def audio_callback(in_data, frame_count, time_info, status):
-    audio_queue.put(in_data)
-    return (in_data, pyaudio.paContinue)
-
-
-
-def play_audio_from_queue():
-    global is_speaking, cleanup_files, should_stop_speaking
-    next_sequence = 0
-
-    while True:
-        if should_stop_speaking:
-            pygame.mixer.music.stop()
-            pygame.mixer.music.unload()
-
-            while not tts_queue.empty():
-                try:
-                    _, temp_filename = tts_queue.get_nowait()
-                    try:
-                        if os.path.exists(temp_filename):
-                            os.remove(temp_filename)
-                    except:
-                        if temp_filename not in cleanup_files:
-                            cleanup_files.append(temp_filename)
-                except queue.Empty:
-                    break
-
-            next_sequence = 0
-            is_speaking = False
-            should_stop_speaking = False
-            time.sleep(0.1)
-            continue
-
-        try:
-            if not tts_queue.empty():
-                sequence, temp_filename = tts_queue.queue[0]
-
-                if sequence == next_sequence:
-                    sequence, temp_filename = tts_queue.get()
-                    is_speaking = True
-
-                    try:
-                        if len(cleanup_files) > 0 and not pygame.mixer.music.get_busy():
-                            cleanup_temp_files()
-
-                        if should_stop_speaking:
-                            continue
-
-                        pygame.mixer.music.load(temp_filename)
-                        pygame.mixer.music.play()
-
-                        while (
-                            pygame.mixer.music.get_busy() and not should_stop_speaking
-                        ):
-                            pygame.time.wait(50)
-
-                        pygame.mixer.music.unload()
-
-                    except Exception as e:
-                        print(f"Audio playback error: {str(e)}")
-                    finally:
-                        try:
-                            if os.path.exists(temp_filename):
-                                os.remove(temp_filename)
-                        except:
-                            if temp_filename not in cleanup_files:
-                                cleanup_files.append(temp_filename)
-
-                        if not should_stop_speaking:
-                            next_sequence += 1
-                        is_speaking = False
-
-            time.sleep(0.05)
-        except Exception:
-            time.sleep(0.05)
-
-
-import pygame
-from gtts import gTTS
-import tempfile
-import os
-import logging
-
-logging.basicConfig(level=logging.ERROR)
-logger = logging.getLogger(__name__)
-
-import pyaudio
-import wave
-from gtts import gTTS
-import tempfile
-import os
-import logging
-
-import tempfile
-import uuid
-
-
-def create_and_queue_audio(text, state):
-    """Create and queue audio with state awareness for TTS/recording coordination"""
-    
     state["tts_is_speaking"] = True
 
     if not text.strip():
-        print("Empty text, skipping TTS")
         state["tts_is_speaking"] = False
         return
 
     try:
-        unique_id = uuid.uuid4()
-        with tempfile.TemporaryDirectory() as temp_dir:
-            mp3_file = os.path.join(temp_dir, f"temp_{unique_id}.mp3")
-            wav_file = os.path.join(temp_dir, f"temp_{unique_id}.wav")
+        from npcpy.gen.audio_gen import text_to_speech
 
-            tts = gTTS(text=text, lang="en", slow=False)
-            tts.save(mp3_file)
+        audio_bytes = text_to_speech(text, engine=engine, voice=voice)
 
-            convert_mp3_to_wav(mp3_file, wav_file)
+        # Write to temp file and play
+        suffix = '.mp3' if engine in ('elevenlabs', 'gtts') else '.wav'
+        tmp_path = os.path.join(tempfile.gettempdir(), f"npc_tts_{uuid.uuid4()}{suffix}")
+        with open(tmp_path, 'wb') as f:
+            f.write(audio_bytes)
 
-            
-            play_audio(wav_file, state)
+        play_path = tmp_path
+        if suffix == '.mp3':
+            wav_path = tmp_path.replace('.mp3', '.wav')
+            convert_mp3_to_wav(tmp_path, wav_path)
+            play_path = wav_path
+
+        play_audio(play_path, state)
+
+        for p in set([tmp_path, play_path]):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
     except Exception as e:
-        print(f"Error in TTS process: {e}")
+        logger.error(f"TTS error: {e}")
     finally:
-        
         state["tts_is_speaking"] = False
         state["tts_just_finished"] = True
 
-        for file in [mp3_file, wav_file]:
-            try:
-                if os.path.exists(file):
-                    os.remove(file)
-            except Exception as e:
-                print(f"Error removing temporary file {file}: {e}")
-
 
 def play_audio(filename, state):
-    """Play audio with state awareness for TTS/recording coordination"""
-    CHUNK = 4096  
+    """Play a WAV file via pyaudio with state awareness."""
+    import pyaudio
+    import wave
+
+    PLAY_CHUNK = 4096
 
     wf = wave.open(filename, "rb")
     p = pyaudio.PyAudio()
@@ -794,33 +580,19 @@ def play_audio(filename, state):
         output=True,
     )
 
-    data = wf.readframes(CHUNK)
-
-    
-    while data and state["running"]:  
+    data = wf.readframes(PLAY_CHUNK)
+    while data and state.get("running", True):
         stream.write(data)
-        data = wf.readframes(CHUNK)
+        data = wf.readframes(PLAY_CHUNK)
 
     stream.stop_stream()
     stream.close()
     p.terminate()
 
-    try:
-        os.unlink(filename)
-    except:
-        pass
-
-
-
-def process_response_chunk(text_chunk):
-    if not text_chunk.strip():
-        return
-    processed_text = process_text_for_tts(text_chunk)
-    create_and_queue_audio(processed_text)
-
 
 def process_text_for_tts(text):
-    text = re.sub(r"[*<>{}()\[\]&%")
+    """Clean text for TTS consumption."""
+    text = re.sub(r"[*<>{}()\[\]&%#@^~`]", "", text)
     text = text.strip()
     text = re.sub(r"(\w)\.(\w)\.", r"\1 \2 ", text)
     text = re.sub(r"([.!?])(\w)", r"\1 \2", text)
