@@ -499,12 +499,10 @@ def handle_request_input(
 
 
 def _get_jinxs(npc, team):
-    """Get available jinxs from npc and team."""
+    """Get available jinxs from npc (already filtered by jinxs_spec)."""
     jinxs = {}
     if npc and hasattr(npc, 'jinxs_dict'):
         jinxs.update(npc.jinxs_dict)
-    if team and hasattr(team, 'jinxs_dict'):
-        jinxs.update(team.jinxs_dict)
     return jinxs
 
 

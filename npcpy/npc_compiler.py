@@ -1370,6 +1370,12 @@ class NPC:
                         # Fallback to direct name match if no base dir
                         matched_names = [jinx_spec] if jinx_spec in self.team.jinxs_dict else []
 
+                    if not matched_names:
+                        raise FileNotFoundError(
+                            f"NPC '{self.name}' references jinx '{jinx_spec}' but no matching jinx was found. "
+                            f"Available jinxs: {list(self.team.jinxs_dict.keys())[:20]}..."
+                        )
+
                     for jinx_name in matched_names:
                         if jinx_name in self.team.jinxs_dict:
                             self.jinxs_dict[jinx_name] = self.team.jinxs_dict[jinx_name]
