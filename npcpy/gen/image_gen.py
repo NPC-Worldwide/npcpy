@@ -335,48 +335,80 @@ def gemini_image_gen(
 
 def ollama_image_gen(
     prompt: str,
-    model: str = "stable-diffusion",
+    model: str = "x/z-image-turbo",
     height: int = 512,
     width: int = 512,
     n_images: int = 1,
     api_url: Optional[str] = None,
+    seed: Optional[int] = None,
+    negative_prompt: Optional[str] = None,
+    num_steps: Optional[int] = None,
 ):
-    """Generate images using Ollama's image generation API."""
+    """Generate images using Ollama's image generation API.
+
+    Works with ollama image gen models like x/z-image-turbo and x/flux2-klein.
+    Uses the /api/generate endpoint with image gen specific options.
+    """
     import requests
-    import json
-    
+
     if api_url is None:
         api_url = os.environ.get('OLLAMA_API_URL', 'http://localhost:11434')
-    
+
     endpoint = f"{api_url}/api/generate"
-    
+
     collected_images = []
-    
+
     for _ in range(n_images):
+        options = {}
+        if width:
+            options["width"] = width
+        if height:
+            options["height"] = height
+        if seed is not None:
+            options["seed"] = seed
+        if num_steps is not None:
+            options["num_steps"] = num_steps
+
         payload = {
             "model": model,
             "prompt": prompt,
-            "images": True,
             "stream": False,
-            "options": {
-                "height": height,
-                "width": width
-            }
         }
-        
+        if options:
+            payload["options"] = options
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+
         response = requests.post(endpoint, json=payload)
-        response.raise_for_status()
-        
+
+        if not response.ok:
+            try:
+                err = response.json()
+                err_msg = err.get('error', response.text)
+            except Exception:
+                err_msg = response.text
+            raise RuntimeError(
+                f"Ollama image gen failed ({response.status_code}): {err_msg}\n"
+                f"Model: {model} — make sure it's pulled (`ollama pull {model}`)"
+            )
+
         result = response.json()
-        
-        if 'images' in result and result['images']:
+
+        if 'image' in result and result['image']:
+            image_bytes = base64.b64decode(result['image'])
+            image = Image.open(io.BytesIO(image_bytes))
+            collected_images.append(image)
+        elif 'images' in result and result['images']:
             for img_b64 in result['images']:
                 image_bytes = base64.b64decode(img_b64)
                 image = Image.open(io.BytesIO(image_bytes))
                 collected_images.append(image)
         else:
-            raise ValueError(f"No images returned from Ollama API: {result}")
-    
+            raise ValueError(
+                f"No images returned from Ollama. Response keys: {list(result.keys())}. "
+                f"Make sure '{model}' is an image generation model (e.g. x/z-image-turbo, x/flux2-klein)."
+            )
+
     return collected_images
 
 
@@ -424,7 +456,7 @@ def generate_image(
         elif provider == "gemini":
             model = "gemini-2.5-flash-image-preview"
         elif provider == "ollama":
-            model = "stable-diffusion"
+            model = "x/z-image-turbo"
     
     all_generated_pil_images = []
 
