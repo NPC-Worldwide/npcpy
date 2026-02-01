@@ -650,7 +650,11 @@ class CommandHistory:
             Column('timestamp', String(50)),
             Column('npc', String(100)),
             Column('team', String(100)),
-            Column('conversation_id', String(100))
+            Column('conversation_id', String(100)),
+            Column('output', Text),
+            Column('status', String(50)),
+            Column('error_message', Text),
+            Column('duration_ms', Integer)
         )
         
         Table('npc_executions', metadata,
@@ -706,6 +710,22 @@ class CommandHistory:
                     conn.execute(text("ALTER TABLE conversation_history ADD COLUMN cost VARCHAR(50)"))
                 except Exception:
                     pass  # Column already exists
+                # jinx_executions new columns
+                for col in [
+                    "ALTER TABLE jinx_executions ADD COLUMN output TEXT",
+                    "ALTER TABLE jinx_executions ADD COLUMN status VARCHAR(50)",
+                    "ALTER TABLE jinx_executions ADD COLUMN error_message TEXT",
+                    "ALTER TABLE jinx_executions ADD COLUMN duration_ms INTEGER",
+                ]:
+                    try:
+                        conn.execute(text(col))
+                    except Exception:
+                        pass
+                # drop the redundant jinx_execution_log if it exists
+                try:
+                    conn.execute(text("DROP TABLE IF EXISTS jinx_execution_log"))
+                except Exception:
+                    pass
 
     def _setup_execution_triggers(self):
         if 'sqlite' in str(self.engine.url):
@@ -1133,25 +1153,26 @@ class CommandHistory:
             conn.execute(text(stmt), params)
 
     def save_jinx_execution(
-        self, 
-        triggering_message_id: str, 
-        conversation_id: str, 
+        self,
+        triggering_message_id: str,
+        conversation_id: str,
         npc_name: Optional[str],
-        jinx_name: str, 
-        jinx_inputs: Dict, 
-        jinx_output: Any, status: str,
-        team_name: Optional[str] = None, 
+        jinx_name: str,
+        jinx_inputs: Dict,
+        jinx_output: Any,
+        status: str,
+        team_name: Optional[str] = None,
         error_message: Optional[str] = None,
-        response_message_id: Optional[str] = None, 
+        response_message_id: Optional[str] = None,
         duration_ms: Optional[int] = None
     ):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         try:
             inputs_json = json.dumps(jinx_inputs, cls=CustomJSONEncoder)
         except TypeError:
             inputs_json = json.dumps(str(jinx_inputs))
-        
+
         try:
             if isinstance(jinx_output, (str, int, float, bool, list, dict, type(None))):
                 outputs_json = json.dumps(jinx_output, cls=CustomJSONEncoder)
@@ -1160,29 +1181,32 @@ class CommandHistory:
         except TypeError:
             outputs_json = json.dumps(f"Non-serializable output: {type(jinx_output)}")
 
+        msg_id = triggering_message_id or f"jinx-{jinx_name}-{timestamp.replace(' ', '-')}"
+
+        # If trigger already created a row, update it; otherwise insert
         stmt = """
-            INSERT INTO jinx_execution_log
-            (triggering_message_id, conversation_id, timestamp, npc_name, team_name,
-             jinx_name, jinx_inputs, jinx_output, status, error_message, response_message_id, duration_ms)
-             VALUES (:triggering_message_id, :conversation_id, :timestamp, :npc_name, :team_name,
-                     :jinx_name, :jinx_inputs, :jinx_output, :status, :error_message, :response_message_id, :duration_ms)
+            INSERT OR REPLACE INTO jinx_executions
+            (message_id, jinx_name, input, timestamp, npc, team,
+             conversation_id, output, status, error_message, duration_ms)
+            VALUES (:message_id, :jinx_name, :input, :timestamp, :npc, :team,
+                    :conversation_id, :output, :status, :error_message, :duration_ms)
         """
         params = {
-            "triggering_message_id": triggering_message_id,
-            "conversation_id": conversation_id,
-            "timestamp": timestamp,
-            "npc_name": npc_name,
-            "team_name": team_name,
+            "message_id": msg_id,
             "jinx_name": jinx_name,
-            "jinx_inputs": inputs_json,
-            "jinx_output": outputs_json,
+            "input": inputs_json,
+            "timestamp": timestamp,
+            "npc": npc_name,
+            "team": team_name,
+            "conversation_id": conversation_id,
+            "output": outputs_json,
             "status": status,
             "error_message": error_message,
-            "response_message_id": response_message_id,
-            "duration_ms": duration_ms
+            "duration_ms": duration_ms,
         }
-        
-        return self._execute_returning_id(stmt, params)
+
+        with self.engine.begin() as conn:
+            conn.execute(text(stmt), params)
 
     def get_full_message_content(self, message_id):
         stmt = "SELECT content FROM conversation_history WHERE message_id = :message_id ORDER BY timestamp ASC"
