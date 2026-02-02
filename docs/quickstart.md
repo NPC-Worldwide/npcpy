@@ -99,7 +99,6 @@ Now that you have the basics, explore the guides:
 - **[Jinx Workflows](guides/jinx-workflows.md)** - Jinja Execution templates for prompt pipelines
 - **[NPCArray](guides/npc-array.md)** - Vectorized operations over model populations
 - **[Image, Audio & Video](guides/image-audio-video.md)** - Generation across providers
-- **[AirLLM](guides/airllm.md)** - Run 70B+ models on consumer hardware
 - **[Knowledge Graphs](guides/knowledge-graphs.md)** - Build and evolve knowledge graphs from text
 - **[Fine-Tuning & Evolution](guides/fine-tuning.md)** - SFT, RL, genetic algorithms
 - **[Serving & Deployment](guides/serving.md)** - Flask server for production teams

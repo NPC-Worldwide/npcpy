@@ -1,3 +1,4 @@
+airllm
 anthropic
 beautifulsoup4
 chromadb
@@ -14,8 +15,12 @@ jinja2
 kuzu
 markdown
 matplotlib
+mkdocs
+mkdocstrings
 mkdocstrings-python
-mkdocs-material
+pymdown-extensions
+chroptiks
+pyvis
 nltk
 numpy
 ollama

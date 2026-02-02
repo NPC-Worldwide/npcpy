@@ -70,7 +70,6 @@ print(response['response'])
 - **[Jinx Workflows](https://npcpy.readthedocs.io/en/latest/guides/jinx-workflows/)** — Jinja Execution templates for multi-step prompt pipelines
 - **[NPCArray](https://npcpy.readthedocs.io/en/latest/guides/npc-array/)** — NumPy-like vectorized operations over model populations
 - **[Image, Audio & Video](https://npcpy.readthedocs.io/en/latest/guides/image-audio-video/)** — Generation via Ollama, diffusers, OpenAI, Gemini
-- **[AirLLM](https://npcpy.readthedocs.io/en/latest/guides/airllm/)** — Run 70B+ models on consumer hardware (MLX/CUDA)
 - **[Knowledge Graphs](https://npcpy.readthedocs.io/en/latest/guides/knowledge-graphs/)** — Build and evolve knowledge graphs from text
 - **[Fine-Tuning & Evolution](https://npcpy.readthedocs.io/en/latest/guides/fine-tuning/)** — SFT, RL, diffusion, genetic algorithms
 - **[Serving](https://npcpy.readthedocs.io/en/latest/guides/serving/)** — Flask server for deploying teams via REST API
@@ -86,8 +85,7 @@ Works with all major LLM providers through LiteLLM: `ollama`, `openai`, `anthrop
 ```bash
 pip install npcpy              # base
 pip install npcpy[lite]        # + API provider libraries
-pip install npcpy[local]       # + ollama, diffusers, transformers
-pip install npcpy[airllm]      # + AirLLM for 70B+ models
+pip install npcpy[local]       # + ollama, diffusers, transformers, airllm
 pip install npcpy[yap]         # + TTS/STT
 pip install npcpy[all]         # everything
 ```
@@ -131,7 +129,7 @@ Full documentation, guides, and API reference at [npcpy.readthedocs.io](https://
 
 ## Links
 
-- **[NPC Studio](https://github.com/cagostino/npc-studio)** — GUI for the NPC Toolkit ([download](https://enpisi.com/npc-studio))
+- **[Incognide](https://github.com/cagostino/incognide)** — GUI for the NPC Toolkit ([download](https://enpisi.com/incognide))
 - **[NPC Shell](https://github.com/npc-worldwide/npcsh)** — Command-line shell for interacting with NPCs
 - **[Newsletter](https://forms.gle/n1NzQmwjsV4xv1B2A)** — Stay in the loop
 

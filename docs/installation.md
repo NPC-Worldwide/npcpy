@@ -25,12 +25,10 @@ ollama pull nomic-embed-text
 pip install npcpy
 # if you want to install with the API libraries
 pip install npcpy[lite]
-# if you want the full local package set up (ollama, diffusers, transformers, cuda etc.)
+# if you want the full local package set up (ollama, diffusers, transformers, airllm, etc.)
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[yap]
-# if you want to run 70B+ models with airllm
-pip install npcpy[airllm]
 # if you want everything:
 pip install npcpy[all]
 ```
@@ -55,12 +53,10 @@ ollama pull nomic-embed-text
 pip install npcpy
 # if you want to install with the API libraries
 pip install npcpy[lite]
-# if you want the full local package set up (ollama, diffusers, transformers, cuda etc.)
+# if you want the full local package set up (ollama, diffusers, transformers, airllm, etc.)
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[yap]
-# if you want to run 70B+ models with airllm
-pip install npcpy[airllm]
 # if you want everything:
 pip install npcpy[all]
 
@@ -78,12 +74,10 @@ ollama pull nomic-embed-text
 pip install npcpy
 # if you want to install with the API libraries
 pip install npcpy[lite]
-# if you want the full local package set up (ollama, diffusers, transformers, cuda etc.)
+# if you want the full local package set up (ollama, diffusers, transformers, airllm, etc.)
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[yap]
-# if you want to run 70B+ models with airllm
-pip install npcpy[airllm]
 # if you want everything:
 pip install npcpy[all]
 

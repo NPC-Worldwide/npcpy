@@ -62,3 +62,5 @@ The system uses several persistence mechanisms:
 - Vector database (ChromaDB) for embeddings and semantic search
 - Filesystem for NPC, jinx, and team definitions
 - Knowledge graphs for contextual memory across sessions
+
+For a practical walkthrough of database setup, conversation tracking, memory, NPCSQL, and building persistent agent systems, see the [Building Applications guide](guides/building-applications.md).

@@ -6,7 +6,7 @@ AirLLM lets you run large language models (70B parameters and beyond) on machine
 
 ```bash
 # Base install
-pip install npcpy[airllm]
+pip install npcpy[local]
 
 # macOS: MLX backend (no compression needed on Apple Silicon)
 pip install mlx

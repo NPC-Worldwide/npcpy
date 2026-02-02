@@ -67,7 +67,8 @@ local_requirements = [
     "chromadb",
     "diffusers",
     "torch",
-    "datasets", 
+    "datasets",
+    "airllm",
 ]
 
 
@@ -92,7 +93,6 @@ setup(
         "local": local_requirements,  
         "yap": voice_requirements,  
         "all": api_requirements + local_requirements + voice_requirements,
-        "airllm": ["airllm"],
     },
     author="Christopher Agostino",
     author_email="info@npcworldwi.de",

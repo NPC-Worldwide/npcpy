@@ -114,3 +114,9 @@ Both NPCArray and Jinx workflows use lazy evaluation patterns. NPCArray builds a
 - **Optimization**: The engine can batch and parallelize operations
 - **Inspection**: Call `.explain()` to see the computation plan before running
 - **Composition**: Chain operations without intermediate execution overhead
+
+## Persistence and Memory
+
+npcpy provides a full persistence layer for building production applications. Conversations, tool calls, token usage, and costs are tracked in a `conversation_history` table. A human-in-the-loop memory system lets agents learn from interactions, with memories flowing through a review pipeline (pending → approved/rejected/edited). Knowledge graphs store facts and concepts scoped by NPC, team, and directory.
+
+See the [Building Applications guide](guides/building-applications.md) for database setup, conversation tracking, memory lifecycle, knowledge graph persistence, NPCSQL, desktop automation, triggers, and patterns for long-running agent systems.

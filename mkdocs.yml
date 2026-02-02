@@ -47,6 +47,7 @@ nav:
     - Fine-Tuning & Evolution: guides/fine-tuning.md
     - Serving & Deployment: guides/serving.md
     - ML Functions: guides/ml-funcs.md
+    - Building Applications: guides/building-applications.md
   - Architecture: npc_data_layer.md
   - API Reference:
     - LLM Functions: api/llm_funcs.md

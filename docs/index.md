@@ -29,6 +29,7 @@ Welcome to `npcpy`, the python library for the NPC Toolkit and the home of the c
 - **[Fine-Tuning & Evolution](guides/fine-tuning.md)** - SFT, RL, diffusion, genetic algorithms
 - **[Serving & Deployment](guides/serving.md)** - Flask server and REST API
 - **[ML Functions](guides/ml-funcs.md)** - Scikit-learn grid search, ensemble prediction
+- **[Building Applications](guides/building-applications.md)** - Database persistence, memory, NPCSQL, desktop automation, triggers
 
 ## Reference
 
@@ -41,8 +42,8 @@ Contributions are welcome! Please submit issues and pull requests on the GitHub 
 ## Support
 If you appreciate the work here, [consider supporting NPC Worldwide with a monthly donation](https://buymeacoffee.com/npcworldwide), [buying NPC-WW themed merch](https://enpisi.com/shop), or hiring us to help you explore how to use `npcpy` and AI tools to help your business or research team, please reach out to info@npcworldwi.de .
 
-## NPC Studio
-There is a graphical user interface that makes use of the NPC Toolkit through the NPC Studio. See the source code for NPC Studio [here](https://github.com/cagostino/npc-studio). Download the executables at [our website](https://enpisi.com/npc-studio).
+## Incognide
+There is a graphical user interface that makes use of the NPC Toolkit through Incognide. See the source code for Incognide [here](https://github.com/cagostino/incognide). Download the executables at [our website](https://enpisi.com/incognide).
 
 
 ## License
