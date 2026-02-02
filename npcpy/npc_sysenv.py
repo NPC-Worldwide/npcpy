@@ -1203,7 +1203,10 @@ def lookup_provider(model: str) -> str:
     
     if model == "deepseek-chat" or model == "deepseek-reasoner":
         return "deepseek"
-        
+
+    if model.startswith("airllm-"):
+        return "airllm"
+
     ollama_prefixes = [
         "llama", "deepseek", "qwen", "llava", 
         "phi", "mistral", "mixtral", "dolphin", 

@@ -26,22 +26,39 @@ plugins:
             members:
               - public
             filters:
-              - "!^__init__$"  
+              - "!^__init__$"
           rendering:
             show_source: true
             show_root_heading: false
 nav:
   - Home: index.md
   - Installation: installation.md
-  - Using npcpy: npcpy.md
-    - API:
-      - Image: api/image.md
-      - Data Loading: api/data.md
-      - LLM Functions: api/llm_funcs.md
-      - Generation: api/gen.md
-      - NPC, Team, Jinx: api/npc_compiler.md
-      - NPC Sys Env Helpers: api/npc_sysenv.md
-      - Memory & Search: api/memory.md
-      - OCR: api/ocr.md
-      - Tools: api/tools.md
-      - Serve: api/serve.md
+  - Quickstart: quickstart.md
+  - Core Concepts: concepts.md
+  - Guides:
+    - Working with LLMs: guides/llm-responses.md
+    - Building Agents: guides/agents.md
+    - Multi-Agent Teams: guides/teams.md
+    - Jinx Workflows: guides/jinx-workflows.md
+    - NPCArray - Vectorized AI: guides/npc-array.md
+    - Image, Audio & Video: guides/image-audio-video.md
+    - AirLLM - 70B+ Models: guides/airllm.md
+    - Knowledge Graphs: guides/knowledge-graphs.md
+    - Fine-Tuning & Evolution: guides/fine-tuning.md
+    - Serving & Deployment: guides/serving.md
+    - ML Functions: guides/ml-funcs.md
+  - Architecture: npc_data_layer.md
+  - API Reference:
+    - LLM Functions: api/llm_funcs.md
+    - NPC, Team, Jinx: api/npc_compiler.md
+    - NPCArray: api/npc_array.md
+    - ML Functions: api/ml_funcs.md
+    - Generation: api/gen.md
+    - Knowledge Graph: api/knowledge_graph.md
+    - Data Loading: api/data.md
+    - Memory & Search: api/memory.md
+    - Tools: api/tools.md
+    - Image: api/image.md
+    - NPC Sys Env: api/npc_sysenv.md
+    - OCR: api/ocr.md
+    - Serve: api/serve.md

@@ -830,6 +830,234 @@ def get_llamacpp_response(
     return result
 
 
+_AIRLLM_MODEL_CACHE = {}
+_AIRLLM_MLX_PATCHED = False
+
+def _patch_airllm_mlx_bias():
+    """
+    Monkey-patch airllm's MLX Attention/FeedForward to use bias=True.
+    AirLLM hardcodes bias=False which fails for non-Llama architectures (e.g. Qwen2).
+    Using bias=True is safe: MLX nn.Linear(bias=True) accepts weight-only updates,
+    so Llama models (no bias in weights) still work correctly.
+    """
+    global _AIRLLM_MLX_PATCHED
+    if _AIRLLM_MLX_PATCHED:
+        return
+    try:
+        import airllm.airllm_llama_mlx as mlx_mod
+        import mlx.core as mx
+        from mlx import nn
+
+        class PatchedAttention(nn.Module):
+            def __init__(self, args):
+                super().__init__()
+                self.args = args
+                self.n_heads = args.n_heads
+                self.n_kv_heads = args.n_kv_heads
+                self.repeats = self.n_heads // self.n_kv_heads
+                self.scale = args.head_dim ** -0.5
+                self.wq = nn.Linear(args.dim, args.n_heads * args.head_dim, bias=True)
+                self.wk = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=True)
+                self.wv = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=True)
+                self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=True)
+                self.rope = nn.RoPE(
+                    args.head_dim, traditional=args.rope_traditional, base=args.rope_theta
+                )
+
+            def __call__(self, x, mask=None, cache=None):
+                B, L, D = x.shape
+                queries, keys, values = self.wq(x), self.wk(x), self.wv(x)
+                queries = queries.reshape(B, L, self.n_heads, -1).transpose(0, 2, 1, 3)
+                keys = keys.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
+                values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
+
+                def repeat(a):
+                    a = mx.concatenate([mx.expand_dims(a, 2)] * self.repeats, axis=2)
+                    return a.reshape([B, self.n_heads, L, -1])
+                keys, values = map(repeat, (keys, values))
+
+                if cache is not None:
+                    key_cache, value_cache = cache
+                    queries = self.rope(queries, offset=key_cache.shape[2])
+                    keys = self.rope(keys, offset=key_cache.shape[2])
+                    keys = mx.concatenate([key_cache, keys], axis=2)
+                    values = mx.concatenate([value_cache, values], axis=2)
+                else:
+                    queries = self.rope(queries)
+                    keys = self.rope(keys)
+
+                scores = (queries * self.scale) @ keys.transpose(0, 1, 3, 2)
+                if mask is not None:
+                    scores += mask
+                weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(scores.dtype)
+                output = (weights @ values).transpose(0, 2, 1, 3).reshape(B, L, -1)
+                return self.wo(output), (keys, values)
+
+        class PatchedFeedForward(nn.Module):
+            def __init__(self, args):
+                super().__init__()
+                self.w1 = nn.Linear(args.dim, args.hidden_dim, bias=True)
+                self.w2 = nn.Linear(args.hidden_dim, args.dim, bias=True)
+                self.w3 = nn.Linear(args.dim, args.hidden_dim, bias=True)
+
+            def __call__(self, x):
+                return self.w2(nn.silu(self.w1(x)) * self.w3(x))
+
+        mlx_mod.Attention = PatchedAttention
+        mlx_mod.FeedForward = PatchedFeedForward
+        _AIRLLM_MLX_PATCHED = True
+        logger.debug("Patched airllm MLX classes for bias support")
+    except Exception as e:
+        logger.warning(f"Failed to patch airllm MLX bias support: {e}")
+
+def get_airllm_response(
+    prompt: str = None,
+    model: str = None,
+    tools: list = None,
+    tool_map: Dict = None,
+    format: str = None,
+    messages: List[Dict[str, str]] = None,
+    auto_process_tool_calls: bool = False,
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Generate response using AirLLM for 70B+ model inference.
+    Supports macOS (MLX backend) and Linux (CUDA backend with 4-bit compression).
+    """
+    import platform
+    is_macos = platform.system() == "Darwin"
+
+    result = {
+        "response": None,
+        "messages": messages.copy() if messages else [],
+        "raw_response": None,
+        "tool_calls": [],
+        "tool_results": []
+    }
+
+    try:
+        from airllm import AutoModel
+    except ImportError:
+        result["response"] = ""
+        result["error"] = "airllm not installed. Install with: pip install airllm"
+        return result
+
+    # Patch airllm MLX classes to support models with bias (e.g. Qwen)
+    if is_macos:
+        _patch_airllm_mlx_bias()
+
+    if prompt:
+        if result['messages'] and result['messages'][-1]["role"] == "user":
+            result['messages'][-1]["content"] = prompt
+        else:
+            result['messages'].append({"role": "user", "content": prompt})
+
+    if format == "json":
+        json_instruction = """If you are returning a json object, begin directly with the opening {.
+Do not include any additional markdown formatting or leading ```json tags in your response."""
+        if result["messages"] and result["messages"][-1]["role"] == "user":
+            result["messages"][-1]["content"] += "\n" + json_instruction
+
+    model_name = model or "meta-llama/Meta-Llama-3.1-70B-Instruct"
+    # 4-bit compression requires CUDA via bitsandbytes; skip on macOS
+    default_compression = None if is_macos else "4bit"
+    compression = kwargs.get("compression", default_compression)
+    max_tokens = kwargs.get("max_tokens", 256)
+    temperature = kwargs.get("temperature", 0.7)
+
+    # Resolve HF token for gated model access
+    hf_token = kwargs.get("hf_token")
+    if not hf_token:
+        hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if not hf_token:
+        try:
+            from huggingface_hub import HfFolder
+            hf_token = HfFolder.get_token()
+        except Exception:
+            pass
+
+    # Load or retrieve cached model
+    cache_key = f"{model_name}:{compression}"
+    if cache_key not in _AIRLLM_MODEL_CACHE:
+        load_kwargs = {"pretrained_model_name_or_path": model_name}
+        if compression:
+            load_kwargs["compression"] = compression
+        if hf_token:
+            load_kwargs["hf_token"] = hf_token
+        # Pass through additional airllm kwargs
+        for k in ["delete_original", "max_seq_len", "prefetching"]:
+            if k in kwargs:
+                load_kwargs[k] = kwargs[k]
+        _AIRLLM_MODEL_CACHE[cache_key] = AutoModel.from_pretrained(**load_kwargs)
+
+    air_model = _AIRLLM_MODEL_CACHE[cache_key]
+
+    try:
+        chat_text = air_model.tokenizer.apply_chat_template(
+            result["messages"], tokenize=False, add_generation_prompt=True
+        )
+    except Exception:
+        # Fallback if chat template is not available
+        chat_text = "\n".join(
+            f"{m['role']}: {m['content']}" for m in result["messages"]
+        )
+        chat_text += "\nassistant:"
+
+    try:
+        if is_macos:
+            import mlx.core as mx
+            tokens = air_model.tokenizer(
+                chat_text, return_tensors="np", truncation=True, max_length=2048
+            )
+            output = air_model.generate(
+                mx.array(tokens['input_ids']),
+                max_new_tokens=max_tokens,
+            )
+            # MLX backend returns string directly
+            response_content = output if isinstance(output, str) else str(output)
+        else:
+            tokens = air_model.tokenizer(
+                chat_text, return_tensors="pt", truncation=True, max_length=2048
+            )
+            gen_out = air_model.generate(
+                tokens['input_ids'].cuda(),
+                max_new_tokens=max_tokens,
+            )
+            # CUDA backend returns token IDs, decode them
+            output_ids = gen_out.sequences[0] if hasattr(gen_out, 'sequences') else gen_out[0]
+            response_content = air_model.tokenizer.decode(output_ids, skip_special_tokens=True)
+            # Strip the input prompt from the output
+            input_text = air_model.tokenizer.decode(tokens['input_ids'][0], skip_special_tokens=True)
+            if response_content.startswith(input_text):
+                response_content = response_content[len(input_text):]
+
+        response_content = response_content.strip()
+        # Strip at common stop/special tokens that airllm doesn't handle
+        for stop_tok in ["<|im_end|>", "<|endoftext|>", "<|eot_id|>", "</s>"]:
+            if stop_tok in response_content:
+                response_content = response_content[:response_content.index(stop_tok)].strip()
+    except Exception as e:
+        logger.error(f"AirLLM inference error: {e}")
+        result["error"] = f"AirLLM inference error: {str(e)}"
+        result["response"] = ""
+        return result
+
+    result["response"] = response_content
+    result["raw_response"] = response_content
+    result["messages"].append({"role": "assistant", "content": response_content})
+
+    if format == "json":
+        try:
+            if response_content.startswith("```json"):
+                response_content = response_content.replace("```json", "").replace("```", "").strip()
+            parsed_response = json.loads(response_content)
+            result["response"] = parsed_response
+        except json.JSONDecodeError:
+            result["error"] = f"Invalid JSON response: {response_content}"
+
+    return result
+
+
 def get_litellm_response(
     prompt: str = None,
     model: str = None,
@@ -918,6 +1146,17 @@ def get_litellm_response(
             messages=messages,
             stream=stream,
             attachments=attachments,
+            auto_process_tool_calls=auto_process_tool_calls,
+            **kwargs
+        )
+    elif provider == 'airllm':
+        return get_airllm_response(
+            prompt=prompt,
+            model=model,
+            tools=tools,
+            tool_map=tool_map,
+            format=format,
+            messages=messages,
             auto_process_tool_calls=auto_process_tool_calls,
             **kwargs
         )

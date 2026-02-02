@@ -233,30 +233,32 @@ result = lit_team.orchestrate(
     "Research the topic of magical realism, using the file './test_data/magical_realism.txt' as a primary source, and provide a comprehensive, creative summary."
 )
 
-print("\n--- Orchestration Result Summary ---")
-print(result['debrief']['summary'])
-
-print("\n--- Full Orchestration Output ---")
+print("\n--- Orchestration Output ---")
 print(result['output'])
 
+print("\n--- Full Result ---")
+print(result['result']['output'][:500])
+
 ```
 ```
- • Action chosen: pass_to_npc                                                                                                                                          
+ • Action chosen: pass_to_npc
 handling agent pass
 
- • Action chosen: answer_question                                                                                                                                      
- 
-{'debrief': {'summary': 'Isabel is finalizing preparations for her lunar expedition, focusing on recalibrating navigation systems and verifying the integrity of life support modules.',
-  'recommendations': 'Proceed with thorough system tests under various conditions, conduct simulation runs of key mission phases, and confirm backup systems are operational before launch.'},
- 'execution_history': [{'messages': [],
-   'output': 'I am currently finalizing preparations for my lunar expedition. It involves recalibrating my navigation systems and verifying the integrity of my life support modules. Details are quite...complex.'}]}
+ • Action chosen: answer_question
+
+{'output': 'Magical realism is a literary movement that originated in Latin America...',
+ 'result': {'messages': [...],
+   'output': 'Magical realism is a literary movement that originated in Latin America...',
+   'usage': {...}}}
 ```
 ```python
-print(lit_team.orchestrate('which book are your team members most proud of? ask them please. '))
-```  
+result = lit_team.orchestrate('which book are your team members most proud of? ask them please. ')
+print(result['output'])
+```
 
-```python
-{'debrief': {'summary': "The responses provided detailed accounts of the books that the NPC team members, Gabriel Garcia Marquez and Isabel Allende, are most proud of. Gabriel highlighted 'Cien años de soledad,' while Isabel spoke of 'La Casa de los Espíritus.' Both authors expressed deep personal connections to their works, illustrating their significance in Latin American literature and their own identities.", 'recommendations': 'Encourage further engagement with each author to explore more about their literary contributions, or consider asking about themes in their works or their thoughts on current literary trends.'}, 'execution_history': [{'messages': ...}]}
+```
+Gabriel highlighted 'Cien años de soledad,' while Isabel spoke of 'La Casa de los Espíritus.'
+Both authors expressed deep personal connections to their works, illustrating their significance in Latin American literature.
 ```
 
 LLM responses can be obtained without NPCs as well.
@@ -324,9 +326,41 @@ response = get_llm_response("What is the meaning of caesar salad", model='llama3
 
 
 ```
-Easily create images with the generate_image function, using models available through Huggingface's diffusers library or from OpenAI or Gemini.
+
+Run 70B+ models on consumer hardware with AirLLM, which splits models into per-layer files for memory-efficient inference. Works with MLX on macOS and CUDA on Linux.
+```python
+from npcpy.llm_funcs import get_llm_response
+
+# AirLLM with Qwen 2.5 on macOS (MLX backend) - no compression needed
+response = get_llm_response(
+    "What is the capital of France?",
+    model="Qwen/Qwen2.5-7B-Instruct",
+    provider="airllm",
+    max_tokens=50,
+)
+print(response['response'])
+
+# AirLLM with 4-bit compression on Linux (CUDA backend) for 70B+ models
+response = get_llm_response(
+    "Explain quantum computing in simple terms.",
+    model="Qwen/Qwen2.5-72B-Instruct",
+    provider="airllm",
+    compression="4bit",
+    max_tokens=100,
+)
+print(response['response'])
+```
+```
+The capital of France is Paris.
+```
+
+Easily create images with the generate_image function, using models available through Ollama, Huggingface's diffusers library, OpenAI, or Gemini.
 ```python
 from npcpy.llm_funcs import gen_image
+
+# Generate images locally with Ollama (e.g. z-image-turbo, flux2-klein)
+image = gen_image("a beautiful sunset over the ocean with sailboats", model='x/z-image-turbo', provider='ollama')
+
 image = gen_image("make a picture of the moon in the summer of marco polo", model='runwayml/stable-diffusion-v1-5', provider='diffusers')
 
 image = gen_image("kitten toddler in a bouncy house of fluffy gorilla", model='Qwen/Qwen-Image', provider='diffusers')
@@ -339,7 +373,7 @@ image = gen_image("make a picture of the moon in the summer of marco polo", mode
 image = gen_image("make a picture of the moon in the summer of marco polo", model='gpt-image-1', provider='openai', attachments=['/path/to/your/image.jpg', your_byte_code_image_here, your_PIL_image_here])
 
 
-image = gen_image("edit this picture of the moon in the summer of marco polo so that it looks like it is in the winter of nishitani", model='gemini-2.0-flash', provider='gemini', attachments= [])
+image = gen_image("edit this picture of the moon in the summer of marco polo so that it looks like it is in the winter of nishitani", model='gemini-2.5-flash-image', provider='gemini', attachments= [])
 
 ```
 
@@ -659,6 +693,8 @@ print(f"Fitted {len(result['models'])} model configurations")
 
 # Ensemble voting with multiple models
 predictions = ensemble_predict(X_test, result['models'], method='vote')
+print(f"Ensemble predictions: {predictions['predictions']}")
+print(f"Individual predictions shape: {predictions['individual_predictions'].shape}")
 ```
 
 ### Quick Utilities
@@ -744,7 +780,9 @@ For more examples of how to use `npcpy` to simplify your LLM workflows  or to cr
 
 
 ## Inference Capabilities
-- `npcpy` works with local and enterprise LLM providers through its LiteLLM integration, allowing users to run inference from Ollama, LMStudio, OpenAI, Anthropic, Gemini, and Deepseek, making it a versatile tool for both simple commands and sophisticated AI-driven tasks. 
+- `npcpy` works with local and enterprise LLM providers through its LiteLLM integration, allowing users to run inference from Ollama, LMStudio, OpenAI, Anthropic, Gemini, and Deepseek, making it a versatile tool for both simple commands and sophisticated AI-driven tasks.
+- `npcpy` supports AirLLM for running 70B+ parameter models on consumer hardware by splitting models into per-layer files. AirLLM works with the MLX backend on macOS and CUDA with 4-bit compression on Linux.
+- Image generation is supported through Ollama (e.g. `x/z-image-turbo`, `x/flux2-klein`), Huggingface diffusers, OpenAI (DALL-E, GPT Image), and Gemini.
 
 
 
@@ -818,6 +856,8 @@ pip install 'npcpy[lite]'
 pip install 'npcpy[local]'
 # if you want to use tts/stt
 pip install 'npcpy[yap]'
+# if you want to run 70B+ models with airllm
+pip install 'npcpy[airllm]'
 # if you want everything:
 pip install 'npcpy[all]'
 
@@ -852,7 +892,8 @@ pip install npcpy[lite]
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[yap]
-
+# if you want to run 70B+ models with airllm
+pip install npcpy[airllm]
 # if you want everything:
 pip install npcpy[all]
 ```
@@ -876,7 +917,8 @@ pip install npcpy[lite]
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[yap]
-
+# if you want to run 70B+ models with airllm
+pip install npcpy[airllm]
 # if you want everything:
 pip install npcpy[all]
 ```
@@ -896,7 +938,7 @@ python-tkinter (pyautogui)
 </details>
 
 
-We support inference via all providers supported by litellm. For openai-compatible providers that are not explicitly named in litellm, use simply `openai-like` as the provider. The default provider must be one of `['openai','anthropic','ollama', 'gemini', 'deepseek', 'openai-like']` and the model must be one available from those providers.
+We support inference via all providers supported by litellm. For openai-compatible providers that are not explicitly named in litellm, use simply `openai-like` as the provider. The default provider must be one of `['openai','anthropic','ollama', 'gemini', 'deepseek', 'airllm', 'openai-like']` and the model must be one available from those providers.
 
 To use tools that require API keys, create an `.env` file in the folder where you are working or place relevant API keys as env variables in your ~/.npcshrc. If you already have these API keys set in a ~/.bashrc or a ~/.zshrc or similar files, you need not additionally add them to ~/.npcshrc or to an `.env` file. Here is an example of what an `.env` file might look like:
 

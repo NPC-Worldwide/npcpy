@@ -726,17 +726,10 @@ Instructions:
         decision = response.get("response", {})
         logger.debug(f"[_react_fallback] Raw decision: {str(decision)[:200]}")
 
-        # Handle None response - model decided no action needed
-        if decision is None:
-            logger.debug(f"[_react_fallback] Decision is None, returning current output")
-            return {"messages": current_messages, "output": "", "usage": total_usage, "jinx_executions": jinx_executions}
-
-        if isinstance(decision, str):
-            try:
-                decision = json.loads(decision)
-            except:
-                logger.debug(f"[_react_fallback] Could not parse JSON, returning as text")
-                return {"messages": current_messages, "output": decision, "usage": total_usage, "jinx_executions": jinx_executions}
+        if not isinstance(decision, dict):
+            logger.debug(f"[_react_fallback] Non-dict response on iteration {iteration} - continuing")
+            context = f"Your response was not valid JSON object. You must respond with a JSON object: either {{\"action\": \"answer\", \"response\": \"...\"}} or {{\"action\": \"jinx\", \"jinx_name\": \"tool_name\", \"inputs\": {{...}}}}"
+            continue
 
         logger.debug(f"[_react_fallback] Parsed decision action: {decision.get('action') if decision else 'None'}")
         if decision.get("action") == "answer":
@@ -854,38 +847,14 @@ Instructions:
             command = f"{command}\n\nPrevious: {context}"
 
         else:
-            logger.debug(f"[_react_fallback] Unknown action - returning {len(current_messages)} messages")
-            # If we have jinx executions, return the last output instead of empty decision
-            if jinx_executions and jinx_executions[-1].get("output"):
-                return {"messages": current_messages, "output": jinx_executions[-1]["output"], "usage": total_usage, "jinx_executions": jinx_executions}
-            # If decision is empty {}, retry with clearer prompt if jinxs are available
-            if not decision or decision == {}:
-                if jinxs and iteration < max_iterations - 1:
-                    # Retry with explicit instruction to use a jinx
-                    context = f"You MUST use one of these tools to complete the task: {list(jinxs.keys())}. Return JSON with action and inputs."
-                    continue
-                else:
-                    # Last resort: get a text response
-                    pass
-                    current_messages.append({"role": "user", "content": command})
-                    fallback_response = get_llm_response(
-                        command,
-                        model=model,
-                        provider=provider,
-                        messages=current_messages[-10:],
-                        npc=npc,
-                        team=team,
-                        stream=stream,
-                        context=context,
-                    )
-                    if fallback_response.get("usage"):
-                        total_usage["input_tokens"] += fallback_response["usage"].get("input_tokens", 0)
-                        total_usage["output_tokens"] += fallback_response["usage"].get("output_tokens", 0)
-                    output = fallback_response.get("response", "")
-                    if output and isinstance(output, str):
-                        current_messages.append({"role": "assistant", "content": output})
-                    return {"messages": current_messages, "output": output, "usage": total_usage, "jinx_executions": jinx_executions}
-            return {"messages": current_messages, "output": str(decision), "usage": total_usage, "jinx_executions": jinx_executions}
+            # Unknown or missing action - continue iterating, don't bail out
+            action_val = decision.get("action")
+            logger.debug(f"[_react_fallback] Unknown action '{action_val}' on iteration {iteration} - continuing")
+            if jinxs:
+                context = f"Your response had action='{action_val}' which is not valid. You must respond with either {{\"action\": \"answer\", \"response\": \"...\"}} or {{\"action\": \"jinx\", \"jinx_name\": \"tool_name\", \"inputs\": {{...}}}}. Available tools: {list(jinxs.keys())}"
+            else:
+                context = f"Your response had action='{action_val}' which is not valid. Respond with {{\"action\": \"answer\", \"response\": \"your final answer\"}}"
+            continue
 
     logger.debug(f"[_react_fallback] Max iterations - returning {len(current_messages)} messages")
     # If we have jinx executions, return the last output

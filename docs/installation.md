@@ -29,7 +29,8 @@ pip install npcpy[lite]
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[yap]
-
+# if you want to run 70B+ models with airllm
+pip install npcpy[airllm]
 # if you want everything:
 pip install npcpy[all]
 ```
@@ -58,7 +59,8 @@ pip install npcpy[lite]
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[yap]
-
+# if you want to run 70B+ models with airllm
+pip install npcpy[airllm]
 # if you want everything:
 pip install npcpy[all]
 
@@ -80,7 +82,8 @@ pip install npcpy[lite]
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[yap]
-
+# if you want to run 70B+ models with airllm
+pip install npcpy[airllm]
 # if you want everything:
 pip install npcpy[all]
 
