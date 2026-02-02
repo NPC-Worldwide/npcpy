@@ -65,27 +65,27 @@ def visualize_knowledge_graph_final_interactive(kg, filename="knowledge_graph.ht
     """Updated to work with the new KG structure"""
     print(f"Generating interactive graph for Gen {kg['generation']} -> {filename}")
     
-    
+    # Extract facts and concepts from the new structure
     facts = kg.get("facts", [])
     concepts = kg.get("concepts", [])
     fact_to_concept_links = kg.get("fact_to_concept_links", {})
     concept_links = kg.get("concept_links", [])
     
-    
+    # Create node map for easy lookup
     node_map = {}
     for fact in facts:
         node_map[fact['statement']] = fact
     for concept in concepts:
         node_map[concept['name']] = concept
     
-    
-    
+    # Calculate positions in concentric circles
+    # Facts in inner circle, concepts in outer circle
     fact_radius = 300
     concept_radius = 600
     
     node_positions = {}
     
-    
+    # Position facts
     if facts:
         for i, fact in enumerate(facts):
             angle = (2 * math.pi * i) / len(facts)
@@ -95,7 +95,7 @@ def visualize_knowledge_graph_final_interactive(kg, filename="knowledge_graph.ht
                 'y': fact_radius * math.sin(angle)
             }
     
-    
+    # Position concepts
     if concepts:
         for i, concept in enumerate(concepts):
             angle = (2 * math.pi * i) / len(concepts)
@@ -105,10 +105,10 @@ def visualize_knowledge_graph_final_interactive(kg, filename="knowledge_graph.ht
                 'y': concept_radius * math.sin(angle)
             }
     
+    # Create the network
+    net = Network(height="100vh", width="100%", bgcolor="#222222", font_color="white", directed=True)
     
-    net = Network(height="100vh", width="100%", bgcolor="
-    
-    
+    # Add fact nodes
     for fact in facts:
         node_id = fact['statement']
         pos = node_positions.get(node_id, {'x': 0, 'y': 0})
@@ -119,11 +119,11 @@ def visualize_knowledge_graph_final_interactive(kg, filename="knowledge_graph.ht
             title=title_text, 
             x=pos['x'], 
             y=pos['y'], 
-            color='
+            color='#ff6961',  # Red for facts
             physics=False
         )
     
-    
+    # Add concept nodes
     for concept in concepts:
         node_id = concept['name']
         pos = node_positions.get(node_id, {'x': 0, 'y': 0})
@@ -134,17 +134,17 @@ def visualize_knowledge_graph_final_interactive(kg, filename="knowledge_graph.ht
             title=title_text, 
             x=pos['x'], 
             y=pos['y'], 
-            color='
+            color='#ffb480',  # Orange for concepts
             physics=False
         )
     
-    
+    # Add fact-to-concept edges
     for fact_statement, concept_names in fact_to_concept_links.items():
         for concept_name in concept_names:
             if fact_statement in node_map and concept_name in node_map:
-                net.add_edge(fact_statement, concept_name, color="
+                net.add_edge(fact_statement, concept_name, color="#8ecae6", width=1)
     
-    
+    # Add concept-to-con
 def visualize_growth(k_graphs, filename="growth_chart.png"):
     """
     Plots Facts and Concepts as separate lines instead of a stacked area.
@@ -158,15 +158,15 @@ def visualize_growth(k_graphs, filename="growth_chart.png"):
     plt.figure(figsize=(12, 8))
     
 
-    plt.plot(gens, facts_counts, label='Facts', color='
-    plt.plot(gens, concepts_counts, label='Concepts', color='
-    plt.plot(gens, total_nodes, label='Total Nodes', color='
+    plt.plot(gens, facts_counts, label='Facts', color='#ff6961', marker='o', linestyle='-', linewidth=2)
+    plt.plot(gens, concepts_counts, label='Concepts', color='#ffb480', marker='o', linestyle='-', linewidth=2)
+    plt.plot(gens, total_nodes, label='Total Nodes', color='#8ecae6', marker='x', linestyle='--', alpha=0.7)
 
     plt.xlabel("Generation", fontsize=14)
     plt.ylabel("Number of Nodes", fontsize=14)
     plt.legend(loc='upper left', fontsize=20, frameon=False)
     plt.xticks(gens)
-    plt.ylim(bottom=0) 
+    plt.ylim(bottom=0) # Ensure the y-axis starts at 0
     
     plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.close()
@@ -190,8 +190,8 @@ def visualize_fact_concept_ratio(kg_pairs, filename="fact_concept_ratio.png"):
     x = np.arange(len(labels))
     width = 0.35
     fig, ax = plt.subplots(figsize=(12, 8))
-    rects1 = ax.bar(x - width/2, before_ratios, width, label='Before Sleep', color='
-    rects2 = ax.bar(x + width/2, after_ratios, width, label='After Sleep', color='
+    rects1 = ax.bar(x - width/2, before_ratios, width, label='Before Sleep', color='#95a5a6')
+    rects2 = ax.bar(x + width/2, after_ratios, width, label='After Sleep', color='#2ecc71')
     ax.set_ylabel("Fact-to-Concept Ratio",)
     ax.set_xticks(x, labels, fontsize=12, rotation=45, ha="right")
     ax.legend(fontsize=20, frameon=False)
@@ -208,21 +208,21 @@ def visualize_sleep_process(kg_before, kg_after, filename="sleep_process.png"):
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     
-    
+    # Before state
     facts_before = len(kg_before.get('facts', []))
     concepts_before = len(kg_before.get('concepts', []))
     ax1.pie([facts_before, concepts_before], labels=['Facts', 'Concepts'], 
-            colors=['
+            colors=['#ff6961', '#ffb480'], autopct='%1.1f%%')
+    #ax1.set_title(f"Before Sleep (Gen {kg_before['generation']})")
     
-    
-    
+    # After state
     facts_after = len(kg_after.get('facts', []))
     concepts_after = len(kg_after.get('concepts', []))
     ax2.pie([facts_after, concepts_after], labels=['Facts', 'Concepts'], 
-            colors=['
+            colors=['#ff6961', '#ffb480'], autopct='%1.1f%%')
+    #ax2.set_title(f"After Sleep (Gen {kg_after['generation']})")
     
-    
-    
+    #plt.suptitle(f"Sleep Process: Generation {kg_before['generation']} to {kg_after['generation']}")
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
     print(f"Saved sleep process visualization to {filename}")
@@ -266,11 +266,11 @@ def visualize_key_experiences(kg, filename="key_experiences.png"):
     node_colors = []
     for node in G:
         if node in top_facts:
-            node_colors.append('
+            node_colors.append('#ff0000')  # Bright Red for key facts
         elif G.nodes[node]['type'] == 'fact':
-            node_colors.append('
+            node_colors.append('#ff6961')  # Standard Red for facts
         else:
-            node_colors.append('
+            node_colors.append('#ffb480')  # Orange for concepts
             
     plt.figure(figsize=(24, 24))
     pos = nx.spring_layout(G, k=1.5/math.sqrt(G.number_of_nodes()), iterations=100, seed=42)
@@ -324,10 +324,10 @@ def visualize_concept_trajectories(kg_history, n_pillars=2, n_risers=3, filename
         centrality_df = pd.concat([centrality_df, s.to_frame()], axis=1)
     centrality_df = centrality_df.transpose().sort_index()
 
-    
+    # Pillars: High average centrality
     pillars = centrality_df.mean().nlargest(n_pillars).index
     
-    
+    # Rising Stars: Exclude pillars from the candidates to find distinct risers
     riser_candidates = centrality_df.drop(columns=pillars, errors='ignore')
     centrality_diff = riser_candidates.iloc[-1].fillna(0) - riser_candidates.iloc[0].fillna(0)
     risers = centrality_diff.nlargest(n_risers).index
@@ -344,10 +344,10 @@ def visualize_concept_trajectories(kg_history, n_pillars=2, n_risers=3, filename
                  label=fill(concept_name, 20), linewidth=linewidth, alpha=alpha)
     plt.xlabel("Generation", fontsize=14)
     plt.ylabel("Degree Centrality", fontsize=14)
-    
+    #plt.title("Notable Concept Trajectories (Pillars vs. Risers)", fontsize=16)
     plt.xticks(gens)
     plt.legend(title="Concepts", bbox_to_anchor=(1.05, 1), loc='upper left')
-    
+    #plt.grid(True, linestyle='--', alpha=0.6)
     plt.ylim(bottom=0)
     plt.tight_layout()
     plt.savefig(filename, dpi=300, bbox_inches='tight')
@@ -363,7 +363,7 @@ def visualize_associative_richness(kg_history, filename="associative_richness.pn
         ari_scores.append(total_links / num_facts if num_facts > 0 else 0)
 
     plt.figure(figsize=(12, 8))
-    plt.plot(gens, ari_scores, marker='o', linestyle='-', color='
+    plt.plot(gens, ari_scores, marker='o', linestyle='-', color='#6a0dad', linewidth=2.5, label="System's ARI")
     plt.axhline(y=1, color='gray', linestyle='--', linewidth=2, label='1-to-1 Mapping Baseline (ARI=1.0)')
     plt.xlabel("Generation")
     plt.ylabel("Avg. Concepts per Fact (ARI)")
@@ -384,7 +384,7 @@ def visualize_conceptual_support(kg_history, filename="conceptual_support.png"):
         csi_scores.append(total_links / num_concepts if num_concepts > 0 else 0)
 
     plt.figure(figsize=(12, 8))
-    plt.plot(gens, csi_scores, marker='o', linestyle='-', color='
+    plt.plot(gens, csi_scores, marker='o', linestyle='-', color='#17becf', linewidth=2.5, label="System's CSI")
     plt.xlabel("Generation")
     plt.ylabel("Avg. Facts per Concept (CSI)")
     plt.xticks(gens)
@@ -400,7 +400,7 @@ def visualize_specialist_concepts(kg_history, num_to_show=8, filename="specialis
     """
     print(f"Generating Specialist Concept Trajectories chart -> {filename}")
     centrality_df = pd.DataFrame()
-    gens = [kg['generation'] for kg in kg_history] 
+    gens = [kg['generation'] for kg in kg_history] # Define gens here
 
     for kg in kg_history:
         G = _create_networkx_graph(kg)
@@ -424,7 +424,7 @@ def visualize_specialist_concepts(kg_history, num_to_show=8, filename="specialis
     plt.xlabel("Generation")
     plt.ylabel("Degree Centrality")
     
-    plt.xticks(gens) 
+    plt.xticks(gens) # Use the 'gens' list, not a single value
     
     plt.legend(title="Specialist Concepts",  loc=0, fontsize=17, frameon=False)
     plt.ylim(bottom=0)
@@ -460,8 +460,8 @@ def visualize_static_network(kg, top_n_concepts=25, top_n_facts=50, filename="st
     plt.figure(figsize=(16, 24))
     
 
-    nx.draw_networkx_nodes(SubG, pos, nodelist=top_facts, node_color='
-    nx.draw_networkx_nodes(SubG, pos, nodelist=top_concepts, node_color='
+    nx.draw_networkx_nodes(SubG, pos, nodelist=top_facts, node_color='#ff6961', node_size=150)
+    nx.draw_networkx_nodes(SubG, pos, nodelist=top_concepts, node_color='#ffb480', node_size=1200)
 
 
     nx.draw_networkx_edges(SubG, pos, alpha=0.25, width=0.6, edge_color='gray')
@@ -507,7 +507,7 @@ def visualize_concept_ontology_graph(kg, filename="concept_ontology.png"):
 
     pos = nx.spring_layout(Concept_G, k=1.5/math.sqrt(Concept_G.number_of_nodes()), iterations=100, seed=42)
 
-    nx.draw_networkx_nodes(Concept_G, pos, node_color='
+    nx.draw_networkx_nodes(Concept_G, pos, node_color='#ffb480', node_size=node_sizes)
     nx.draw_networkx_edges(Concept_G, pos, alpha=0.6, width=1.0, edge_color='gray')
     nx.draw_networkx_labels(Concept_G, pos, font_size=14, font_family='serif')
 
@@ -531,13 +531,13 @@ def visualize_top_concept_centrality(kg_history, top_n=5, filename="concept_cent
         
         degree_centrality = nx.degree_centrality(G)
         
-        
+        # Filter for concepts only
         concept_centrality = {node: cent for node, cent in degree_centrality.items() if G.nodes[node]['type'] == 'concept'}
         
         for concept_name, centrality in concept_centrality.items():
             centrality_data[concept_name][i] = centrality
     
-    
+    # Find the top N concepts based on their peak centrality
     sorted_concepts = sorted(centrality_data.keys(), key=lambda c: np.nanmax(centrality_data[c]), reverse=True)
     top_concepts = sorted_concepts[:top_n]
     
@@ -545,7 +545,7 @@ def visualize_top_concept_centrality(kg_history, top_n=5, filename="concept_cent
     gens = [kg['generation'] for kg in kg_history]
     
     for concept_name in top_concepts:
-        
+        # Interpolate NaN values for smoother plotting if a concept disappears and reappears
         s = pd.Series(centrality_data[concept_name])
         s_interpolated = s.interpolate(method='linear', limit_direction='forward', axis=0)
         plt.plot(gens, s_interpolated, marker='o', linestyle='-', label=fill(concept_name, 20))
@@ -569,7 +569,7 @@ def visualize_lorenz_curve(kg_history, filename="lorenz_curve.png"):
 
     fig, ax = plt.subplots(figsize=(10, 10))
 
-    
+    # --- Lorenz curve for the first valid generation ---
     first_gen_kg = next((kg for kg in kg_history if kg.get('facts')), None)
     if first_gen_kg:
         G_first = _create_networkx_graph(first_gen_kg)
@@ -577,24 +577,24 @@ def visualize_lorenz_curve(kg_history, filename="lorenz_curve.png"):
         if degrees_first.size > 0:
             cum_degrees_first = np.cumsum(degrees_first)
             ax.plot(np.linspace(0, 1, len(degrees_first)), cum_degrees_first / cum_degrees_first[-1],
-                     label=f"Gen {first_gen_kg['generation']} (Start)", color='
+                     label=f"Gen {first_gen_kg['generation']} (Start)", color='#1f77b4', linewidth=2)
 
-    
+    # --- Lorenz curve for the last generation ---
     last_gen_kg = kg_history[-1]
     G_last = _create_networkx_graph(last_gen_kg)
     degrees_last = np.array(sorted([d for n, d in G_last.degree()]))
     if degrees_last.size > 0:
         cum_degrees_last = np.cumsum(degrees_last)
         ax.plot(np.linspace(0, 1, len(degrees_last)), cum_degrees_last / cum_degrees_last[-1],
-                 label=f"Gen {last_gen_kg['generation']} (End)", color='
+                 label=f"Gen {last_gen_kg['generation']} (End)", color='#ff7f0e', linewidth=2)
 
-    
+    # --- Line of perfect equality for reference ---
     ax.plot([0, 1], [0, 1], linestyle='--', color='black', label='Perfect Equality')
 
     ax.set_xlabel("Cumulative Share of Nodes", fontsize=14)
     ax.set_ylabel("Cumulative Share of Connections", fontsize=14)
     ax.legend(fontsize=12)
-    ax.set_aspect('equal', adjustable='box') 
+    ax.set_aspect('equal', adjustable='box') # Ensures the plot is square
     plt.tight_layout()
     plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.close()
@@ -631,11 +631,11 @@ def visualize_concept_bubble_chart(kg, filename="concept_bubble_chart.png"):
 
     central_node = max(concepts, key=concepts.get)
     fixed_nodes = [central_node]
-    pos_initial = {central_node: (0, 0)} 
+    pos_initial = {central_node: (0, 0)} # Pin the most important node at (0,0)
 
 
     pos = nx.spring_layout(Concept_G, pos=pos_initial, fixed=fixed_nodes, 
-                           k=1.8/math.sqrt(Concept_G.number_of_nodes()), 
+                           k=1.8/math.sqrt(Concept_G.number_of_nodes()), # Controls spacing
                            iterations=200, seed=42)
 
 
@@ -644,7 +644,7 @@ def visualize_concept_bubble_chart(kg, filename="concept_bubble_chart.png"):
 
     node_sizes = [concepts[node] * 200 for node in Concept_G.nodes()]
     
-    nx.draw_networkx_nodes(Concept_G, pos, node_color='
+    nx.draw_networkx_nodes(Concept_G, pos, node_color='#ffb480', node_size=node_sizes, alpha=0.9)
     
     for node, (x, y) in pos.items():
         degree = concepts[node]
@@ -712,51 +712,51 @@ def visualize_centrality_bubble_chart(kg, node_type="concepts", filename="concep
             radius += 0.20
             nodes_in_ring = int(nodes_in_ring * 1.5)
 
-    
+    # Step 4: Draw the plot
     plt.figure(figsize=(20, 20))
     
     if node_type == "both":
-        
+        # Separate and draw by type
         concept_nodes = [(name, data) for name, data in sorted_nodes if data['type'] == 'concept']
         fact_nodes = [(name, data) for name, data in sorted_nodes if data['type'] == 'fact']
         
-        
+        # Draw concepts
         if concept_nodes:
             concept_names = [item[0] for item in concept_nodes]
             concept_sizes = [item[1]['degree'] * 200 for item in concept_nodes]
             concept_pos = {name: pos[name] for name in concept_names if name in pos}
             nx.draw_networkx_nodes(None, concept_pos, nodelist=concept_names, 
-                                  node_color='
+                                  node_color='#ffb480', node_size=concept_sizes, alpha=0.9)
         
-        
+        # Draw facts
         if fact_nodes:
             fact_names = [item[0] for item in fact_nodes]
             fact_sizes = [item[1]['degree'] * 100 for item in fact_nodes]
             fact_pos = {name: pos[name] for name in fact_names if name in pos}
             nx.draw_networkx_nodes(None, fact_pos, nodelist=fact_names, 
-                                  node_color='
+                                  node_color='#ff6961', node_size=fact_sizes, alpha=0.9)
         
-        
+        # Add legend for both types
         from matplotlib.patches import Patch
         legend_elements = [
-            Patch(facecolor='
-            Patch(facecolor='
+            Patch(facecolor='#ffb480', label='Concepts'),
+            Patch(facecolor='#ff6961', label='Facts')
         ]
         plt.legend(handles=legend_elements, loc='upper right', fontsize=14)
         
     else:
-        
+        # Single type visualization
         node_names = [item[0] for item in sorted_nodes]
         node_sizes = [item[1] * 200 for item in sorted_nodes]
         
-        
-        color = '
+        # Choose color based on type
+        color = '#ffb480' if node_type == "concepts" else '#ff6961'
         
         nx.draw_networkx_nodes(None, pos, nodelist=node_names, 
                               node_color=color, node_size=node_sizes, alpha=0.9)
     
 
-    top_nodes = sorted_nodes[:min(20, len(sorted_nodes))]  
+    top_nodes = sorted_nodes[:min(20, len(sorted_nodes))]  # Top 20 nodes only
     
     for item in top_nodes:
         node_name = item[0]
@@ -765,13 +765,13 @@ def visualize_centrality_bubble_chart(kg, node_type="concepts", filename="concep
             node_type_actual = item[1]['type']
         else:
             degree = item[1]
-            node_type_actual = node_type.rstrip('s')  
+            node_type_actual = node_type.rstrip('s')  # "concepts" -> "concept"
         
         if node_name in pos:
             x, y = pos[node_name]
             font_size = max(8, 8 + 2 * np.log1p(degree))
             
-            
+            # Adjust label length based on type
             if node_type_actual == 'fact':
                 label = fill(node_name, 10)
             else:
@@ -782,7 +782,7 @@ def visualize_centrality_bubble_chart(kg, node_type="concepts", filename="concep
 
     plt.axis('off')
     
-    
+    # Set axis limits
     max_coord = radius * 1.1
     plt.xlim(-max_coord, max_coord)
     plt.ylim(-max_coord, max_coord)
@@ -798,8 +798,8 @@ def visualize_dual_richness_metrics(kg_history, filename="dual_richness_metrics.
     print(f"Generating Dual Richness Metrics chart -> {filename}")
     
     gens = [kg['generation'] for kg in kg_history]
-    ari_scores = [] 
-    csi_scores = [] 
+    ari_scores = [] # Concepts per Fact
+    csi_scores = [] # Facts per Concept
 
     for kg in kg_history:
         num_facts = len(kg.get('facts', []))
@@ -814,14 +814,14 @@ def visualize_dual_richness_metrics(kg_history, filename="dual_richness_metrics.
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 16), sharex=True)
 
 
-    ax1.plot(gens, ari_scores, marker='o', linestyle='-', color='
+    ax1.plot(gens, ari_scores, marker='o', linestyle='-', color='#6a0dad', linewidth=2.5, label="System's ARI")
     ax1.axhline(y=1, color='gray', linestyle='--', linewidth=2, label='1-to-1 Mapping Baseline (ARI=1.0)')
     ax1.set_ylabel("Avg. Concepts per Fact (ARI)", fontsize=14)
     ax1.legend(loc='lower right')
     ax1.set_ylim(bottom=0)
 
 
-    ax2.plot(gens, csi_scores, marker='o', linestyle='-', color='
+    ax2.plot(gens, csi_scores, marker='o', linestyle='-', color='#17becf', linewidth=2.5, label="System's CSI")
     ax2.set_xlabel("Generation", fontsize=14)
     ax2.set_ylabel("Avg. Facts per Concept (CSI)", fontsize=14)
     ax2.legend(loc='lower right')
