@@ -1048,40 +1048,45 @@ class CommandHistory:
         return self._fetch_all(stmt, params)
 
     def get_memory_examples_for_context(self, npc: str, team: str, directory_path: str,
-                                    n_approved: int = 10, n_rejected: int = 10):
-        """Get recent approved and rejected memories for learning context"""
-        
-        approved_stmt = """
+                                    n_approved: int = 10, n_rejected: int = 10, n_edited: int = 5):
+        """Get recent approved, rejected, and edited memories for learning context."""
+
+        scope_order = """
+            CASE WHEN npc = :npc AND team = :team AND directory_path = :path THEN 1
+                 WHEN npc = :npc AND team = :team THEN 2
+                 WHEN team = :team THEN 3
+                 ELSE 4 END
+        """
+
+        approved_stmt = f"""
             SELECT initial_memory, final_memory, status FROM memory_lifecycle
             WHERE status IN ('human-approved', 'model-approved')
-            ORDER BY 
-                CASE WHEN npc = :npc AND team = :team AND directory_path = :path THEN 1
-                    WHEN npc = :npc AND team = :team THEN 2  
-                    WHEN team = :team THEN 3
-                    ELSE 4 END,
-                created_at DESC
+            ORDER BY {scope_order}, created_at DESC
             LIMIT :n_approved
         """
-        
-        rejected_stmt = """
+
+        rejected_stmt = f"""
             SELECT initial_memory, status FROM memory_lifecycle
             WHERE status IN ('human-rejected', 'model-rejected')
-            ORDER BY 
-                CASE WHEN npc = :npc AND team = :team AND directory_path = :path THEN 1
-                    WHEN npc = :npc AND team = :team THEN 2
-                    WHEN team = :team THEN 3  
-                    ELSE 4 END,
-                created_at DESC
+            ORDER BY {scope_order}, created_at DESC
             LIMIT :n_rejected
         """
-        
-        params = {"npc": npc, "team": team, "path": directory_path, 
-                "n_approved": n_approved, "n_rejected": n_rejected}
-        
+
+        edited_stmt = f"""
+            SELECT initial_memory, final_memory, status FROM memory_lifecycle
+            WHERE status = 'human-edited' AND final_memory IS NOT NULL
+            ORDER BY {scope_order}, created_at DESC
+            LIMIT :n_edited
+        """
+
+        params = {"npc": npc, "team": team, "path": directory_path,
+                "n_approved": n_approved, "n_rejected": n_rejected, "n_edited": n_edited}
+
         approved = self._fetch_all(approved_stmt, params)
         rejected = self._fetch_all(rejected_stmt, params)
-        
-        return {"approved": approved, "rejected": rejected}
+        edited = self._fetch_all(edited_stmt, params)
+
+        return {"approved": approved, "rejected": rejected, "edited": edited}
 
     def get_pending_memories(self, limit: int = 50):
         """Get memories pending human approval"""
@@ -1518,28 +1523,47 @@ def start_new_conversation(prepend: str = None) -> str:
 def format_memory_context(memory_examples):
     if not memory_examples:
         return ""
-    
-    context_parts = []
-    
+
     approved_examples = memory_examples.get("approved", [])
     rejected_examples = memory_examples.get("rejected", [])
-    
+    edited_examples = memory_examples.get("edited", [])
+
+    if not approved_examples and not rejected_examples and not edited_examples:
+        return ""
+
+    parts = ["MEMORY QUALITY GUIDELINES (based on user feedback):"]
+
     if approved_examples:
-        context_parts.append("EXAMPLES OF GOOD MEMORIES:")
-        for ex in approved_examples[:5]:
-            final = ex.get("final_memory") or ex.get("initial_memory")
-            context_parts.append(f"- {final}")
-    
+        parts.append("\nAPPROVED — memories like these were kept:")
+        for ex in approved_examples[:7]:
+            mem = ex.get("final_memory") or ex.get("initial_memory")
+            parts.append(f"  + {mem}")
+
+    if edited_examples:
+        parts.append("\nCORRECTED — the user fixed these (learn from the corrections):")
+        for ex in edited_examples[:5]:
+            original = ex.get("initial_memory", "")
+            corrected = ex.get("final_memory", "")
+            if original and corrected and original != corrected:
+                parts.append(f"  BEFORE: {original}")
+                parts.append(f"  AFTER:  {corrected}")
+                parts.append("")
+
     if rejected_examples:
-        context_parts.append("\nEXAMPLES OF POOR MEMORIES TO AVOID:")
-        for ex in rejected_examples[:3]:
-            context_parts.append(f"- {ex.get('initial_memory')}")
-    
-    if context_parts:
-        context_parts.append("\nLearn from these examples to generate similar high-quality memories.")
-        return "\n".join(context_parts)
-    
-    return ""
+        parts.append("\nREJECTED — memories like these were thrown out (do NOT generate similar ones):")
+        for ex in rejected_examples[:5]:
+            parts.append(f"  x {ex.get('initial_memory')}")
+
+    parts.append("\nRULES derived from this feedback:")
+    parts.append("- Match the style and specificity of approved memories.")
+    if edited_examples:
+        parts.append("- Apply the same corrections the user made in the CORRECTED examples.")
+    if rejected_examples:
+        parts.append("- Avoid the patterns seen in rejected memories.")
+    parts.append("- Each memory must be self-contained: no vague pronouns (this, that, it) without referents.")
+    parts.append("- Do not duplicate or closely paraphrase any existing approved memory.")
+
+    return "\n".join(parts)
 def save_conversation_message(
     command_history: CommandHistory,
     conversation_id: str,
