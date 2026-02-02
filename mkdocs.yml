@@ -40,9 +40,9 @@ nav:
     - Building Agents: guides/agents.md
     - Multi-Agent Teams: guides/teams.md
     - Jinx Workflows: guides/jinx-workflows.md
+    - Skills: guides/skills.md
     - NPCArray - Vectorized AI: guides/npc-array.md
     - Image, Audio & Video: guides/image-audio-video.md
-    - AirLLM - 70B+ Models: guides/airllm.md
     - Knowledge Graphs: guides/knowledge-graphs.md
     - Fine-Tuning & Evolution: guides/fine-tuning.md
     - Serving & Deployment: guides/serving.md

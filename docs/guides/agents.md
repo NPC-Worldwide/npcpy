@@ -193,3 +193,25 @@ for i, (call, result) in enumerate(
 ```
 
 This design lets you build pipelines where tool results feed into subsequent reasoning steps, or where you decide programmatically how to handle each tool invocation.
+
+## Skills as Agent Knowledge
+
+Skills are jinxs that serve knowledge content instead of executing code. They use the same jinx pipeline and are assigned to agents the same way — through the `jinxs:` list in `.npc` files or via the team's `jinxs/` directory.
+
+```yaml
+# reviewer.npc
+name: reviewer
+primary_directive: |
+  You review code and provide actionable feedback.
+model: llama3.2
+provider: ollama
+jinxs:
+  - lib/core/sh
+  - lib/core/python
+  - skills/code-review
+  - skills/debugging
+```
+
+The agent sees `code-review` and `debugging` in its tool catalog alongside `sh` and `python`. When it encounters a review task, it calls `code-review(section=correctness)` to get methodology, then uses `sh` or `python` to inspect the actual code. No separate configuration is needed — skills flow through the existing jinx assignment mechanism.
+
+See the [Skills guide](skills.md) for details on authoring skills in both SKILL.md and .jinx formats.

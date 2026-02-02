@@ -196,8 +196,19 @@ team = Team(team_path='~/.npcsh/npc_team')
 The directory should contain:
 
 - `.npc` files for each agent
-- A `jinxs/` subdirectory with `.jinx` workflow files
+- A `jinxs/` subdirectory with `.jinx` workflow files and `skills/` subfolder
 - An optional `team.ctx` YAML file defining the forenpc and team context
+
+The `team.ctx` file can also specify `SKILLS_DIRECTORY` to load skills from an external directory:
+
+```yaml
+model: llama3.2
+provider: ollama
+forenpc: lead-dev
+SKILLS_DIRECTORY: ~/shared-skills
+```
+
+Skills loaded this way are merged into the team's `jinxs_dict` and distributed to all NPCs, just like jinxs in the `jinxs/` directory. See the [Skills guide](skills.md) for details.
 
 ## Team Parameters
 

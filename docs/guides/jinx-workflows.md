@@ -353,3 +353,20 @@ print(result['output'])
 ```
 
 Team-level jinxs are rendered during team initialization and distributed to all member NPCs, so any NPC in the team can execute any team jinx. This enables the forenpc to delegate jinx-based workflows to the most appropriate team member.
+
+## Skills: Knowledge-Content Jinxs
+
+Skills are jinxs that serve instructional content instead of executing code. They use the `skill.jinx` sub-jinx (just like code jinxs use `python.jinx` or `sh.jinx`) and return sections of knowledge on demand.
+
+You can author skills as `SKILL.md` folders or as `.jinx` files with `engine: skill` steps. Either way, they end up in the same `jinxs_dict` and are assigned to agents through the same `jinxs:` list in `.npc` files.
+
+```yaml
+# reviewer.npc
+jinxs:
+  - lib/core/sh
+  - lib/core/python
+  - skills/code-review
+  - skills/debugging
+```
+
+The agent calls `code-review(section=correctness)` the same way it calls `sh(command=ls)` — through the same jinx pipeline. See the [Skills guide](skills.md) for full details on authoring and usage.

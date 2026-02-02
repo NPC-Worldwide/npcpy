@@ -681,43 +681,60 @@ def _react_fallback(
     # Cap iterations - after this, return to orchestrator for review/compression
     effective_max = min(max_iterations, 7)
 
-    for iteration in range(effective_max):
-        # Build history of what's been tried
-        history_text = ""
-        if jinx_executions:
-            history_text = "\n\nPrevious tool calls this session:\n" + "\n".join(
-                f"- {h['name']}({h['inputs']}) -> {h['output']}"
-                for h in jinx_executions[-5:]
-            )
+    original_command = command  # Preserve original request
 
-        prompt = f"""Request: {command}
+    for iteration in range(effective_max):
+        if jinx_executions:
+            # Tools have already been called — ask model to answer WITHOUT showing tools
+            last_result = str(jinx_executions[-1].get('output', ''))[:1000]
+            prompt = f"""The user asked: {original_command}
+
+You already ran a tool and got: {last_result}
+
+Answer the user now. Respond with this JSON:
+{{"action": "answer", "response": "your answer based on the tool result"}}"""
+
+            # Don't pass npc on answer-nudge iterations to avoid system prompt
+            # re-injecting tool descriptions that bias toward more tool calls
+            response = get_llm_response(
+                prompt,
+                model=model,
+                provider=provider,
+                api_url=api_url,
+                api_key=api_key,
+                messages=[],  # Clean slate - no history noise
+                npc=None,  # No system prompt with tool descriptions
+                team=None,
+                images=generated_images or None,
+                format="json",
+            )
+        else:
+            prompt = f"""Request: {original_command}
 
 Available Tools:
 {jinx_list}
 
 Instructions:
-1. Analyze the request and determine the best tool to use
-2. If you have enough information to answer, use {{"action": "answer", "response": "your answer"}}
-3. If you need to use a tool, use {{"action": "jinx", "jinx_name": "tool_name", "inputs": {{"param": "value"}}}}
-4. Use EXACT parameter names from tool definitions
-5. Do NOT repeat the same tool call with the same inputs{history_text}"""
+1. If you can answer directly without tools, use {{"action": "answer", "response": "your answer"}}
+2. If you need to use a tool, use {{"action": "jinx", "jinx_name": "tool_name", "inputs": {{"param": "value"}}}}
+3. Use EXACT parameter names from tool definitions"""
 
-        if context:
-            prompt += f"\n\nCurrent context: {context}"
+            if context:
+                prompt += f"\n\nCurrent context: {context}"
 
-        response = get_llm_response(
-            prompt,
-            model=model,
-            provider=provider,
-            api_url=api_url,
-            api_key=api_key,
-            messages=current_messages[-10:],
-            npc=npc,
-            team=team,
-            images=((images or []) if iteration == 0 else []) + generated_images or None,
-            format="json",
-            context=context,
-        )
+            response = get_llm_response(
+                prompt,
+                model=model,
+                provider=provider,
+                api_url=api_url,
+                api_key=api_key,
+                messages=current_messages[-10:],
+                npc=npc,
+                team=team,
+                images=((images or []) if iteration == 0 else []) + generated_images or None,
+                format="json",
+                context=context,
+            )
 
         if response.get("usage"):
             total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
@@ -728,6 +745,12 @@ Instructions:
 
         if not isinstance(decision, dict):
             logger.debug(f"[_react_fallback] Non-dict response on iteration {iteration} - continuing")
+            # If we already have tool results and model can't produce valid JSON answer,
+            # just return the last tool result directly
+            if jinx_executions:
+                last_output = jinx_executions[-1].get("output", "")
+                logger.debug(f"[_react_fallback] Forcing answer from last tool result")
+                return {"messages": current_messages, "output": str(last_output), "usage": total_usage, "jinx_executions": jinx_executions}
             context = f"Your response was not valid JSON object. You must respond with a JSON object: either {{\"action\": \"answer\", \"response\": \"...\"}} or {{\"action\": \"jinx\", \"jinx_name\": \"tool_name\", \"inputs\": {{...}}}}"
             continue
 
@@ -776,6 +799,13 @@ Instructions:
                 # Extract all keys except 'action', 'jinx_name', 'inputs' as potential inputs
                 inputs = {k: v for k, v in decision.items() if k not in ('action', 'jinx_name', 'inputs', 'response')}
             logger.debug(f"[_react_fallback] Jinx action: {jinx_name} with inputs: {inputs}")
+
+            # If we already have tool results and model tries to call another tool,
+            # force-return the existing result instead of executing more tools
+            if jinx_executions:
+                last_output = jinx_executions[-1].get("output", "")
+                logger.debug(f"[_react_fallback] Model tried to call '{jinx_name}' after already having results - forcing answer")
+                return {"messages": current_messages, "output": str(last_output), "usage": total_usage, "jinx_executions": jinx_executions}
 
             if jinx_name not in jinxs:
                 context = f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}"
@@ -844,12 +874,15 @@ Instructions:
             # Truncate output for context to avoid sending huge base64 data back to LLM
             output_for_context = str(output)[:8000] + "..." if len(str(output)) > 8000 else str(output)
             context = f"Tool '{jinx_name}' returned: {output_for_context}"
-            command = f"{command}\n\nPrevious: {context}"
 
         else:
-            # Unknown or missing action - continue iterating, don't bail out
+            # Unknown or missing action
             action_val = decision.get("action")
-            logger.debug(f"[_react_fallback] Unknown action '{action_val}' on iteration {iteration} - continuing")
+            logger.debug(f"[_react_fallback] Unknown action '{action_val}' on iteration {iteration}")
+            # If we have tool results, just return them
+            if jinx_executions:
+                last_output = jinx_executions[-1].get("output", "")
+                return {"messages": current_messages, "output": str(last_output), "usage": total_usage, "jinx_executions": jinx_executions}
             if jinxs:
                 context = f"Your response had action='{action_val}' which is not valid. You must respond with either {{\"action\": \"answer\", \"response\": \"...\"}} or {{\"action\": \"jinx\", \"jinx_name\": \"tool_name\", \"inputs\": {{...}}}}. Available tools: {list(jinxs.keys())}"
             else:

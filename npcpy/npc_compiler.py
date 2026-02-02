@@ -56,8 +56,9 @@ from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy import create_engine, text
 import npcpy as npy 
 from npcpy.tools import auto_tools
-import math 
+import math
 import random
+import base64
 from npcpy.npc_sysenv import (
     ensure_dirs_exist, 
     init_db_tables,
@@ -276,6 +277,7 @@ def initialize_npc_project(
     os.makedirs(npc_team_dir, exist_ok=True)
 
     for subdir in ["jinxs",
+                   "jinxs/skills",
                    "assembly_lines",
                    "sql_models",
                    "jobs",
@@ -1016,14 +1018,212 @@ output = {mcp_tool.__module__}.{name}(
 
 
 
+def _parse_skill_md(path):
+    """Parse a skill markdown file with YAML frontmatter and ## sections.
+
+    Expected format:
+        ---
+        name: skill-name
+        description: What it does. Use when ...
+        ---
+        # Skill Title
+
+        ## section-one
+        Content for section one...
+
+        ## section-two
+        Content for section two...
+
+    Returns dict with name, description, sections, frontmatter or None on failure.
+    """
+    with open(path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    if not content.startswith('---'):
+        return None
+
+    parts = content.split('---', 2)
+    if len(parts) < 3:
+        return None
+
+    frontmatter = yaml.safe_load(parts[1])
+    if not frontmatter or not isinstance(frontmatter, dict):
+        return None
+
+    body = parts[2].strip()
+
+    # Parse ## sections from markdown body
+    sections = {}
+    current_section = None
+    current_content = []
+
+    for line in body.split('\n'):
+        if line.startswith('## '):
+            if current_section:
+                sections[current_section] = '\n'.join(current_content).strip()
+            current_section = line[3:].strip()
+            current_content = []
+        elif current_section is not None:
+            current_content.append(line)
+
+    if current_section:
+        sections[current_section] = '\n'.join(current_content).strip()
+
+    # For SKILL.md files the skill name should come from frontmatter or the
+    # parent folder name, not from the filename "SKILL".
+    basename = os.path.splitext(os.path.basename(path))[0]
+    if basename.upper() == 'SKILL':
+        # Folder-based skill: use parent directory name as fallback
+        default_name = os.path.basename(os.path.dirname(path))
+    else:
+        default_name = basename
+
+    return {
+        'name': frontmatter.get('name', default_name),
+        'description': frontmatter.get('description', ''),
+        'sections': sections,
+        'frontmatter': frontmatter
+    }
+
+
+def _compile_skill_to_jinx(skill_data, source_path=None):
+    """Compile skill data into a Jinx whose step is ``engine: skill``.
+
+    Everything about the skill — name, description, sections, scripts,
+    references, assets — is passed as structured data into ``skill.jinx``.
+    The sub-jinx owns the full representation; the compiler just parses the
+    source format and hands it off.
+
+    Sections content is base64-encoded to survive the two-pass Jinja pipeline
+    without mangling.  Metadata lists (scripts, references, assets) are passed
+    as JSON strings.
+    """
+    name = skill_data.get('jinx_name', skill_data.get('name', ''))
+    description = skill_data.get('description', '')
+    sections = skill_data.get('sections', {})
+
+    # Encode sections as b64 to protect from Jinja rendering
+    sections_json = json.dumps(sections, ensure_ascii=False)
+    content_b64 = base64.b64encode(sections_json.encode('utf-8')).decode('ascii')
+
+    section_names = list(sections.keys())
+    desc_suffix = f" [Sections: {', '.join(section_names)}]" if section_names else ""
+
+    # Collect scripts/references/assets lists for the structured representation
+    scripts_list = []
+    references_list = []
+    assets_list = []
+
+    # Build file_context entries so the Jinx runtime can load files
+    file_context = list(skill_data.get('file_context', []))
+    for subdir, collector in (('scripts', scripts_list),
+                               ('references', references_list),
+                               ('assets', assets_list)):
+        entries = skill_data.get(subdir)
+        if isinstance(entries, list):
+            # Explicit file list from .jinx YAML
+            collector.extend(entries)
+            for entry in entries:
+                if isinstance(entry, str):
+                    file_context.append({
+                        'pattern': entry,
+                        'base_path': os.path.join('.', subdir) if source_path else '.',
+                    })
+                elif isinstance(entry, dict):
+                    file_context.append(entry)
+        elif entries is None and source_path:
+            # Folder-based skill: auto-discover if the subdir exists
+            skill_dir = os.path.dirname(source_path)
+            subdir_path = os.path.join(skill_dir, subdir)
+            if os.path.isdir(subdir_path):
+                # Collect actual filenames for the structured representation
+                for r, _d, fnames in os.walk(subdir_path):
+                    for fn in fnames:
+                        rel = os.path.relpath(os.path.join(r, fn), skill_dir)
+                        collector.append(rel)
+                file_context.append({
+                    'pattern': '*',
+                    'base_path': subdir,
+                    'recursive': True,
+                })
+
+    jinx_data = {
+        'jinx_name': name,
+        'description': (description + desc_suffix) if description else f"Skill: {name}{desc_suffix}",
+        'inputs': [{'section': 'all'}],
+        'steps': [{
+            'engine': 'skill',
+            'skill_name': name,
+            'skill_description': description,
+            'sections': content_b64,
+            'scripts_json': json.dumps(scripts_list),
+            'references_json': json.dumps(references_list),
+            'assets_json': json.dumps(assets_list),
+            'section': '{{section}}'
+        }],
+        'file_context': file_context,
+        '_source_path': source_path
+    }
+
+    return Jinx(jinx_data=jinx_data)
+
+
+def _load_skill_from_md(path):
+    """Load a skill from a SKILL.md file with YAML frontmatter and ## sections.
+
+    The skill name defaults to the parent folder name (matching the Anthropic
+    skill-folder convention), falling back to the frontmatter ``name`` field.
+
+    Sibling directories (``scripts/``, ``references/``, ``assets/``) are
+    auto-discovered and attached as ``file_context``.
+    """
+    parsed = _parse_skill_md(path)
+    if not parsed or not parsed.get('sections'):
+        return None
+
+    # Skill name: prefer frontmatter 'name', fall back to parent directory name
+    parent_dir = os.path.basename(os.path.dirname(path))
+    name = parsed['name'] or parent_dir
+
+    skill_data = {
+        'jinx_name': name,
+        'description': parsed['description'],
+        'sections': parsed['sections'],
+    }
+
+    # Forward any extra frontmatter keys the author set (scripts, references, etc.)
+    fm = parsed.get('frontmatter', {})
+    for key in ('scripts', 'references', 'assets', 'file_context'):
+        if key in fm:
+            skill_data[key] = fm[key]
+
+    return _compile_skill_to_jinx(skill_data, source_path=path)
+
+
 def load_jinxs_from_directory(directory):
-    """Load all jinxs from a directory recursively"""
+    """Load all jinxs from a directory recursively.
+
+    Handles two file types:
+
+    1. **.jinx** — regular jinxs loaded as-is.  Skill-type jinxs are just
+       regular ``.jinx`` files whose steps use ``engine: skill`` with the
+       full structured args (sections, scripts, references, assets).
+    2. **SKILL.md inside a skill folder** — Anthropic-style skill folders::
+
+           jinxs/skills/code-review/SKILL.md
+           jinxs/skills/code-review/scripts/
+           jinxs/skills/code-review/references/
+
+       The folder name becomes the skill name.  The SKILL.md must have YAML
+       frontmatter (``---`` delimiters) and ``##`` section headers.
+       These are compiled into jinxs with ``engine: skill`` steps.
+    """
     jinxs = []
     directory = os.path.expanduser(directory)
-    
+
     if not os.path.exists(directory):
         return jinxs
-    
+
     for root, dirs, files in os.walk(directory):
         for filename in files:
             if filename.endswith(".jinx"):
@@ -1033,7 +1233,17 @@ def load_jinxs_from_directory(directory):
                     jinxs.append(jinx)
                 except Exception as e:
                     print(f"Error loading jinx {filename}: {e}")
-                
+            elif filename == "SKILL.md":
+                # Anthropic-style skill folder: skills/my-skill/SKILL.md
+                try:
+                    md_path = os.path.join(root, filename)
+                    jinx = _load_skill_from_md(md_path)
+                    if jinx:
+                        jinxs.append(jinx)
+                except Exception as e:
+                    skill_folder = os.path.basename(root)
+                    print(f"Error loading skill from {skill_folder}/SKILL.md: {e}")
+
     return jinxs
 
 def jinx_to_tool_def(jinx_obj: 'Jinx') -> Dict[str, Any]:
@@ -2543,6 +2753,7 @@ class Team:
         
         self.forenpc: Optional['NPC'] = None # Will be set to an NPC object by end of __init__
         self.forenpc_name: Optional[str] = None # Temporary storage for name from context (if loaded from .ctx)
+        self.skills_directory: Optional[str] = None # External skills directory from .ctx SKILLS_DIRECTORY
 
         if team_path:
             self.name = os.path.basename(os.path.abspath(team_path))
@@ -2634,6 +2845,18 @@ class Team:
             for jinx_obj in load_jinxs_from_directory(jinxs_dir):
                 self._raw_jinxs_list.append(jinx_obj)
         
+        # 4.5. Load skills from external SKILLS_DIRECTORY if specified in .ctx
+        if hasattr(self, 'skills_directory') and self.skills_directory:
+            skills_path = os.path.expanduser(self.skills_directory)
+            if not os.path.isabs(skills_path):
+                skills_path = os.path.join(self.team_path, skills_path)
+            if os.path.exists(skills_path):
+                for jinx_obj in load_jinxs_from_directory(skills_path):
+                    self._raw_jinxs_list.append(jinx_obj)
+                print(f"[TEAM] Loaded skills from SKILLS_DIRECTORY: {skills_path}")
+            else:
+                print(f"[TEAM] Warning: SKILLS_DIRECTORY not found: {skills_path}")
+
         # 5. Load sub-teams
         self._load_sub_teams()
 
@@ -2651,6 +2874,7 @@ class Team:
                     self.mcp_servers = ctx_data.get('mcp_servers', [])
                     self.databases = ctx_data.get('databases', [])
                     self.forenpc_name = ctx_data.get('forenpc', self.forenpc_name) # Set forenpc_name (string)
+                    self.skills_directory = ctx_data.get('SKILLS_DIRECTORY', None)
                 return ctx_data
         return {}
 
@@ -2668,7 +2892,7 @@ class Team:
                         self.shared_context['files'] = file_cache
                     # All other keys (including preferences) are treated as generic context
                     for key, item in ctx_data.items():
-                        if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns', 'forenpc', 'model', 'provider', 'api_url', 'env']:
+                        if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns', 'forenpc', 'model', 'provider', 'api_url', 'env', 'SKILLS_DIRECTORY']:
                             self.shared_context[key] = item
                 return # Only load the first .ctx file found
         
