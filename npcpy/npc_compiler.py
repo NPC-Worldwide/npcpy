@@ -1370,6 +1370,12 @@ class NPC:
                         # Fallback to direct name match if no base dir
                         matched_names = [jinx_spec] if jinx_spec in self.team.jinxs_dict else []
 
+                    if not matched_names:
+                        raise FileNotFoundError(
+                            f"NPC '{self.name}' references jinx '{jinx_spec}' but no matching jinx was found. "
+                            f"Available jinxs: {list(self.team.jinxs_dict.keys())[:20]}..."
+                        )
+
                     for jinx_name in matched_names:
                         if jinx_name in self.team.jinxs_dict:
                             self.jinxs_dict[jinx_name] = self.team.jinxs_dict[jinx_name]
@@ -2165,11 +2171,11 @@ Requirements:
         }
         
     def execute_jinx(
-        self, 
-        jinx_name, 
-        inputs, 
-        conversation_id=None, 
-        message_id=None, 
+        self,
+        jinx_name,
+        inputs,
+        conversation_id=None,
+        message_id=None,
         team_name=None,
         extra_globals=None
     ):
@@ -2177,27 +2183,38 @@ Requirements:
             jinx = self.jinxs_dict[jinx_name]
         else:
             return {"error": f"jinx '{jinx_name}' not found"}
-        
-        result = jinx.execute(
-            input_values=inputs,
-            npc=self,
-            # messages=messages, # messages should be passed from the calling context if available
-            extra_globals=extra_globals,
-            jinja_env=self.jinja_env # Pass the NPC's second-pass Jinja env
-        )
-        
-        # Log jinx call if we have a command_history with add_jinx_call method
-        if self.command_history is not None and hasattr(self.command_history, 'add_jinx_call'):
+
+        import time as _time
+        _start = _time.monotonic()
+        _status = "success"
+        _error = None
+
+        try:
+            result = jinx.execute(
+                input_values=inputs,
+                npc=self,
+                extra_globals=extra_globals,
+                jinja_env=self.jinja_env
+            )
+        except Exception as e:
+            _status = "error"
+            _error = str(e)
+            result = {"error": str(e)}
+
+        _duration_ms = int((_time.monotonic() - _start) * 1000)
+
+        # Log jinx execution
+        if self.command_history is not None and hasattr(self.command_history, 'save_jinx_execution'):
             try:
-                self.command_history.add_jinx_call(
+                self.command_history.save_jinx_execution(
                     triggering_message_id=message_id,
                     conversation_id=conversation_id,
                     jinx_name=jinx_name,
                     jinx_inputs=inputs,
                     jinx_output=result,
-                    status="success",
-                    error_message=None,
-                    duration_ms=None,
+                    status=_status,
+                    error_message=_error,
+                    duration_ms=_duration_ms,
                     npc_name=self.name,
                     team_name=team_name,
                 )

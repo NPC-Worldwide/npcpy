@@ -34,27 +34,21 @@ def generate_image_diffusers(
             if os.path.exists(checkpoint_path):
                 print(f"🌋 Found model_final.pt at {checkpoint_path}.")
                 
-                # Load checkpoint to inspect it
                 checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
                 
-                # Check if this is a custom SimpleUNet model (from your training code)
-                # vs a Stable Diffusion UNet2DConditionModel
                 if 'config' in checkpoint and hasattr(checkpoint['config'], 'image_size'):
                     print(f"🌋 Detected custom SimpleUNet model, using custom generation")
-                    # Use your custom generate_image function from npcpy.ft.diff
                     from npcpy.ft.diff import generate_image as custom_generate_image
                     
-                    # Your custom model ignores prompts and generates based on training data
                     image = custom_generate_image(
                         model_path=checkpoint_path,
                         prompt=prompt,
                         num_samples=1,
-                        image_size=height  # Use the requested height
+                        image_size=height
                     )
                     return image
                 
                 else:
-                    # This is a Stable Diffusion checkpoint
                     print(f"🌋 Detected Stable Diffusion UNet checkpoint")
                     base_model_id = "runwayml/stable-diffusion-v1-5"
                     print(f"🌋 Loading base pipeline: {base_model_id}")
@@ -67,7 +61,6 @@ def generate_image_diffusers(
                     
                     print(f"🌋 Loading custom UNet weights from {checkpoint_path}")
                     
-                    # Extract the actual model state dict
                     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                         unet_state_dict = checkpoint['model_state_dict']
                         print(f"🌋 Extracted model_state_dict from checkpoint")
@@ -75,7 +68,6 @@ def generate_image_diffusers(
                         unet_state_dict = checkpoint
                         print(f"🌋 Using checkpoint directly as state_dict")
                     
-                    # Load the state dict into the UNet
                     pipe.unet.load_state_dict(unet_state_dict)
                     pipe = pipe.to(device)
                     print(f"🌋 Successfully loaded fine-tuned UNet weights")
@@ -100,7 +92,6 @@ def generate_image_diffusers(
                     variant="fp16" if torch_dtype == torch.float16 else None,
                 )
         
-        # Common pipeline setup for Stable Diffusion models
         if hasattr(pipe, 'enable_attention_slicing'):
             pipe.enable_attention_slicing()
         
@@ -142,16 +133,7 @@ def generate_image_diffusers(
             raise MemoryError(f"Insufficient memory for image generation with model {model}. Try a smaller model or reduce image size.")
         else:
             raise e
-import os
-import base64
-import io
-from typing import Union, List, Optional
 
-import PIL
-from PIL import Image
-
-import requests
-from urllib.request import urlopen
 
 def openai_image_gen(
     prompt: str,
@@ -184,13 +166,13 @@ def openai_image_gen(
                 files_to_close.append(file_handle)
             elif isinstance(attachment, bytes):
                 img_byte_arr = io.BytesIO(attachment)
-                img_byte_arr.name = 'image.png'  # FIX: Add filename hint
+                img_byte_arr.name = 'image.png'
                 processed_images.append(img_byte_arr)
             elif isinstance(attachment, Image.Image):
                 img_byte_arr = io.BytesIO()
                 attachment.save(img_byte_arr, format='PNG')
                 img_byte_arr.seek(0)
-                img_byte_arr.name = 'image.png'  # FIX: Add filename hint
+                img_byte_arr.name = 'image.png'
                 processed_images.append(img_byte_arr)
         
         try:
@@ -202,7 +184,6 @@ def openai_image_gen(
                 size=size_str,
             )
         finally:
-            # This ensures any files we opened are properly closed
             for f in files_to_close:
                 f.close()
     else:
@@ -229,7 +210,6 @@ def openai_image_gen(
         collected_images.append(image)
         
     return collected_images
-
 
 
 def gemini_image_gen(
@@ -351,7 +331,86 @@ def gemini_image_gen(
         
         else:
             raise ValueError(f"Unsupported Gemini image model or API usage for new generation: '{model}'")
-# In npcpy/gen/image_gen.py, find the generate_image function and replace it with this:
+
+
+def ollama_image_gen(
+    prompt: str,
+    model: str = "x/z-image-turbo",
+    height: int = 512,
+    width: int = 512,
+    n_images: int = 1,
+    api_url: Optional[str] = None,
+    seed: Optional[int] = None,
+    negative_prompt: Optional[str] = None,
+    num_steps: Optional[int] = None,
+):
+    """Generate images using Ollama's image generation API.
+
+    Works with ollama image gen models like x/z-image-turbo and x/flux2-klein.
+    Uses the /api/generate endpoint with image gen specific options.
+    """
+    import requests
+
+    if api_url is None:
+        api_url = os.environ.get('OLLAMA_API_URL', 'http://localhost:11434')
+
+    endpoint = f"{api_url}/api/generate"
+
+    collected_images = []
+
+    for _ in range(n_images):
+        options = {}
+        if width:
+            options["width"] = width
+        if height:
+            options["height"] = height
+        if seed is not None:
+            options["seed"] = seed
+        if num_steps is not None:
+            options["num_steps"] = num_steps
+
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+        }
+        if options:
+            payload["options"] = options
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+
+        response = requests.post(endpoint, json=payload)
+
+        if not response.ok:
+            try:
+                err = response.json()
+                err_msg = err.get('error', response.text)
+            except Exception:
+                err_msg = response.text
+            raise RuntimeError(
+                f"Ollama image gen failed ({response.status_code}): {err_msg}\n"
+                f"Model: {model} — make sure it's pulled (`ollama pull {model}`)"
+            )
+
+        result = response.json()
+
+        if 'image' in result and result['image']:
+            image_bytes = base64.b64decode(result['image'])
+            image = Image.open(io.BytesIO(image_bytes))
+            collected_images.append(image)
+        elif 'images' in result and result['images']:
+            for img_b64 in result['images']:
+                image_bytes = base64.b64decode(img_b64)
+                image = Image.open(io.BytesIO(image_bytes))
+                collected_images.append(image)
+        else:
+            raise ValueError(
+                f"No images returned from Ollama. Response keys: {list(result.keys())}. "
+                f"Make sure '{model}' is an image generation model (e.g. x/z-image-turbo, x/flux2-klein)."
+            )
+
+    return collected_images
+
 
 def generate_image(
     prompt: str,
@@ -364,7 +423,7 @@ def generate_image(
     api_url: Optional[str] = None,
     attachments: Union[List[Union[str, bytes, Image.Image]], None] = None,
     save_path: Optional[str] = None,
-    custom_model_path: Optional[str] = None, # <--- NEW: Accept custom_model_path,
+    custom_model_path: Optional[str] = None,
     
 ):
     """
@@ -373,7 +432,7 @@ def generate_image(
     Args:
         prompt (str): The prompt for generating/editing the image.
         model (str): The model to use.
-        provider (str): The provider to use ('openai', 'diffusers', 'gemini').
+        provider (str): The provider to use ('openai', 'diffusers', 'gemini', 'ollama').
         height (int): The height of the output image.
         width (int): The width of the output image.
         n_images (int): Number of images to generate.
@@ -381,32 +440,31 @@ def generate_image(
         api_url (str): API URL for the provider.
         attachments (list): List of images for editing. Can be file paths, bytes, or PIL Images.
         save_path (str): Path to save the generated image.
-        custom_model_path (str): Path to a locally fine-tuned Diffusers model. <--- NEW
+        custom_model_path (str): Path to a locally fine-tuned Diffusers model.
         
     Returns:
         List[PIL.Image.Image]: A list of generated PIL Image objects.
     """
     from urllib.request import urlopen
-    import os # Ensure os is imported for path checks
+    import os
 
-    if model is None and custom_model_path is None: # Only set default if no model or custom path is provided
+    if model is None and custom_model_path is None:
         if provider == "openai":
             model = "dall-e-2"
         elif provider == "diffusers":
             model = "runwayml/stable-diffusion-v1-5"
         elif provider == "gemini":
             model = "gemini-2.5-flash-image-preview"
+        elif provider == "ollama":
+            model = "x/z-image-turbo"
     
     all_generated_pil_images = []
 
-    # <--- CRITICAL FIX: Handle custom_model_path for Diffusers here
     if provider == "diffusers":
-        # If a custom_model_path is provided and exists, use it instead of a generic model name
         if custom_model_path and os.path.isdir(custom_model_path):
             print(f"🌋 Using custom Diffusers model from path: {custom_model_path}")
             model_to_use = custom_model_path
         else:
-            # Otherwise, use the standard model name (e.g., "runwayml/stable-diffusion-v1-5")
             model_to_use = model
             print(f"🌋 Using standard Diffusers model: {model_to_use}")
 
@@ -414,7 +472,7 @@ def generate_image(
             try:
                 image = generate_image_diffusers(
                     prompt=prompt, 
-                    model=model_to_use, # <--- Pass the resolved model_to_use
+                    model=model_to_use,
                     height=height, 
                     width=width
                 )
@@ -447,43 +505,29 @@ def generate_image(
         )
         all_generated_pil_images.extend(images)
 
+    elif provider == "ollama":
+        images = ollama_image_gen(
+            prompt=prompt,
+            model=model,
+            height=height,
+            width=width,
+            n_images=n_images,
+            api_url=api_url
+        )
+        all_generated_pil_images.extend(images)
+
     else:
-        # This is the fallback for other providers or if provider is not explicitly handled
         valid_sizes = ["256x256", "512x512", "1024x1024", "1024x1792", "1792x1024"]
         size = f"{width}x{height}"
         
         if attachments is not None:
             raise ValueError("Image editing not supported with litellm provider")
         
-        # The litellm.image_generation function expects the provider as part of the model string
-        # e.g., "huggingface/starcoder" or "openai/dall-e-3"
-        # Since we've already handled "diffusers", "openai", "gemini" above,
-        # this 'else' block implies a generic litellm call.
-        # We need to ensure the model string is correctly formatted for litellm.
-        # However, the error message "LLM Provider NOT provided" suggests litellm
-        # is not even getting the `provider` correctly.
-        # The fix for this is ensuring the `provider` is explicitly passed to litellm.image_generation
-        # which is already happening in `gen_image` in `llm_funcs.py`
-        
-        # If we reach here, it means the provider is not 'diffusers', 'openai', or 'gemini',
-        # and litellm is the intended route. We need to pass the provider explicitly.
-        # The original code here was trying to construct `model=f"{provider}/{model}"`
-        # but the error indicates `provider` itself was missing.
-        # The `image_generation` from litellm expects `model` to be `provider/model_name`.
-        # Since the `provider` variable is available, we can construct this.
-        
-        # This block is for generic litellm providers (not diffusers, openai, gemini)
-        # The error indicates `provider` itself was not making it to litellm.
-        # This `generate_image` function already receives `provider`.
-        # The issue is likely how `gen_image` in `llm_funcs.py` calls this `generate_image`.
-        # However, if this `else` branch is hit, we ensure litellm gets the provider.
-        
-        # Construct the model string for litellm
         litellm_model_string = f"{provider}/{model}" if provider and model else model
         
         image_response = image_generation(
             prompt=prompt,
-            model=litellm_model_string, # <--- Ensure model string includes provider for litellm
+            model=litellm_model_string,
             n=n_images,
             size=size,
             api_key=api_key,
@@ -508,6 +552,7 @@ def generate_image(
                 print(f"Warning: Attempting to save non-PIL image item: {type(img_item)}. Skipping save for this item.")
 
     return all_generated_pil_images
+
 
 def edit_image(
     prompt: str,

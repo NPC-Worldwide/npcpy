@@ -85,21 +85,21 @@ def capture_screenshot( full=False) -> Dict[str, str]:
             subprocess.run(["screencapture", file_path], capture_output=True)
             
         elif system == "Linux":
-            if (
-                subprocess.run(
-                    ["which", "gnome-screenshot"], capture_output=True
-                ).returncode
-                == 0
-            ):
-                subprocess.Popen(["gnome-screenshot", "-f", file_path])
-                while not os.path.exists(file_path):
-                    time.sleep(0.5)
-            elif (
-                subprocess.run(["which", "scrot"], capture_output=True).returncode == 0
-            ):
-                subprocess.Popen(["scrot", file_path])
-                while not os.path.exists(file_path):
-                    time.sleep(0.5)
+            _took = False
+            # Try non-interactive tools first
+            for _cmd, _args in [
+                ("grim", [file_path]),                    # Wayland
+                ("scrot", [file_path]),                   # X11, non-interactive full
+                ("import", ["-window", "root", file_path]),  # ImageMagick X11
+                ("gnome-screenshot", ["-f", file_path]),  # GNOME (may show dialog on newer versions)
+            ]:
+                if subprocess.run(["which", _cmd], capture_output=True).returncode == 0:
+                    subprocess.run([_cmd] + _args, capture_output=True, timeout=10)
+                    if os.path.exists(file_path):
+                        _took = True
+                        break
+            if not _took:
+                print("No supported screenshot tool found. Install scrot, grim, or imagemagick.")
 
         elif system == "Windows":
             

@@ -4,6 +4,7 @@ Supports multiple TTS engines including real-time voice APIs.
 
 TTS Engines:
 - Kokoro: Local neural TTS (default)
+- Qwen3-TTS: Local high-quality multilingual TTS (0.6B/1.7B)
 - ElevenLabs: Cloud TTS with streaming
 - OpenAI: Realtime voice API
 - Gemini: Live API for real-time voice
@@ -13,6 +14,7 @@ Usage:
     from npcpy.gen.audio_gen import text_to_speech
 
     audio = text_to_speech("Hello world", engine="kokoro", voice="af_heart")
+    audio = text_to_speech("Hello world", engine="qwen3", voice="ryan")
 
 For STT, see npcpy.data.audio
 """
@@ -478,6 +480,155 @@ def get_gemini_voices() -> list:
 
 
 # =============================================================================
+# Qwen3-TTS (Local High-Quality Multilingual)
+# =============================================================================
+
+_qwen3_model_cache = {}
+
+def _get_qwen3_model(
+    model_size: str = "1.7B",
+    model_type: str = "custom_voice",
+    device: str = "auto",
+):
+    """Load and cache a Qwen3-TTS model."""
+    cache_key = (model_size, model_type, device)
+    if cache_key in _qwen3_model_cache:
+        return _qwen3_model_cache[cache_key]
+
+    import torch
+    from huggingface_hub import snapshot_download
+
+    if device == "auto":
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+
+    dtype = torch.bfloat16 if device != "cpu" else torch.float32
+
+    size_tag = "0.6B" if "0.6" in model_size else "1.7B"
+    type_map = {
+        "custom_voice": f"Qwen/Qwen3-TTS-12Hz-{size_tag}-CustomVoice",
+        "base": f"Qwen/Qwen3-TTS-12Hz-{size_tag}-Base",
+        "voice_design": f"Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    }
+
+    repo_id = type_map.get(model_type, type_map["custom_voice"])
+
+    # Try local cache first, then download
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "qwen-tts")
+    model_dir = os.path.join(cache_dir, repo_id.split("/")[-1])
+
+    if not os.path.exists(os.path.join(model_dir, "config.json")):
+        os.makedirs(cache_dir, exist_ok=True)
+        snapshot_download(repo_id=repo_id, local_dir=model_dir)
+
+    # Import the model class
+    try:
+        from qwen_tts import Qwen3TTSModel
+    except ImportError:
+        raise ImportError(
+            "qwen_tts package not found. Install from: "
+            "https://github.com/QwenLM/Qwen3-TTS or pip install qwen-tts"
+        )
+
+    model = Qwen3TTSModel.from_pretrained(
+        model_dir, device_map=device, dtype=dtype
+    )
+
+    # Clear old entries if switching configs
+    _qwen3_model_cache.clear()
+    _qwen3_model_cache[cache_key] = model
+    return model
+
+
+def tts_qwen3(
+    text: str,
+    voice: str = "ryan",
+    language: str = "auto",
+    model_size: str = "1.7B",
+    device: str = "auto",
+    speed: float = 1.0,
+    ref_audio: str = None,
+    ref_text: str = None,
+    instruct: str = None,
+) -> bytes:
+    """
+    Generate speech using Qwen3-TTS local model.
+
+    Supports three modes based on arguments:
+    - Custom voice (default): Use a preset speaker name
+    - Voice clone: Provide ref_audio (path) to clone a voice
+    - Voice design: Provide instruct (text description) to design a voice
+
+    Args:
+        text: Text to synthesize
+        voice: Speaker name for custom voice mode
+            (aiden, dylan, eric, ono_anna, ryan, serena, sohee, uncle_fu, vivian)
+        language: Language (auto, chinese, english, japanese, korean, french, etc.)
+        model_size: '0.6B' or '1.7B'
+        device: 'auto', 'cuda', 'mps', 'cpu'
+        speed: Speech speed (not directly supported, reserved)
+        ref_audio: Path to reference audio for voice cloning
+        ref_text: Transcript of reference audio (recommended for cloning)
+        instruct: Natural language voice description for voice design mode
+
+    Returns:
+        WAV audio bytes
+    """
+    import numpy as np
+    import soundfile as sf
+
+    if ref_audio:
+        model = _get_qwen3_model(model_size, "base", device)
+        wavs, sr = model.generate_voice_clone(
+            text=text,
+            language=language,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+        )
+    elif instruct:
+        model = _get_qwen3_model(model_size, "voice_design", device)
+        wavs, sr = model.generate_voice_design(
+            text=text,
+            language=language,
+            instruct=instruct,
+        )
+    else:
+        model = _get_qwen3_model(model_size, "custom_voice", device)
+        wavs, sr = model.generate_custom_voice(
+            text=text,
+            language=language,
+            speaker=voice.lower().replace(" ", "_"),
+        )
+
+    if not wavs:
+        raise ValueError("Qwen3-TTS generated no audio")
+
+    wav_buffer = io.BytesIO()
+    sf.write(wav_buffer, wavs[0], sr, format='WAV')
+    wav_buffer.seek(0)
+    return wav_buffer.read()
+
+
+def get_qwen3_voices() -> list:
+    """Get available Qwen3-TTS preset voices."""
+    return [
+        {"id": "aiden", "name": "Aiden", "gender": "male"},
+        {"id": "dylan", "name": "Dylan", "gender": "male"},
+        {"id": "eric", "name": "Eric", "gender": "male"},
+        {"id": "ryan", "name": "Ryan", "gender": "male"},
+        {"id": "serena", "name": "Serena", "gender": "female"},
+        {"id": "vivian", "name": "Vivian", "gender": "female"},
+        {"id": "sohee", "name": "Sohee", "gender": "female"},
+        {"id": "ono_anna", "name": "Ono Anna", "gender": "female"},
+        {"id": "uncle_fu", "name": "Uncle Fu", "gender": "male"},
+    ]
+
+
+# =============================================================================
 # gTTS (Google Text-to-Speech) - Fallback
 # =============================================================================
 
@@ -527,7 +678,7 @@ def text_to_speech(
 
     Args:
         text: Text to synthesize
-        engine: TTS engine (kokoro, elevenlabs, openai, gemini, gtts)
+        engine: TTS engine (kokoro, qwen3, elevenlabs, openai, gemini, gtts)
         voice: Voice ID (engine-specific)
         **kwargs: Engine-specific options
 
@@ -541,6 +692,10 @@ def text_to_speech(
         voices = {v["id"]: v for v in get_kokoro_voices()}
         lang_code = voices.get(voice, {}).get("lang", "a")
         return tts_kokoro(text, voice=voice, lang_code=lang_code, **kwargs)
+
+    elif engine in ("qwen3", "qwen3-tts", "qwen"):
+        voice = voice or "ryan"
+        return tts_qwen3(text, voice=voice, **kwargs)
 
     elif engine == "elevenlabs":
         voice = voice or "JBFqnCBsd6RMkjVDRZzb"
@@ -568,6 +723,8 @@ def get_available_voices(engine: str = "kokoro") -> list:
 
     if engine == "kokoro":
         return get_kokoro_voices()
+    elif engine in ("qwen3", "qwen3-tts", "qwen"):
+        return get_qwen3_voices()
     elif engine == "elevenlabs":
         return get_elevenlabs_voices()
     elif engine == "openai":
@@ -589,6 +746,13 @@ def get_available_engines() -> dict:
             "available": False,
             "description": "Local neural TTS (82M params)",
             "install": "pip install kokoro soundfile"
+        },
+        "qwen3": {
+            "name": "Qwen3-TTS",
+            "type": "local",
+            "available": False,
+            "description": "Local high-quality multilingual TTS (0.6B/1.7B)",
+            "install": "pip install qwen-tts torch torchaudio transformers"
         },
         "elevenlabs": {
             "name": "ElevenLabs",
@@ -615,13 +779,19 @@ def get_available_engines() -> dict:
             "name": "Google TTS",
             "type": "cloud",
             "available": False,
-            "description": "Free Google TTS"
+            "description": "Free Google TTS (fallback)"
         }
     }
 
     try:
         from kokoro import KPipeline
         engines["kokoro"]["available"] = True
+    except ImportError:
+        pass
+
+    try:
+        from qwen_tts import Qwen3TTSModel
+        engines["qwen3"]["available"] = True
     except ImportError:
         pass
 

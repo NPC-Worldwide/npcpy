@@ -3649,10 +3649,14 @@ def get_attachment_response():
 
                                                                                                                                                                                                            
 IMAGE_MODELS = {
+    "ollama": [
+        {"value": "x/z-image-turbo", "display_name": "Z-Image Turbo (6B)"},
+        {"value": "x/flux2-klein", "display_name": "FLUX.2 Klein (4B)"},
+        {"value": "x/flux2-klein:9b", "display_name": "FLUX.2 Klein (9B)"},
+    ],
     "diffusers": [
-        {"value": "runwayml/stable-diffusion-v1-5", "display_name": "Stable Diffusion v1.5"},
-        {"value": "stabilityai/stable-diffusion-xl-base-1.0", "display_name": "SDXL Base 1.0"},
         {"value": "black-forest-labs/FLUX.1-schnell", "display_name": "FLUX.1 Schnell"},
+        {"value": "stabilityai/stable-diffusion-xl-base-1.0", "display_name": "SDXL Base 1.0"},
     ],
     "openai": [
         {"value": "gpt-image-1.5", "display_name": "GPT-Image-1.5"},

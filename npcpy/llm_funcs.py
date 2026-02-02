@@ -242,7 +242,8 @@ def get_llm_response(
     base_model, base_provider, base_api_url = _resolve_model_provider(npc, team, model, provider)
 
     def _run_single(run_model, run_provider, run_npc, run_team, run_context, extra_kwargs):
-        system_message = get_system_message(run_npc, run_team) if run_npc is not None else "You are a helpful assistant."
+        _tool_capable = bool(extra_kwargs.get("tools"))
+        system_message = get_system_message(run_npc, run_team, tool_capable=_tool_capable) if run_npc is not None else "You are a helpful assistant."
         ctx_suffix = _context_suffix(run_context)
         run_messages = _build_messages(messages, system_message, prompt, ctx_suffix)
         return get_litellm_response(
@@ -499,12 +500,10 @@ def handle_request_input(
 
 
 def _get_jinxs(npc, team):
-    """Get available jinxs from npc and team."""
+    """Get available jinxs from npc (already filtered by jinxs_spec)."""
     jinxs = {}
     if npc and hasattr(npc, 'jinxs_dict'):
         jinxs.update(npc.jinxs_dict)
-    if team and hasattr(team, 'jinxs_dict'):
-        jinxs.update(team.jinxs_dict)
     return jinxs
 
 
