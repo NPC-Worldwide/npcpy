@@ -48,6 +48,7 @@ from npcsh.config import NPCSH_DB_PATH
 
 from npcpy.memory.knowledge_graph import load_kg_from_db, find_similar_facts_chroma
 from npcpy.memory.command_history import setup_chroma_db
+from npcpy.gen.response import calculate_cost
 from npcpy.memory.search import execute_rag_command, execute_brainblast_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
@@ -242,7 +243,7 @@ def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools,
         return get_llm_response(
             prompt=prompt,
             npc=npc,
-            model=model, 
+            model=model,
             provider=provider,
             messages=messages,
             tools=tools,
@@ -251,20 +252,27 @@ def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools,
             team=team,
             context=context
         )
-    except Exception:
-        # Fallback retry without context compression logic to keep it simple here.
-        return get_llm_response(
-            prompt=prompt,
-            npc=npc,
-            model=model, 
-            provider=provider,
-            messages=messages,
-            tools=tools,
-            auto_process_tool_calls=False,
-            stream=stream,
-            team=team,
-            context=context
-        )
+    except Exception as e:
+        print(f"[LLM ERROR] First attempt failed: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            return get_llm_response(
+                prompt=prompt,
+                npc=npc,
+                model=model,
+                provider=provider,
+                messages=messages,
+                tools=tools,
+                auto_process_tool_calls=False,
+                stream=stream,
+                team=team,
+                context=context
+            )
+        except Exception as e2:
+            print(f"[LLM ERROR] Second attempt failed: {e2}")
+            traceback.print_exc()
+            raise
     
 class MCPServerManager:
     """
@@ -628,7 +636,22 @@ def fetch_messages_for_conversation(conversation_id):
                 # Parse tool_calls JSON if present (for assistant messages)
                 if message[3]:
                     try:
-                        msg_dict["tool_calls"] = json.loads(message[3]) if isinstance(message[3], str) else message[3]
+                        raw_tool_calls = json.loads(message[3]) if isinstance(message[3], str) else message[3]
+                        normalized_tool_calls = []
+                        for tc in raw_tool_calls:
+                            if isinstance(tc, dict):
+                                if 'function' in tc and isinstance(tc['function'], dict):
+                                    normalized_tool_calls.append(tc)
+                                else:
+                                    normalized_tool_calls.append({
+                                        "id": tc.get("id", ""),
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.get("function_name", ""),
+                                            "arguments": tc.get("arguments", "{}")
+                                        }
+                                    })
+                        msg_dict["tool_calls"] = normalized_tool_calls
                     except (json.JSONDecodeError, TypeError):
                         pass
                 # Parse tool_results JSON if present
@@ -4825,11 +4848,38 @@ def stream():
                 traceback.print_exc()
     print(f"[DEBUG] After processing - images: {images}, attachment_paths_for_llm: {attachment_paths_for_llm}")
     messages = fetch_messages_for_conversation(conversation_id)
+
+    def clean_messages_for_llm(msgs):
+        cleaned = []
+        valid_tool_call_ids = set()
+        for msg in msgs:
+            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                for tc in msg['tool_calls']:
+                    if isinstance(tc, dict) and tc.get('id'):
+                        valid_tool_call_ids.add(tc['id'])
+        for msg in msgs:
+            if msg.get('role') == 'tool':
+                tool_call_id = msg.get('tool_call_id')
+                if not tool_call_id or tool_call_id not in valid_tool_call_ids:
+                    continue
+            if msg.get('role') == 'assistant':
+                clean_msg = {k: v for k, v in msg.items() if k != 'tool_calls' or (v and all(tc.get('id') in valid_tool_call_ids for tc in v if isinstance(tc, dict)))}
+                if 'tool_calls' in msg and msg['tool_calls']:
+                    has_valid = any(tc.get('id') in valid_tool_call_ids for tc in msg['tool_calls'] if isinstance(tc, dict))
+                    if not has_valid:
+                        clean_msg.pop('tool_calls', None)
+                cleaned.append(clean_msg)
+                continue
+            cleaned.append(msg)
+        return cleaned
+
+    messages = clean_messages_for_llm(messages)
+
     if len(messages) == 0 and npc_object is not None:
-        messages = [{'role': 'system', 
+        messages = [{'role': 'system',
                      'content': npc_object.get_system_prompt()}]
     elif len(messages) > 0 and messages[0]['role'] != 'system' and npc_object is not None:
-        messages.insert(0, {'role': 'system', 
+        messages.insert(0, {'role': 'system',
                             'content': npc_object.get_system_prompt()})
     elif len(messages) > 0 and npc_object is not None:
         messages[0]['content'] = npc_object.get_system_prompt()
@@ -4929,10 +4979,19 @@ def stream():
 
         mcp_client = app.mcp_clients[state_key]["client"]
         messages = app.mcp_clients[state_key].get("messages", messages)
+
+        if not messages:
+            messages = []
+        if not any(m.get('role') == 'system' for m in messages):
+            system_prompt = npc_object.get_system_prompt() if npc_object else "You are a helpful assistant with access to tools."
+            messages.insert(0, {'role': 'system', 'content': system_prompt})
+
         def stream_mcp_sse():
             nonlocal messages
             iteration = 0
             prompt = commandstr
+            total_input_tokens = 0
+            total_output_tokens = 0
             while iteration < 10:
                 iteration += 1
                 print(f"[MCP] iteration {iteration} prompt len={len(prompt)}")
@@ -4942,27 +5001,39 @@ def stream():
                 tools_for_llm = []
                 if mcp_client:
                     tools_for_llm.extend(mcp_client.available_tools_llm)
-                # append Jinx-derived tools
                 tools_for_llm.extend(list(jinx_tool_catalog.values()))
                 if selected_mcp_tools_from_request:
                     tools_for_llm = [t for t in tools_for_llm if t["function"]["name"] in selected_mcp_tools_from_request]
                 print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
 
+                agent_context = f'''The user's working directory is {current_path}
+
+IMPORTANT AGENT BEHAVIOR:
+- If a tool call fails or returns an error, DO NOT give up. Try alternative approaches.
+- If a file is not found, search for it using different paths or patterns.
+- If one method doesn't work, try another method to accomplish the task.
+- Keep working on the task until it is complete or you have exhausted all reasonable options.
+- When you encounter errors, explain what went wrong and what you're trying next.'''
+
+                print(f"[MCP DEBUG] Messages for LLM (iteration {iteration}): {json.dumps(messages, indent=2, default=str)[:3000]}")
+
                 llm_response = get_llm_response_with_handling(
                     prompt=prompt,
                     npc=npc_object,
-                    model=model, 
+                    model=model,
                     provider=provider,
                     messages=messages,
                     tools=tools_for_llm,
                     stream=True,
                     team=team_object,
-                    context=f' The users working directory is {current_path}'
+                    context=agent_context
                 )
                 print('RESPONSE', llm_response)
 
                 stream = llm_response.get("response", [])
-                messages = llm_response.get("messages", messages)
+                usage = llm_response.get("usage", {})
+                total_input_tokens += usage.get("input_tokens", 0) or 0
+                total_output_tokens += usage.get("output_tokens", 0) or 0
                 collected_content = ""
                 collected_tool_calls = []
                 agent_tool_call_data = {"id": None, "function_name": None, "arguments": ""}
@@ -5073,6 +5144,29 @@ def stream():
                     break
 
                 print(f"[MCP] collected tool calls: {[tc['function']['name'] for tc in collected_tool_calls]}")
+
+                serialized_tool_calls = []
+                for tc in collected_tool_calls:
+                    parsed_args = tc["function"]["arguments"]
+                    if isinstance(parsed_args, dict):
+                        args_for_message = json.dumps(parsed_args)
+                    else:
+                        args_for_message = str(parsed_args)
+                    serialized_tool_calls.append({
+                        "id": tc["id"],
+                        "type": tc["type"],
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": args_for_message
+                        }
+                    })
+
+                messages.append({
+                    "role": "assistant",
+                    "content": collected_content,
+                    "tool_calls": serialized_tool_calls
+                })
+
                 yield {
                     "type": "tool_execution_start",
                     "tool_calls": [
@@ -5136,42 +5230,36 @@ def stream():
                             "name": tool_name,
                             "content": tool_content
                         })
-                        
+                        tool_results.append({
+                            "name": tool_name,
+                            "tool_call_id": tool_id,
+                            "content": tool_content
+                        })
+
                         print(f"[MCP] tool_result {tool_name}: {tool_content}")
                         yield {"type": "tool_result", "name": tool_name, "id": tool_id, "result": tool_content}
 
                     except Exception as e:
                         error_msg = f"Tool execution error: {str(e)}"
                         print(f"[MCP] tool_error {tool_name}: {error_msg}")
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "name": tool_name,
+                            "content": error_msg
+                        })
+                        tool_results.append({
+                            "name": tool_name,
+                            "tool_call_id": tool_id,
+                            "content": error_msg
+                        })
                         yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": error_msg}
 
-                serialized_tool_calls = []
-                for tc in collected_tool_calls:
-                    parsed_args = tc["function"]["arguments"]
-                    # Gemini/LLM expects arguments as JSON string, not dict
-                    if isinstance(parsed_args, dict):
-                        args_for_message = json.dumps(parsed_args)
-                    else:
-                        args_for_message = str(parsed_args)
-                    serialized_tool_calls.append({
-                        "id": tc["id"],
-                        "type": tc["type"],
-                        "function": {
-                            "name": tc["function"]["name"],
-                            "arguments": args_for_message
-                        }
-                    })
-
-                messages.append({
-                    "role": "assistant",
-                    "content": collected_content,
-                    "tool_calls": serialized_tool_calls
-                })
                 tool_results_for_db = tool_results
-
                 prompt = ""
 
             app.mcp_clients[state_key]["messages"] = messages
+            yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens}
             return
         stream_response = stream_mcp_sse()
 
@@ -5217,6 +5305,8 @@ def stream():
         dot_count = 0
         interrupted = False
         tool_call_data = {"id": None, "function_name": None, "arguments": ""}
+        total_input_tokens = 0
+        total_output_tokens = 0
 
         try:
             # New: handle generators (tool_agent streaming)
@@ -5252,12 +5342,22 @@ def stream():
                                     "function_name": tc.get("name"),
                                     "arguments": tc.get("arguments", "")
                                 })
+                        if chunk.get("type") == "tool_execution_start":
+                            for tc in chunk.get("tool_calls", []):
+                                accumulated_tool_calls.append({
+                                    "id": tc.get("id", ""),
+                                    "function_name": tc.get("name", ""),
+                                    "arguments": tc.get("function", {}).get("arguments", "") if isinstance(tc.get("function"), dict) else ""
+                                })
                         if chunk.get("type") == "tool_result":
                             tool_results_for_db.append({
                                 "name": chunk.get("name"),
                                 "tool_call_id": chunk.get("id"),
                                 "content": chunk.get("result", "")
                             })
+                        if chunk.get("type") == "usage":
+                            total_input_tokens += chunk.get("input_tokens", 0) or 0
+                            total_output_tokens += chunk.get("output_tokens", 0) or 0
                         continue
                     yield f"data: {json.dumps({'choices':[{'delta':{'content': str(chunk), 'role': 'assistant'},'finish_reason':None}]})}\n\n"
                 # Generator finished - skip the other stream handling paths
@@ -5484,6 +5584,7 @@ def stream():
 
             # Save assistant message to the database with reasoning content and tool calls
             npc_name_to_save = npc_object.name if npc_object else ''
+            cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else None
             save_conversation_message(
                 command_history,
                 conversation_id,
@@ -5500,6 +5601,9 @@ def stream():
                 tool_results=tool_results_for_db if tool_results_for_db else None,
                 parent_message_id=parent_message_id,
                 gen_params=params,
+                input_tokens=total_input_tokens if total_input_tokens else None,
+                output_tokens=total_output_tokens if total_output_tokens else None,
+                cost=cost,
             )
 
             # Start background tasks for memory extraction and context compression
@@ -6891,9 +6995,107 @@ def track_activity():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-# ============== Studio Action Results ==============
+# ============== Studio Actions for MCP ==============
+# Storage for pending actions that the frontend needs to execute
+_pending_studio_actions = {}
+_studio_action_counter = 0
+
 # Storage for pending action results that agents are waiting for
 _studio_action_results = {}
+
+@app.route('/api/studio/action', methods=['POST'])
+def studio_action():
+    """
+    Queue a studio action for the frontend to execute.
+    Called by the incognide MCP server to trigger UI actions.
+    Returns an action_id that can be used to poll for results.
+    """
+    global _studio_action_counter
+    try:
+        data = request.json or {}
+        action = data.get('action')
+        args = data.get('args', {})
+
+        if not action:
+            return jsonify({'success': False, 'error': 'Missing action'}), 400
+
+        # Generate unique action ID
+        _studio_action_counter += 1
+        action_id = f"mcp_action_{_studio_action_counter}"
+
+        # Store the pending action
+        _pending_studio_actions[action_id] = {
+            'action': action,
+            'args': args,
+            'status': 'pending'
+        }
+
+        print(f"[Studio] Queued action {action_id}: {action}")
+
+        # Wait for result (with timeout)
+        import time
+        start_time = time.time()
+        timeout = 30  # 30 second timeout
+
+        while time.time() - start_time < timeout:
+            if action_id in _studio_action_results:
+                result = _studio_action_results.pop(action_id)
+                _pending_studio_actions.pop(action_id, None)
+                return jsonify(result)
+            time.sleep(0.1)
+
+        # Timeout - clean up and return error
+        _pending_studio_actions.pop(action_id, None)
+        return jsonify({'success': False, 'error': 'Action timed out waiting for frontend'}), 504
+
+    except Exception as e:
+        print(f"Error processing studio action: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/studio/pending_actions', methods=['GET'])
+def get_pending_studio_actions():
+    """
+    Get all pending studio actions for the frontend to execute.
+    Frontend should poll this endpoint and execute any pending actions.
+    """
+    try:
+        pending = {
+            aid: action for aid, action in _pending_studio_actions.items()
+            if action.get('status') == 'pending'
+        }
+        return jsonify({'success': True, 'actions': pending})
+    except Exception as e:
+        print(f"Error getting pending actions: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/studio/action_complete', methods=['POST'])
+def studio_action_complete():
+    """
+    Called by the frontend after executing a studio action.
+    Stores the result so the waiting /api/studio/action call can return.
+    """
+    try:
+        data = request.json or {}
+        action_id = data.get('actionId')
+        result = data.get('result', {})
+
+        if not action_id:
+            return jsonify({'success': False, 'error': 'Missing actionId'}), 400
+
+        # Mark action as complete and store result
+        if action_id in _pending_studio_actions:
+            _pending_studio_actions[action_id]['status'] = 'complete'
+
+        _studio_action_results[action_id] = result
+        print(f"[Studio] Action complete {action_id}: success={result.get('success', False)}")
+
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f"Error completing studio action: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/studio/action_result', methods=['POST'])
 def studio_action_result():

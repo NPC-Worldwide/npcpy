@@ -63,6 +63,70 @@ response = assistant.get_llm_response("List the files in the current directory."
 print(response['response'])
 ```
 
+### Multi-agent team
+
+```python
+from npcpy.npc_compiler import NPC, Team
+
+# Create specialist agents
+researcher = NPC(
+    name='researcher',
+    primary_directive='You research topics thoroughly and provide detailed information.',
+    model='gpt-4o-mini',
+    provider='openai'
+)
+
+writer = NPC(
+    name='writer',
+    primary_directive='You write clear, engaging content based on research.',
+    model='gpt-4o-mini',
+    provider='openai'
+)
+
+critic = NPC(
+    name='critic',
+    primary_directive='You review content and suggest improvements.',
+    model='gpt-4o-mini',
+    provider='openai'
+)
+
+# Create a team with researcher as the coordinator (forenpc)
+team = Team(npcs=[researcher, writer, critic], forenpc='researcher')
+
+# Use individual agents from the team
+research = team.get_npc('researcher').get_llm_response(
+    "Research the key benefits of solar energy"
+)
+print("Research:", research['response'])
+
+draft = team.get_npc('writer').get_llm_response(
+    f"Write a short article based on this research: {research['response']}"
+)
+print("Draft:", draft['response'])
+
+feedback = team.get_npc('critic').get_llm_response(
+    f"Review this article and suggest improvements: {draft['response']}"
+)
+print("Feedback:", feedback['response'])
+```
+
+### Team from directory
+
+```python
+from npcpy.npc_compiler import Team
+
+# Load team from a directory containing .npc files and team.ctx
+team = Team(team_path='./my_project/npc_team')
+
+# The forenpc (coordinator) is set in team.ctx
+response = team.forenpc.get_llm_response("Analyze the sales data")
+print(response['response'])
+
+# Or get a specific agent
+analyst = team.get_npc('data_analyst')
+response = analyst.get_llm_response("What trends do you see?")
+```
+
 ## Features
 
 - **[Agents (NPCs)](https://npcpy.readthedocs.io/en/latest/guides/agents/)** — Agents with personas, directives, and tool calling
