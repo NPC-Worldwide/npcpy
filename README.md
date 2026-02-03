@@ -63,51 +63,41 @@ response = assistant.get_llm_response("List the files in the current directory."
 print(response['response'])
 ```
 
-### Multi-agent team
+### Multi-agent team orchestration
 
 ```python
 from npcpy.npc_compiler import NPC, Team
 
 # Create specialist agents
-researcher = NPC(
-    name='researcher',
-    primary_directive='You research topics thoroughly and provide detailed information.',
-    model='gpt-4o-mini',
-    provider='openai'
+coordinator = NPC(
+    name='coordinator',
+    primary_directive='''You coordinate a team of specialists.
+    Delegate tasks by mentioning @analyst for data questions or @writer for content.
+    Synthesize their responses into a final answer.''',
+    model='llama3.2',
+    provider='ollama'
+)
+
+analyst = NPC(
+    name='analyst',
+    primary_directive='You analyze data and provide insights with specific numbers.',
+    model='~/models/mistral-7b-instruct-v0.2.Q4_K_M.gguf',  # local GGUF file
+    provider='llamacpp'
 )
 
 writer = NPC(
     name='writer',
-    primary_directive='You write clear, engaging content based on research.',
-    model='gpt-4o-mini',
-    provider='openai'
+    primary_directive='You write clear, engaging summaries and reports.',
+    model='gemini-2.5-flash',
+    provider='gemini'
 )
 
-critic = NPC(
-    name='critic',
-    primary_directive='You review content and suggest improvements.',
-    model='gpt-4o-mini',
-    provider='openai'
-)
+# Create team - coordinator (forenpc) automatically delegates via @mentions
+team = Team(npcs=[coordinator, analyst, writer], forenpc='coordinator')
 
-# Create a team with researcher as the coordinator (forenpc)
-team = Team(npcs=[researcher, writer, critic], forenpc='researcher')
-
-# Use individual agents from the team
-research = team.get_npc('researcher').get_llm_response(
-    "Research the key benefits of solar energy"
-)
-print("Research:", research['response'])
-
-draft = team.get_npc('writer').get_llm_response(
-    f"Write a short article based on this research: {research['response']}"
-)
-print("Draft:", draft['response'])
-
-feedback = team.get_npc('critic').get_llm_response(
-    f"Review this article and suggest improvements: {draft['response']}"
-)
-print("Feedback:", feedback['response'])
+# Orchestrate a request - coordinator decides who to involve
+result = team.orchestrate("What are the trends in renewable energy adoption?")
+print(result['output'])
 ```
 
 ### Team from directory
@@ -115,16 +105,12 @@ print("Feedback:", feedback['response'])
 ```python
 from npcpy.npc_compiler import Team
 
-# Load team from a directory containing .npc files and team.ctx
-team = Team(team_path='./my_project/npc_team')
+# Load team from directory with .npc files and team.ctx
+team = Team(team_path='./npc_team')
 
-# The forenpc (coordinator) is set in team.ctx
-response = team.forenpc.get_llm_response("Analyze the sales data")
-print(response['response'])
-
-# Or get a specific agent
-analyst = team.get_npc('data_analyst')
-response = analyst.get_llm_response("What trends do you see?")
+# Orchestrate through the forenpc (set in team.ctx)
+result = team.orchestrate("Analyze the sales data and write a summary")
+print(result['output'])
 ```
 
 ## Features
