@@ -63,6 +63,107 @@ response = assistant.get_llm_response("List the files in the current directory."
 print(response['response'])
 ```
 
+### Agent with skills
+
+Skills are knowledge-content jinxs that provide instructional sections to agents on demand.
+
+**1. Create a skill file** (`npc_team/jinxs/skills/code-review/SKILL.md`):
+```markdown
+---
+name: code-review
+description: Use when reviewing code for quality, security, and best practices.
+---
+# Code Review Skill
+
+## checklist
+- Check for security vulnerabilities (SQL injection, XSS, etc.)
+- Verify error handling and edge cases
+- Review naming conventions and code clarity
+
+## security
+Focus on OWASP top 10 vulnerabilities...
+```
+
+**2. Reference it in your NPC** (`npc_team/reviewer.npc`):
+```yaml
+name: reviewer
+primary_directive: You review code for quality and security issues.
+model: llama3.2
+provider: ollama
+jinxs:
+  - skills/code-review
+```
+
+**3. Use the NPC:**
+```python
+from npcpy.npc_compiler import NPC
+
+# Load NPC from file - skills are automatically available as callable jinxs
+reviewer = NPC(file='./npc_team/reviewer.npc')
+response = reviewer.get_llm_response("Review this function: def login(user, pwd): ...")
+print(response['response'])
+```
+
+Skills let the agent request specific knowledge sections (like `checklist` or `security`) as needed during responses.
+
+### Agent with MCP server
+
+Connect any MCP server to an NPC and its tools become available for agentic tool calling:
+
+```python
+from npcpy.npc_compiler import NPC
+from npcpy.serve import MCPClientNPC
+
+# Connect to your MCP server
+mcp = MCPClientNPC()
+mcp.connect_sync('./my_mcp_server.py')
+
+# Create an NPC
+assistant = NPC(
+    name='Assistant',
+    primary_directive='You help users with tasks using available tools.',
+    model='llama3.2',
+    provider='ollama'
+)
+
+# Pass MCP tools to get_llm_response - the agent handles tool calls automatically
+response = assistant.get_llm_response(
+    "Search the database for recent orders",
+    tools=mcp.available_tools_llm,
+    tool_map=mcp.tool_map
+)
+print(response['response'])
+
+# Clean up when done
+mcp.disconnect_sync()
+```
+
+Example MCP server (`my_mcp_server.py`):
+```python
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("My Tools")
+
+@mcp.tool()
+def search_database(query: str) -> str:
+    """Search the database for records matching the query."""
+    return f"Found results for: {query}"
+
+@mcp.tool()
+def send_notification(message: str, channel: str = "general") -> str:
+    """Send a notification to a channel."""
+    return f"Sent '{message}' to #{channel}"
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+**MCPClientNPC methods:**
+- `connect_sync(server_path)` — Connect to an MCP server script
+- `disconnect_sync()` — Disconnect from the server
+- `available_tools_llm` — Tool schemas for LLM consumption
+- `tool_map` — Dict mapping tool names to callable functions
+
 ### Multi-agent team orchestration
 
 ```python
