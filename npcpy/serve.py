@@ -543,26 +543,29 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
     
     
     if source == 'project':
-        npc_directory = get_project_npc_directory(current_path)
-        print(f"Looking for project NPC in: {npc_directory}")
-    else:  
-        npc_directory = app.config['user_npc_directory']
-        print(f"Looking for global NPC in: {npc_directory}")
-    
-    
-    npc_path = os.path.join(npc_directory, f"{name}.npc")
-    
-    if os.path.exists(npc_path):
-        try:
-            npc = NPC(file=npc_path, db_conn=db_conn)
-            return npc
-        except Exception as e:
-            print(f"Error loading NPC {name} from {source}: {str(e)}")
-            return None
+        directories = [get_project_npc_directory(current_path)]
     else:
-        print(f"NPC file not found: {npc_path}")
-        
-        
+        # Check multiple global directories
+        directories = [
+            app.config['user_npc_directory'],
+            os.path.expanduser("~/.npcsh/incognide/npc_team"),
+        ]
+
+    for npc_directory in directories:
+        if not npc_directory or not os.path.exists(npc_directory):
+            continue
+        npc_path = os.path.join(npc_directory, f"{name}.npc")
+        if os.path.exists(npc_path):
+            try:
+                npc = NPC(file=npc_path, db_conn=db_conn)
+                return npc
+            except Exception as e:
+                print(f"Error loading NPC {name} from {npc_path}: {str(e)}")
+                continue
+
+    print(f"NPC file not found: {name}.npc in {directories}")
+    return None
+
 
 def get_conversation_history(conversation_id):
     """Fetch all messages for a conversation in chronological order."""
@@ -3102,28 +3105,40 @@ def list_npcsql_models():
 
 @app.route("/api/npc_team_global")
 def get_npc_team_global():
-    global_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
     npc_data = []
 
-    if not os.path.exists(global_npc_directory):
-        return jsonify({"npcs": [], "error": None})
+    # Scan multiple team directories
+    team_dirs = [
+        os.path.expanduser("~/.npcsh/npc_team"),
+        os.path.expanduser("~/.npcsh/incognide/npc_team"),
+    ]
 
-    for file in os.listdir(global_npc_directory):
-        if file.endswith(".npc"):
-            npc_path = os.path.join(global_npc_directory, file)
-            raw_data = load_yaml_file(npc_path)
-            if raw_data is None:
-                continue
-            
-            npc_data.append({
-                "name": raw_data.get("name", file[:-4]),
-                "primary_directive": raw_data.get("primary_directive", ""),
-                "model": raw_data.get("model", ""),
-                "provider": raw_data.get("provider", ""),
-                "api_url": raw_data.get("api_url", ""),
-                "use_global_jinxs": raw_data.get("use_global_jinxs", True),
-                "jinxs": raw_data.get("jinxs", "*"),
-            })
+    seen_names = set()
+    for npc_directory in team_dirs:
+        if not os.path.exists(npc_directory):
+            continue
+
+        for file in os.listdir(npc_directory):
+            if file.endswith(".npc"):
+                npc_path = os.path.join(npc_directory, file)
+                raw_data = load_yaml_file(npc_path)
+                if raw_data is None:
+                    continue
+
+                name = raw_data.get("name", file[:-4])
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+
+                npc_data.append({
+                    "name": name,
+                    "primary_directive": raw_data.get("primary_directive", ""),
+                    "model": raw_data.get("model", ""),
+                    "provider": raw_data.get("provider", ""),
+                    "api_url": raw_data.get("api_url", ""),
+                    "use_global_jinxs": raw_data.get("use_global_jinxs", True),
+                    "jinxs": raw_data.get("jinxs", "*"),
+                })
 
     return jsonify({"npcs": npc_data, "error": None})
 
@@ -4999,9 +5014,18 @@ def stream():
                 if npc_object and hasattr(npc_object, "jinx_tool_catalog"):
                     jinx_tool_catalog = npc_object.jinx_tool_catalog or {}
                 tools_for_llm = []
+                seen_names = set()
                 if mcp_client:
-                    tools_for_llm.extend(mcp_client.available_tools_llm)
-                tools_for_llm.extend(list(jinx_tool_catalog.values()))
+                    for t in mcp_client.available_tools_llm:
+                        name = t["function"]["name"]
+                        if name not in seen_names:
+                            tools_for_llm.append(t)
+                            seen_names.add(name)
+                for t in jinx_tool_catalog.values():
+                    name = t["function"]["name"]
+                    if name not in seen_names:
+                        tools_for_llm.append(t)
+                        seen_names.add(name)
                 if selected_mcp_tools_from_request:
                     tools_for_llm = [t for t in tools_for_llm if t["function"]["name"] in selected_mcp_tools_from_request]
                 print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
@@ -5213,13 +5237,23 @@ IMPORTANT AGENT BEHAVIOR:
                             if mcp_client and tool_name in mcp_client.tool_map:
                                 try:
                                     tool_func = mcp_client.tool_map[tool_name]
+                                    print(f"[MCP] Calling tool_func for {tool_name}")
                                     result = tool_func(**(tool_args if isinstance(tool_args, dict) else {}))
+                                    print(f"[MCP] Raw result type: {type(result)}, value: {result}")
                                     # Handle MCP CallToolResult
                                     if hasattr(result, 'content'):
-                                        tool_content = str(result.content[0].text) if result.content else str(result)
+                                        print(f"[MCP] Result has content attr, content={result.content}")
+                                        if result.content and len(result.content) > 0:
+                                            tool_content = str(result.content[0].text)
+                                        else:
+                                            tool_content = str(result)
                                     else:
-                                        tool_content = str(result)
+                                        tool_content = str(result) if result is not None else "Tool returned no result"
+                                    print(f"[MCP] Final tool_content: {tool_content}")
                                 except Exception as mcp_e:
+                                    import traceback
+                                    print(f"[MCP] Tool exception: {mcp_e}")
+                                    traceback.print_exc()
                                     tool_content = f"MCP tool error: {str(mcp_e)}"
                             else:
                                 tool_content = f"Tool '{tool_name}' not found in MCP server or Jinxs"
@@ -7003,6 +7037,24 @@ _studio_action_counter = 0
 # Storage for pending action results that agents are waiting for
 _studio_action_results = {}
 
+# SSE subscribers - list of queues to push new actions to
+import queue
+import threading
+_sse_subscribers = []
+_sse_lock = threading.Lock()
+
+def _notify_sse_subscribers(action_id, action_data):
+    """Push new action to all SSE subscribers."""
+    with _sse_lock:
+        dead = []
+        for q in _sse_subscribers:
+            try:
+                q.put_nowait({'id': action_id, **action_data})
+            except:
+                dead.append(q)
+        for q in dead:
+            _sse_subscribers.remove(q)
+
 @app.route('/api/studio/action', methods=['POST'])
 def studio_action():
     """
@@ -7024,13 +7076,17 @@ def studio_action():
         action_id = f"mcp_action_{_studio_action_counter}"
 
         # Store the pending action
-        _pending_studio_actions[action_id] = {
+        action_data = {
             'action': action,
             'args': args,
             'status': 'pending'
         }
+        _pending_studio_actions[action_id] = action_data
 
         print(f"[Studio] Queued action {action_id}: {action}")
+
+        # Notify SSE subscribers
+        _notify_sse_subscribers(action_id, action_data)
 
         # Wait for result (with timeout)
         import time
@@ -7057,7 +7113,7 @@ def studio_action():
 def get_pending_studio_actions():
     """
     Get all pending studio actions for the frontend to execute.
-    Frontend should poll this endpoint and execute any pending actions.
+    Fallback for when SSE is not available.
     """
     try:
         pending = {
@@ -7068,6 +7124,46 @@ def get_pending_studio_actions():
     except Exception as e:
         print(f"Error getting pending actions: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/studio/actions_stream', methods=['GET'])
+def studio_actions_stream():
+    """
+    SSE endpoint for streaming pending actions to the frontend.
+    Frontend connects once, receives actions as they're created.
+    """
+    import json as json_module
+
+    def generate():
+        q = queue.Queue()
+        with _sse_lock:
+            _sse_subscribers.append(q)
+        try:
+            # Send any existing pending actions first
+            for aid, action in _pending_studio_actions.items():
+                if action.get('status') == 'pending':
+                    data = json_module.dumps({'id': aid, **action})
+                    yield f"data: {data}\n\n"
+
+            # Then wait for new actions
+            while True:
+                try:
+                    action = q.get(timeout=30)  # 30s keepalive
+                    data = json_module.dumps(action)
+                    yield f"data: {data}\n\n"
+                except queue.Empty:
+                    # Send keepalive
+                    yield ": keepalive\n\n"
+        finally:
+            with _sse_lock:
+                if q in _sse_subscribers:
+                    _sse_subscribers.remove(q)
+
+    return Response(generate(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+    })
 
 
 @app.route('/api/studio/action_complete', methods=['POST'])

@@ -113,6 +113,114 @@ result = team.orchestrate("Analyze the sales data and write a summary")
 print(result['output'])
 ```
 
+### Team directory structure
+
+```
+npc_team/
+├── team.ctx           # Team configuration
+├── coordinator.npc    # Coordinator agent
+├── analyst.npc        # Specialist agent
+├── writer.npc         # Specialist agent
+└── jinxs/             # Optional workflows
+    └── research.jinx
+```
+
+**team.ctx** - Team configuration:
+```yaml
+context: |
+  A research team that analyzes topics and produces reports.
+  The coordinator delegates to specialists as needed.
+forenpc: coordinator
+model: llama3.2
+provider: ollama
+mcp_servers:
+  - ~/.npcsh/mcp_server.py
+```
+
+**coordinator.npc** - Agent definition:
+```yaml
+name: coordinator
+primary_directive: |
+  You coordinate research tasks. Delegate to @analyst for data
+  analysis and @writer for content creation. Synthesize results.
+model: llama3.2
+provider: ollama
+```
+
+**analyst.npc** - Specialist agent:
+```yaml
+name: analyst
+primary_directive: |
+  You analyze data and provide insights with specific numbers and trends.
+model: qwen3:8b
+provider: ollama
+```
+
+### Initialize a team
+
+Installing `npcpy` also installs two command-line tools:
+- **`npc`** — CLI for project management and one-off commands
+- **`npcsh`** — Interactive shell for chatting with agents and running jinxs
+
+```bash
+# Using npc CLI
+npc init ./my_project
+
+# Using npcsh (interactive)
+npcsh
+📁 ~/projects
+🤖 npcsh | llama3.2
+> /init directory=./my_project
+> what files are in the current directory?
+```
+
+This creates:
+```
+my_project/
+├── npc_team/
+│   ├── forenpc.npc      # Default coordinator
+│   ├── jinxs/           # Workflows
+│   │   └── skills/      # Knowledge skills
+│   ├── tools/           # Custom tools
+│   └── triggers/        # Event triggers
+├── images/
+├── models/
+└── mcp_servers/
+```
+
+Then add your agents:
+```bash
+# Add team context
+cat > my_project/npc_team/team.ctx << 'EOF'
+context: Research and analysis team
+forenpc: lead
+model: llama3.2
+provider: ollama
+EOF
+
+# Add agents
+cat > my_project/npc_team/lead.npc << 'EOF'
+name: lead
+primary_directive: |
+  You lead the team. Delegate to @researcher for data
+  and @writer for content. Synthesize their output.
+EOF
+
+cat > my_project/npc_team/researcher.npc << 'EOF'
+name: researcher
+primary_directive: You research topics and provide detailed findings.
+model: gemini-2.5-flash
+provider: gemini
+EOF
+
+cat > my_project/npc_team/writer.npc << 'EOF'
+name: writer
+primary_directive: You write clear, engaging content.
+model: qwen3:8b
+provider: ollama
+EOF
+```
+
 ## Features
 
 - **[Agents (NPCs)](https://npcpy.readthedocs.io/en/latest/guides/agents/)** — Agents with personas, directives, and tool calling
