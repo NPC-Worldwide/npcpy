@@ -383,9 +383,7 @@ Full documentation, guides, and API reference at [npcpy.readthedocs.io](https://
 
 ## Inference Capabilities
 
-- Local and cloud LLM providers through LiteLLM (Ollama, OpenAI, Anthropic, Gemini, Deepseek, and more)
-- AirLLM for 70B+ parameter models on consumer hardware (MLX on macOS, CUDA with 4-bit compression on Linux)
-- Image generation through Ollama (`x/z-image-turbo`, `x/flux2-klein`), Huggingface diffusers, OpenAI (DALL-E, GPT Image), and Gemini
+Works with local and cloud providers through LiteLLM (Ollama, OpenAI, Anthropic, Gemini, Deepseek, and more) with support for text, image, audio, and video generation.
 
 ## Links
 
