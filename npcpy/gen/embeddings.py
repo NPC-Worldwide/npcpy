@@ -1,9 +1,5 @@
 
 
-
-
-
-
 from typing import List, Dict, Optional
 import numpy as np
 from datetime import datetime
@@ -26,7 +22,6 @@ def get_ollama_embeddings(
         embeddings.append(response["embedding"])
     return embeddings
 
-
 def get_openai_embeddings(
     texts: List[str], model: str = "text-embedding-3-small"
 ) -> List[List[float]]:
@@ -34,9 +29,6 @@ def get_openai_embeddings(
     client = OpenAI()
     response = client.embeddings.create(input=texts, model=model)
     return [embedding.embedding for embedding in response.data]
-
-
-
 
 def store_embeddings_for_model(
     texts,
@@ -63,12 +55,10 @@ def store_embeddings_for_model(
         documents=texts,
     )
 
-
 def delete_embeddings_from_collection(collection, ids):
     """Delete embeddings by id from Chroma collection."""
     if ids:
         collection.delete(ids=ids)  
-
 
 def get_embeddings(
     texts: List[str],

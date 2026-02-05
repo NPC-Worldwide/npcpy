@@ -2,7 +2,6 @@ import random
 from dataclasses import dataclass
 from typing import Callable, Optional, List
 
-
 @dataclass
 class GAConfig:
     population_size: int = 20
@@ -11,7 +10,6 @@ class GAConfig:
     tournament_size: int = 3
     elitism_count: int = 2
     generations: int = 50
-
 
 class GeneticEvolver:
     """

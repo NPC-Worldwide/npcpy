@@ -20,7 +20,6 @@ except:
     
 from typing import List, Optional
 
-
 @dataclass
 class USFTConfig:
     base_model_name: str = "Qwen/Qwen3-0.6B"
@@ -41,7 +40,6 @@ class USFTConfig:
     weight_decay: float = 0.01
     max_length: int = 512
     save_steps: int = 100
-
 
 def run_usft(
     texts: List[str],
@@ -114,7 +112,6 @@ def run_usft(
     print(f"Model saved to {config.output_model_path}")
     
     return config.output_model_path
-
 
 def load_corpus_from_hf(dataset_name: str, split: str = "train"):
     

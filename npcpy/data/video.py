@@ -3,7 +3,6 @@ import os
 import tempfile
 import subprocess
 
-
 def process_video(file_path, table_name):
     
     import cv2
@@ -30,7 +29,6 @@ def process_video(file_path, table_name):
         print(f"Error processing video: {e}")
         return [], []  
 
-
 def summarize_video_file(file_path: str, language: str = None, max_audio_seconds: int = 600) -> str:
     """
     Summarize a video using lightweight metadata plus optional audio transcript.
@@ -38,7 +36,7 @@ def summarize_video_file(file_path: str, language: str = None, max_audio_seconds
     """
     meta_bits = []
     try:
-        import cv2  # type: ignore
+        import cv2
 
         video = cv2.VideoCapture(file_path)
         fps = video.get(cv2.CAP_PROP_FPS)
@@ -53,7 +51,6 @@ def summarize_video_file(file_path: str, language: str = None, max_audio_seconds
     except Exception:
         meta_bits.append(f"Video file: {os.path.basename(file_path)}")
 
-    # Extract audio track with ffmpeg if available
     audio_path = None
     try:
         temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
@@ -82,7 +79,7 @@ def summarize_video_file(file_path: str, language: str = None, max_audio_seconds
         try:
             try:
                 from npcpy.data.audio import transcribe_audio_file
-                transcript = transcribe_audio_file(audio_path, language=language)  # type: ignore
+                transcript = transcribe_audio_file(audio_path, language=language)
             except Exception:
                 transcript = ""
         finally:

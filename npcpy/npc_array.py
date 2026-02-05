@@ -33,8 +33,6 @@ if TYPE_CHECKING:
     import polars as pl
     import pandas as pd
 
-
-# Operation types for the computation graph
 class OpType(Enum):
     SOURCE = "source"
     INFER = "infer"
@@ -46,8 +44,7 @@ class OpType(Enum):
     REDUCE = "reduce"
     CHAIN = "chain"
     EVOLVE = "evolve"
-    JINX = "jinx"  # Execute a Jinx workflow across models
-
+    JINX = "jinx"
 
 @dataclass
 class GraphNode:
@@ -55,21 +52,19 @@ class GraphNode:
     op_type: OpType
     params: Dict[str, Any] = field(default_factory=dict)
     parents: List['GraphNode'] = field(default_factory=list)
-    result: Any = None  # Populated on compute()
+    result: Any = None
     shape: Optional[Tuple[int, ...]] = None
-
 
 @dataclass
 class ModelSpec:
     """Specification for a model in the array"""
     model_type: Literal["llm", "sklearn", "torch", "npc", "custom"]
-    model_ref: Any  # model name, path, fitted object, or NPC
+    model_ref: Any
     provider: Optional[str] = None
     config: Dict[str, Any] = field(default_factory=dict)
 
     def __hash__(self):
         return hash((self.model_type, str(self.model_ref), self.provider))
-
 
 @dataclass
 class ResponseTensor:
@@ -77,7 +72,7 @@ class ResponseTensor:
     Container for vectorized model outputs with shape information.
     Similar to numpy ndarray but for model responses.
     """
-    data: np.ndarray  # Object array holding responses
+    data: np.ndarray
     model_specs: List[ModelSpec]
     prompts: Optional[List[str]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -90,7 +85,6 @@ class ResponseTensor:
         """NumPy-style indexing"""
         result_data = self.data[key]
         if isinstance(result_data, np.ndarray):
-            # Slice of models
             if isinstance(key, int):
                 new_specs = [self.model_specs[key]]
             elif isinstance(key, slice):
@@ -120,7 +114,6 @@ class ResponseTensor:
         """Flatten to 1D list"""
         return self.data.flatten().tolist()
 
-
 class NPCArray:
     """
     NumPy-like array for model populations.
@@ -146,8 +139,6 @@ class NPCArray:
             params={"specs": specs},
             shape=(len(specs),)
         )
-
-    # ==================== Factory Methods ====================
 
     @classmethod
     def from_llms(
@@ -368,7 +359,6 @@ class NPCArray:
             model_ref = config.get('model')
             provider = config.get('provider')
 
-            # Extract config params (everything except type, model, provider)
             extra_config = {
                 k: v for k, v in config.items()
                 if k not in ('type', 'model', 'provider')
@@ -382,8 +372,6 @@ class NPCArray:
             ))
 
         return cls(specs)
-
-    # ==================== Properties ====================
 
     @property
     def shape(self) -> Tuple[int, ...]:
@@ -401,8 +389,6 @@ class NPCArray:
     def __repr__(self) -> str:
         types = [s.model_type for s in self._specs]
         return f"NPCArray(shape={self.shape}, types={types})"
-
-    # ==================== Lazy Operations ====================
 
     def infer(
         self,
@@ -506,7 +492,6 @@ class NPCArray:
             shape=self.shape
         )
 
-        # Return new NPCArray that will have fitted models
         return NPCArray(self._specs, new_node)
 
     def evolve(
@@ -582,7 +567,6 @@ class NPCArray:
 
         return LazyResult(self._specs, new_node)
 
-
 class LazyResult:
     """
     Lazy result from model operations.
@@ -607,8 +591,6 @@ class LazyResult:
     def shape(self) -> Optional[Tuple[int, ...]]:
         """Expected shape of result"""
         return self._graph.shape
-
-    # ==================== Chainable Operations ====================
 
     def map(self, fn: Callable[[Any], Any]) -> 'LazyResult':
         """
@@ -645,7 +627,7 @@ class LazyResult:
             op_type=OpType.FILTER,
             params={"predicate": predicate},
             parents=[self._graph],
-            shape=None  # Unknown until computed
+            shape=None
         )
 
         return LazyResult(self._specs, new_node, self._prompts)
@@ -721,8 +703,6 @@ class LazyResult:
 
         return LazyResult(self._specs, new_node, self._prompts)
 
-    # ==================== Aggregation Helpers ====================
-
     def vote(self, axis: int = 0) -> 'LazyResult':
         """Shorthand for reduce('vote', axis)"""
         return self.reduce('vote', axis=axis)
@@ -738,8 +718,6 @@ class LazyResult:
     def argmax(self, scores: List[float]) -> 'LazyResult':
         """Select responses corresponding to max scores"""
         return self.reduce('best', scores=scores)
-
-    # ==================== Execution ====================
 
     def explain(self) -> str:
         """
@@ -798,9 +776,7 @@ class LazyResult:
         """Collect and return as Python list"""
         return self.collect().tolist()
 
-    # Alias for backwards compat
     compute = collect
-
 
 class GraphExecutor:
     """
@@ -831,18 +807,14 @@ class GraphExecutor:
     ) -> ResponseTensor:
         """Execute graph starting from root node"""
 
-        # Topological sort
         ordered = self._topological_sort(root)
 
-        # Execute in order
         for node in ordered:
             if id(node) in self._cache:
                 continue
 
-            # Get parent results
             parent_results = [self._cache.get(id(p)) for p in node.parents]
 
-            # Execute node
             result = self._execute_node(node, specs, prompts, parent_results)
             self._cache[id(node)] = result
 
@@ -911,13 +883,11 @@ class GraphExecutor:
         n_models = len(specs)
         n_prompts = len(prompts_list)
 
-        # Prepare all inference tasks
         tasks = []
         for i, spec in enumerate(specs):
             for j, prompt in enumerate(prompts_list):
                 tasks.append((i, j, spec, prompt))
 
-        # Execute (parallel or sequential)
         results = np.empty((n_models, n_prompts), dtype=object)
 
         if self.parallel and len(tasks) > 1:
@@ -1041,8 +1011,6 @@ class GraphExecutor:
                 )
                 fitted_specs.append(new_spec)
             elif spec.model_type == "llm":
-                # Fine-tuning would go here
-                # For now, just pass through
                 fitted_specs.append(spec)
             else:
                 fitted_specs.append(spec)
@@ -1061,7 +1029,6 @@ class GraphExecutor:
         if parent_result is None:
             raise ValueError("Map requires parent result")
 
-        # Apply fn element-wise
         mapped = np.vectorize(fn, otypes=[object])(parent_result.data)
 
         return ResponseTensor(
@@ -1079,14 +1046,12 @@ class GraphExecutor:
         if parent_result is None:
             raise ValueError("Filter requires parent result")
 
-        # Apply predicate and filter
         mask = np.vectorize(predicate)(parent_result.data)
         filtered_data = parent_result.data[mask]
 
-        # This changes shape, need to track which specs remain
         return ResponseTensor(
             data=filtered_data,
-            model_specs=parent_result.model_specs,  # May need adjustment
+            model_specs=parent_result.model_specs,
             prompts=parent_result.prompts,
             metadata={**parent_result.metadata, "filtered": True}
         )
@@ -1176,10 +1141,8 @@ class GraphExecutor:
         current = parent_result.data
 
         for _ in range(n_rounds):
-            # Apply synthesis function to get new prompt
             new_prompt = fn(current.tolist())
 
-            # Run inference with new prompt
             infer_node = GraphNode(
                 op_type=OpType.INFER,
                 params={"prompts": [new_prompt]},
@@ -1206,13 +1169,10 @@ class GraphExecutor:
         n = len(specs)
         n_elite = max(1, int(n * elite_ratio))
 
-        # Sort by fitness
         sorted_indices = np.argsort(fitness_scores)[::-1]
 
-        # Keep elites
         new_specs = [specs[i] for i in sorted_indices[:n_elite]]
 
-        # Generate rest through mutation/crossover
         while len(new_specs) < n:
             if crossover_fn and random.random() < 0.5:
                 parent1 = specs[random.choice(sorted_indices[:n//2])]
@@ -1244,17 +1204,14 @@ class GraphExecutor:
             """Run jinx for a single model spec"""
             try:
                 if spec.model_type == "npc":
-                    # Use the NPC directly
                     npc = spec.model_ref
                 else:
-                    # Create a temporary NPC with the model
                     npc = NPC(
                         name=f"array_npc_{spec.model_ref}",
                         model=spec.model_ref,
                         provider=spec.provider
                     )
 
-                # Execute the jinx
                 result = npc.execute_jinx(
                     jinx_name=jinx_name,
                     input_values=inputs,
@@ -1284,10 +1241,8 @@ class GraphExecutor:
             metadata={"operation": "jinx", "jinx_name": jinx_name, **inputs}
         )
 
-
 def _compute_response_variance(responses: List[str]) -> float:
     """Compute semantic variance across responses"""
-    # Simple heuristic: length variance + unique word ratio
     if not responses:
         return 0.0
 
@@ -1299,7 +1254,6 @@ def _compute_response_variance(responses: List[str]) -> float:
         word_sets.append(words)
         all_words.update(words)
 
-    # Jaccard-based disagreement
     if len(word_sets) < 2:
         return 0.0
 
@@ -1314,9 +1268,6 @@ def _compute_response_variance(responses: List[str]) -> float:
 
     avg_overlap = total_overlap / n_pairs if n_pairs > 0 else 1.0
     return 1.0 - avg_overlap
-
-
-# ==================== Polars Integration ====================
 
 def npc_udf(
     operation: str,
@@ -1355,12 +1306,10 @@ def npc_udf(
         else:
             raise ValueError(f"Unknown operation: {operation}")
 
-        # Flatten if needed
         output = result.flatten() if result.shape[0] == 1 else result.data[:, 0].tolist()
         return pl.Series(output)
 
     return input_col.map_elements(apply_fn, return_dtype=pl.Utf8)
-
 
 def register_polars_namespace():
     """
@@ -1393,9 +1342,6 @@ def register_polars_namespace():
     except ImportError:
         return False
 
-
-# ==================== Convenience Functions ====================
-
 def infer_matrix(
     prompts: List[str],
     models: List[str] = None,
@@ -1419,7 +1365,6 @@ def infer_matrix(
 
     arr = NPCArray.from_llms(models, providers)
     return arr.infer(prompts, **kwargs).compute()
-
 
 def ensemble_vote(
     prompt: str,

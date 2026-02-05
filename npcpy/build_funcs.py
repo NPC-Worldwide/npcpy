@@ -5,7 +5,6 @@ import os
 import yaml
 from pathlib import Path
 
-
 def get_team_name(team_path):
     """Get team name from ctx file or folder name."""
     team_path = Path(team_path)
@@ -22,7 +21,6 @@ def get_team_name(team_path):
     if name == 'npc_team':
         name = team_path.parent.name
     return name
-
 
 def build_dockerfile(config, **kwargs):
     """Generate a Dockerfile for serving an NPC team."""
@@ -54,7 +52,6 @@ CMD ["npc", "serve", "--port", "{port}"]
 '''
     return dockerfile
 
-
 def build_docker_compose(config, **kwargs):
     """Generate Docker Compose setup for NPC team deployment."""
     team_path = config.get('team_path', './npc_team')
@@ -67,13 +64,11 @@ def build_docker_compose(config, **kwargs):
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Generate Dockerfile
     dockerfile_content = build_dockerfile(config)
     dockerfile_path = os.path.join(output_dir, 'Dockerfile')
     with open(dockerfile_path, 'w') as f:
         f.write(dockerfile_content)
 
-    # Generate docker-compose.yml
     cors_env = f'\n      - CORS_ORIGINS={",".join(cors_origins)}' if cors_origins else ''
 
     compose = f'''version: '3.8'
@@ -98,7 +93,6 @@ services:
     with open(compose_path, 'w') as f:
         f.write(compose)
 
-    # Generate .env.example
     env_example = '''# NPC Team Environment Variables
 NPCSH_CHAT_MODEL=gpt-4o-mini
 NPCSH_CHAT_PROVIDER=openai
@@ -113,7 +107,6 @@ GEMINI_API_KEY=
     with open(env_path, 'w') as f:
         f.write(env_example)
 
-    # Copy npc_team to output
     import shutil
     dest_team = os.path.join(output_dir, os.path.basename(team_path))
     if os.path.exists(dest_team):
@@ -139,7 +132,6 @@ API will be available at http://localhost:{port}
 ''',
         'messages': kwargs.get('messages', [])
     }
-
 
 def build_flask_server(config, **kwargs):
     """Generate a standalone Flask server script."""
@@ -171,7 +163,6 @@ if __name__ == "__main__":
         f.write(server_script)
     os.chmod(script_path, 0o755)
 
-    # Copy npc_team
     import shutil
     dest_team = os.path.join(output_dir, os.path.basename(team_path))
     if os.path.exists(dest_team):
@@ -194,7 +185,6 @@ API will be available at http://localhost:{port}
 ''',
         'messages': kwargs.get('messages', [])
     }
-
 
 def build_cli_executable(config, **kwargs):
     """Generate CLI wrapper scripts for team NPCs."""
@@ -233,7 +223,6 @@ To use, add {output_dir} to your PATH or run directly:
         'messages': kwargs.get('messages', [])
     }
 
-
 def build_static_site(config, **kwargs):
     """Generate static site documentation for the team."""
     team_path = config.get('team_path', './npc_team')
@@ -244,7 +233,6 @@ def build_static_site(config, **kwargs):
 
     team_name = get_team_name(team_path)
 
-    # Get NPCs
     npcs = []
     for npc_file in team_path.glob("*.npc"):
         with open(npc_file, 'r') as f:
@@ -254,7 +242,6 @@ def build_static_site(config, **kwargs):
             'directive': npc_data.get('primary_directive', '')[:200] + '...'
         })
 
-    # Simple HTML page
     npc_list = '\n'.join([
         f'<li><strong>{n["name"]}</strong>: {n["directive"]}</li>'
         for n in npcs

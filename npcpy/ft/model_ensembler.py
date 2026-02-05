@@ -23,7 +23,6 @@ class ModelGene:
     trigger_patterns: List[str] = field(default_factory=list)
     confidence_threshold: float = 0.7
 
-
 def generate_trigger_patterns(specialization: str) -> List[str]:
     """
     Generate trigger patterns for a given specialization domain
@@ -37,7 +36,6 @@ def generate_trigger_patterns(specialization: str) -> List[str]:
     }
     
     return patterns.get(specialization, ['general'])
-
 
 def create_model_genome(
     specializations: List[str],
@@ -58,7 +56,6 @@ def create_model_genome(
         genome.append(gene)
     
     return genome
-
 
 def mutate_model_genome(
     genome: List[ModelGene],
@@ -104,7 +101,6 @@ def mutate_model_genome(
     
     return new_genome
 
-
 def crossover_model_genomes(
     genome1: List[ModelGene],
     genome2: List[ModelGene]
@@ -120,7 +116,6 @@ def crossover_model_genomes(
     child = genome1[:split] + genome2[split:]
     
     return child
-
 
 def evaluate_model_genome(
     genome: List[ModelGene],
@@ -161,7 +156,6 @@ def evaluate_model_genome(
     )
     
     return fitness
-
 
 class ResponseRouter:
     """

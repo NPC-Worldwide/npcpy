@@ -26,7 +26,6 @@ class SQLModelCompiler:
         self.engine_type = engine_type.lower()
         self.models = {}
         
-        # Discover models
         self._discover_models()
     
     def _discover_models(self):
@@ -57,12 +56,9 @@ class SQLModelCompiler:
         model = self.models[model_name]
         content = model['content']
         
-        # Engine-specific compilation
         if self.engine_type == 'snowflake':
-            # Snowflake-specific transformations
             content = content.replace('{{', 'SNOWFLAKE.').replace('}}', '')
         elif self.engine_type == 'bigquery':
-            # BigQuery-specific transformations
             content = content.replace('{{', 'ML.').replace('}}', '')
         
         return content
@@ -82,25 +78,19 @@ class SQLModelCompiler:
         if model_name not in self.models:
             raise ValueError(f"Model {model_name} not found")
         
-        # Compile model for specific engine
         compiled_sql = self._compile_model(model_name)
         
-        # If seed data is provided, prepare the database
         if seed_data and self.engine:
             for table_name, df in seed_data.items():
                 df.to_sql(table_name, self.engine, if_exists='replace', index=False)
         
-        # Execute the model
         if self.engine:
             return pd.read_sql(compiled_sql, self.engine)
         else:
-            # Fallback to pandas evaluation
             import sqlite3
             
-            # Create an in-memory SQLite database for evaluation
             conn = sqlite3.connect(':memory:')
             
-            # Load seed data if available
             if seed_data:
                 for table_name, df in seed_data.items():
                     df.to_sql(table_name, conn, if_exists='replace', index=False)
@@ -119,7 +109,6 @@ class SQLModelCompiler:
             results[model_name] = self.execute_model(model_name, seed_data)
         return results
 
-# Example usage in a pipeline
 def create_model_compiler(
     models_dir: str, 
     engine_type: str = 'sqlite', 
@@ -146,7 +135,6 @@ def create_model_compiler(
             f"bigquery://{connection_params['project_id']}"
         )
     else:
-        # Default to SQLite
         engine = sqlalchemy.create_engine('sqlite:///models.db')
     
     return SQLModelCompiler(

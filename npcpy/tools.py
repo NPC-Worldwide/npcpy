@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Callable, Union, get_type_hints, get_origin,
 
 from docstring_parser import parse as parse_docstring
 
-
 def python_type_to_json_schema(py_type: type) -> Dict[str, Any]:
     """Convert Python type hints to JSON schema types."""
     
@@ -44,7 +43,6 @@ def python_type_to_json_schema(py_type: type) -> Dict[str, Any]:
     }
     
     return type_mapping.get(py_type, {"type": "string"})
-
 
 def extract_function_info(func: Callable) -> Dict[str, Any]:
     """Extract function information including name, description, and parameters."""
@@ -121,7 +119,6 @@ def extract_function_info(func: Callable) -> Dict[str, Any]:
         }
     }
 
-
 def create_tool_schema(functions: List[Callable]) -> List[Dict[str, Any]]:
     """Create OpenAI-style tool schema from a list of functions."""
     schema = []
@@ -135,11 +132,9 @@ def create_tool_schema(functions: List[Callable]) -> List[Dict[str, Any]]:
     
     return schema
 
-
 def create_tool_map(functions: List[Callable]) -> Dict[str, Callable]:
     """Create a tool map from a list of functions."""
     return {func.__name__: func for func in functions}
-
 
 def auto_tools(functions: List[Callable]) -> tuple[List[Dict[str, Any]], Dict[str, Callable]]:
     """

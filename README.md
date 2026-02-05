@@ -61,6 +61,199 @@ assistant = NPC(
 )
 response = assistant.get_llm_response("List the files in the current directory.")
 print(response['response'])
+
+# Access individual tool results
+for result in response.get('tool_results', []):
+    print(f"{result['tool_name']}: {result['result']}")
+```
+
+### Streaming responses
+
+```python
+from npcpy.llm_funcs import get_llm_response
+
+response = get_llm_response(
+    "Tell me about the history of the Inca Empire.",
+    model='llama3.2',
+    provider='ollama',
+    stream=True
+)
+
+for chunk in response['response']:
+    msg = chunk.get('message', {})
+    print(msg.get('content', ''), end='', flush=True)
+```
+
+### JSON output
+
+```python
+from npcpy.llm_funcs import get_llm_response
+
+response = get_llm_response(
+    "List 3 planets with their distances from the sun in AU.",
+    model='llama3.2',
+    provider='ollama',
+    format='json'
+)
+print(response['response'])
+```
+
+### Multi-agent team orchestration
+
+```python
+from npcpy.npc_compiler import NPC, Team
+
+# Create specialist agents
+coordinator = NPC(
+    name='coordinator',
+    primary_directive='''You coordinate a team of specialists.
+    Delegate tasks by mentioning @analyst for data questions or @writer for content.
+    Synthesize their responses into a final answer.''',
+    model='llama3.2',
+    provider='ollama'
+)
+
+analyst = NPC(
+    name='analyst',
+    primary_directive='You analyze data and provide insights with specific numbers.',
+    model='~/models/mistral-7b-instruct-v0.2.Q4_K_M.gguf',
+    provider='llamacpp'
+)
+
+writer = NPC(
+    name='writer',
+    primary_directive='You write clear, engaging summaries and reports.',
+    model='gemini-2.5-flash',
+    provider='gemini'
+)
+
+# Create team - coordinator (forenpc) automatically delegates via @mentions
+team = Team(npcs=[coordinator, analyst, writer], forenpc='coordinator')
+
+# Orchestrate a request - coordinator decides who to involve
+result = team.orchestrate("What are the trends in renewable energy adoption?")
+print(result['output'])
+```
+
+### Initialize a team
+
+Installing `npcpy` also installs two command-line tools:
+- **`npc`** — CLI for project management and one-off commands
+- **`npcsh`** — Interactive shell for chatting with agents and running jinxs
+
+```bash
+# Using npc CLI
+npc init ./my_project
+
+# Using npcsh (interactive)
+npcsh
+📁 ~/projects
+🤖 npcsh | llama3.2
+> /init directory=./my_project
+> what files are in the current directory?
+```
+
+This creates:
+```
+my_project/
+├── npc_team/
+│   ├── forenpc.npc      # Default coordinator
+│   ├── jinxs/           # Workflows
+│   │   └── skills/      # Knowledge skills
+│   ├── tools/           # Custom tools
+│   └── triggers/        # Event triggers
+├── images/
+├── models/
+└── mcp_servers/
+```
+
+Then add your agents:
+```bash
+# Add team context
+cat > my_project/npc_team/team.ctx << 'EOF'
+context: Research and analysis team
+forenpc: lead
+model: llama3.2
+provider: ollama
+EOF
+
+# Add agents
+cat > my_project/npc_team/lead.npc << 'EOF'
+name: lead
+primary_directive: |
+  You lead the team. Delegate to @researcher for data
+  and @writer for content. Synthesize their output.
+EOF
+
+cat > my_project/npc_team/researcher.npc << 'EOF'
+name: researcher
+primary_directive: You research topics and provide detailed findings.
+model: gemini-2.5-flash
+provider: gemini
+EOF
+
+cat > my_project/npc_team/writer.npc << 'EOF'
+name: writer
+primary_directive: You write clear, engaging content.
+model: qwen3:8b
+provider: ollama
+EOF
+```
+
+### Team directory structure
+
+```
+npc_team/
+├── team.ctx           # Team configuration
+├── coordinator.npc    # Coordinator agent
+├── analyst.npc        # Specialist agent
+├── writer.npc         # Specialist agent
+└── jinxs/             # Optional workflows
+    └── research.jinx
+```
+
+**team.ctx** - Team configuration:
+```yaml
+context: |
+  A research team that analyzes topics and produces reports.
+  The coordinator delegates to specialists as needed.
+forenpc: coordinator
+model: llama3.2
+provider: ollama
+mcp_servers:
+  - ~/.npcsh/mcp_server.py
+```
+
+**coordinator.npc** - Agent definition:
+```yaml
+name: coordinator
+primary_directive: |
+  You coordinate research tasks. Delegate to @analyst for data
+  analysis and @writer for content creation. Synthesize results.
+model: llama3.2
+provider: ollama
+```
+
+**analyst.npc** - Specialist agent:
+```yaml
+name: analyst
+primary_directive: |
+  You analyze data and provide insights with specific numbers and trends.
+model: qwen3:8b
+provider: ollama
+```
+
+### Team from directory
+
+```python
+from npcpy.npc_compiler import Team
+
+# Load team from directory with .npc files and team.ctx
+team = Team(team_path='./npc_team')
+
+# Orchestrate through the forenpc (set in team.ctx)
+result = team.orchestrate("Analyze the sales data and write a summary")
+print(result['output'])
 ```
 
 ### Agent with skills
@@ -164,162 +357,13 @@ if __name__ == "__main__":
 - `available_tools_llm` — Tool schemas for LLM consumption
 - `tool_map` — Dict mapping tool names to callable functions
 
-### Multi-agent team orchestration
+### Image generation
 
 ```python
-from npcpy.npc_compiler import NPC, Team
+from npcpy.llm_funcs import gen_image
 
-# Create specialist agents
-coordinator = NPC(
-    name='coordinator',
-    primary_directive='''You coordinate a team of specialists.
-    Delegate tasks by mentioning @analyst for data questions or @writer for content.
-    Synthesize their responses into a final answer.''',
-    model='llama3.2',
-    provider='ollama'
-)
-
-analyst = NPC(
-    name='analyst',
-    primary_directive='You analyze data and provide insights with specific numbers.',
-    model='~/models/mistral-7b-instruct-v0.2.Q4_K_M.gguf',  # local GGUF file
-    provider='llamacpp'
-)
-
-writer = NPC(
-    name='writer',
-    primary_directive='You write clear, engaging summaries and reports.',
-    model='gemini-2.5-flash',
-    provider='gemini'
-)
-
-# Create team - coordinator (forenpc) automatically delegates via @mentions
-team = Team(npcs=[coordinator, analyst, writer], forenpc='coordinator')
-
-# Orchestrate a request - coordinator decides who to involve
-result = team.orchestrate("What are the trends in renewable energy adoption?")
-print(result['output'])
-```
-
-### Team from directory
-
-```python
-from npcpy.npc_compiler import Team
-
-# Load team from directory with .npc files and team.ctx
-team = Team(team_path='./npc_team')
-
-# Orchestrate through the forenpc (set in team.ctx)
-result = team.orchestrate("Analyze the sales data and write a summary")
-print(result['output'])
-```
-
-### Team directory structure
-
-```
-npc_team/
-├── team.ctx           # Team configuration
-├── coordinator.npc    # Coordinator agent
-├── analyst.npc        # Specialist agent
-├── writer.npc         # Specialist agent
-└── jinxs/             # Optional workflows
-    └── research.jinx
-```
-
-**team.ctx** - Team configuration:
-```yaml
-context: |
-  A research team that analyzes topics and produces reports.
-  The coordinator delegates to specialists as needed.
-forenpc: coordinator
-model: llama3.2
-provider: ollama
-mcp_servers:
-  - ~/.npcsh/mcp_server.py
-```
-
-**coordinator.npc** - Agent definition:
-```yaml
-name: coordinator
-primary_directive: |
-  You coordinate research tasks. Delegate to @analyst for data
-  analysis and @writer for content creation. Synthesize results.
-model: llama3.2
-provider: ollama
-```
-
-**analyst.npc** - Specialist agent:
-```yaml
-name: analyst
-primary_directive: |
-  You analyze data and provide insights with specific numbers and trends.
-model: qwen3:8b
-provider: ollama
-```
-
-### Initialize a team
-
-Installing `npcpy` also installs two command-line tools:
-- **`npc`** — CLI for project management and one-off commands
-- **`npcsh`** — Interactive shell for chatting with agents and running jinxs
-
-```bash
-# Using npc CLI
-npc init ./my_project
-
-# Using npcsh (interactive)
-npcsh
-📁 ~/projects
-🤖 npcsh | llama3.2
-> /init directory=./my_project
-> what files are in the current directory?
-```
-
-This creates:
-```
-my_project/
-├── npc_team/
-│   ├── forenpc.npc      # Default coordinator
-│   ├── jinxs/           # Workflows
-│   │   └── skills/      # Knowledge skills
-│   ├── tools/           # Custom tools
-│   └── triggers/        # Event triggers
-├── images/
-├── models/
-└── mcp_servers/
-```
-
-Then add your agents:
-```bash
-# Add team context
-cat > my_project/npc_team/team.ctx << 'EOF'
-context: Research and analysis team
-forenpc: lead
-model: llama3.2
-provider: ollama
-EOF
-
-# Add agents
-cat > my_project/npc_team/lead.npc << 'EOF'
-name: lead
-primary_directive: |
-  You lead the team. Delegate to @researcher for data
-  and @writer for content. Synthesize their output.
-EOF
-
-cat > my_project/npc_team/researcher.npc << 'EOF'
-name: researcher
-primary_directive: You research topics and provide detailed findings.
-model: gemini-2.5-flash
-provider: gemini
-EOF
-
-cat > my_project/npc_team/writer.npc << 'EOF'
-name: writer
-primary_directive: You write clear, engaging content.
-model: qwen3:8b
-provider: ollama
-EOF
+images = gen_image("A sunset over the mountains", model='sdxl', provider='diffusers')
+images[0].save("sunset.png")
 ```
 
 ## Features

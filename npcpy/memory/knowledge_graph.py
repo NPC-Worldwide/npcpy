@@ -35,7 +35,6 @@ def safe_kuzu_execute(conn, query, error_message="Kuzu query failed"):
         print(error)
         return None, error
 
-
 def create_group(conn, name: str, metadata: str = ""):
     """Create a new group in the database with robust error handling"""
     if conn is None:
@@ -66,7 +65,6 @@ def create_group(conn, name: str, metadata: str = ""):
         print(f"Error creating group {name}: {str(e)}")
         traceback.print_exc()
         return False
-
 
 import traceback
 def init_db(db_path: str, drop=False):
@@ -142,8 +140,6 @@ def init_db(db_path: str, drop=False):
         traceback.print_exc()
         return None
 
-
-
 def find_similar_groups(
     conn,
     fact: str,  
@@ -189,7 +185,6 @@ def find_similar_groups(
     response = response["response"]
     return response["group_list"]
 
-
 def kg_initial(content,  
                model=None,
                provider=None,
@@ -213,7 +208,6 @@ def kg_initial(content,
         all_facts = []
         print(len(content))
         if len(content)>10000:
-            # randomly sub sample 10000 characters
             starting_point = random.randint(0, len(content)-10000)
         
             content_to_sample = content[starting_point:starting_point+10000]
@@ -250,7 +244,6 @@ def kg_initial(content,
     print("  - Inferring implied facts (zooming in)...")
     all_implied_facts = []
     if len(all_facts) > 20:
-        # sub sample facts randomly to generate zoomed in facts
         sampled_facts = random.sample(all_facts, k=20)
         for n in range(len(all_facts) // 20):
             implied_facts = zoom_in(sampled_facts, 
@@ -327,7 +320,6 @@ def kg_initial(content,
         "fact_to_concept_links": dict(fact_to_concept_links),
         "fact_to_fact_links": fact_to_fact_links
     }
-
 
 def kg_evolve_incremental(existing_kg, 
                           new_content_text=None,
@@ -459,9 +451,6 @@ def kg_evolve_incremental(existing_kg,
         
     }
     return final_kg, {}
-
-
-
 
 def kg_sleep_process(existing_kg, 
                      model=None, 
@@ -603,7 +592,6 @@ def kg_dream_process(existing_kg,
     print("  - Dream analysis complete. New knowledge integrated.")
     return dream_kg, {}
 
-
 def save_kg_with_pandas(kg, path_prefix="kg_state"):
 
     generation = kg.get("generation", 0)
@@ -624,15 +612,11 @@ def save_kg_with_pandas(kg, path_prefix="kg_state"):
     pd.DataFrame(links_data).to_csv(f'{path_prefix}_gen{generation}_links.csv', index=False)
     print(f"Saved KG Generation {generation} to CSV files.")
 
-
 def save_changelog_to_json(changelog, from_gen, to_gen, path_prefix="changelog"):
     if not changelog: return
     with open(f"{path_prefix}_gen{from_gen}_to_{to_gen}.json", 'w', encoding='utf-8') as f:
         json.dump(changelog, f, indent=4)
     print(f"Saved changelog for Gen {from_gen}->{to_gen}.")
-
-
-
 
 def store_fact_and_group(conn, fact: str,
                         groups: List[str], path: str) -> bool:
@@ -792,7 +776,6 @@ def assign_fact_to_group_graph(conn, fact: str, group: str) -> bool:
         traceback.print_exc()
         return False
 
-
 def store_fact_and_group(conn, fact: str, groups: List[str], path: str) -> bool:
     """Insert a fact into the database along with its groups"""
     if not conn:
@@ -926,7 +909,6 @@ def process_text_with_chroma(
 
     return facts
 
-
 def hybrid_search_with_chroma(
     kuzu_conn,
     chroma_collection,
@@ -1040,7 +1022,6 @@ def hybrid_search_with_chroma(
     
     return expanded_results[:top_k]
 
-
 def find_similar_facts_chroma(
     collection,
     query: str,
@@ -1086,8 +1067,6 @@ def find_similar_facts_chroma(
     except Exception as e:
         print(f"Error searching in Chroma: {e}")
         return []
-
-
 
 def store_fact_with_embedding(
     collection, fact: str, metadata: dict, embedding: List[float]
@@ -1147,8 +1126,6 @@ def save_facts_to_graph_db(
 
         print(f"Completed batch {i//batch_size + 1}")
 
-
-
 def kg_add_fact(
    engine, 
    fact_text: str, 
@@ -1200,7 +1177,6 @@ def kg_search_facts(
    matching_facts = []
 
    if search_all_scopes and (not team_name or not npc_name):
-       # Search across all scopes directly in DB
        with engine.connect() as conn:
            result = conn.execute(text("""
                SELECT DISTINCT statement FROM kg_facts
@@ -1208,7 +1184,6 @@ def kg_search_facts(
            """), {"query": f"%{query}%"})
            matching_facts = [row.statement for row in result]
    else:
-       # Scope-specific search
        if not team_name:
            team_name = 'global_team'
        if not npc_name:
@@ -1456,11 +1431,6 @@ def kg_evolve_knowledge(
 
    return "Knowledge graph evolved with new content"
 
-
-# =============================================================================
-# ADVANCED SEARCH FUNCTIONS
-# =============================================================================
-
 def kg_link_search(
     engine,
     query: str,
@@ -1490,7 +1460,6 @@ def kg_link_search(
     from sqlalchemy import text
     from collections import deque
 
-    # Phase 1: Find seed facts/concepts via keyword search
     seeds = kg_search_facts(engine, query, npc=npc, team=team,
                            search_all_scopes=search_all_scopes)
 
@@ -1501,13 +1470,12 @@ def kg_link_search(
     results = [{'content': s, 'type': 'fact', 'depth': 0, 'path': [s], 'score': 1.0}
                for s in seeds[:breadth_per_step]]
 
-    # Phase 2: Traverse links
     if strategy == 'bfs':
         queue = deque()
         for seed in seeds[:breadth_per_step]:
             queue.append((seed, 'fact', 0, [seed], 1.0))
     else:
-        queue = []  # Use as stack for DFS
+        queue = []
         for seed in seeds[:breadth_per_step]:
             queue.append((seed, 'fact', 0, [seed], 1.0))
 
@@ -1521,10 +1489,8 @@ def kg_link_search(
             if depth >= max_depth:
                 continue
 
-            # Find linked items (both directions)
             linked = []
 
-            # Links where current is source
             result = conn.execute(text("""
                 SELECT target, type FROM kg_links WHERE source = :src
             """), {"src": current})
@@ -1532,7 +1498,6 @@ def kg_link_search(
                 target_type = 'concept' if 'concept' in row.type else 'fact'
                 linked.append((row.target, target_type, row.type))
 
-            # Links where current is target
             result = conn.execute(text("""
                 SELECT source, type FROM kg_links WHERE target = :tgt
             """), {"tgt": current})
@@ -1540,7 +1505,6 @@ def kg_link_search(
                 source_type = 'fact' if 'fact_to' in row.type else 'concept'
                 linked.append((row.source, source_type, f"rev_{row.type}"))
 
-            # Expand to linked items
             added = 0
             for item_content, item_type, link_type in linked:
                 if item_content in visited or added >= breadth_per_step:
@@ -1548,7 +1512,7 @@ def kg_link_search(
 
                 visited.add(item_content)
                 new_path = path + [item_content]
-                new_score = score * 0.8  # Decay with depth
+                new_score = score * 0.8
 
                 results.append({
                     'content': item_content,
@@ -1562,10 +1526,8 @@ def kg_link_search(
                 queue.append((item_content, item_type, depth + 1, new_path, new_score))
                 added += 1
 
-    # Sort by score then depth
     results.sort(key=lambda x: (-x['score'], x['depth']))
     return results[:max_results]
-
 
 def kg_embedding_search(
     engine,
@@ -1609,13 +1571,11 @@ def kg_embedding_search(
     model = embedding_model or 'nomic-embed-text'
     provider = embedding_provider or 'ollama'
 
-    # Get query embedding
     query_embedding = np.array(get_embeddings([query], model, provider)[0])
 
     results = []
 
     with engine.connect() as conn:
-        # Search facts
         if search_all_scopes:
             fact_rows = conn.execute(text(
                 "SELECT DISTINCT statement FROM kg_facts"
@@ -1639,7 +1599,6 @@ def kg_embedding_search(
                 if sim >= similarity_threshold:
                     results.append({'content': stmt, 'type': 'fact', 'score': sim})
 
-        # Search concepts
         if include_concepts:
             if search_all_scopes:
                 concept_rows = conn.execute(text(
@@ -1664,7 +1623,6 @@ def kg_embedding_search(
 
     results.sort(key=lambda x: -x['score'])
     return results[:max_results]
-
 
 def kg_hybrid_search(
     engine,
@@ -1698,16 +1656,14 @@ def kg_hybrid_search(
     Returns:
         List of dicts with 'content', 'type', 'score', 'source'
     """
-    all_results = {}  # content -> result dict
+    all_results = {}
 
-    # Keyword search (always fast, always run unless embedding-only)
     if 'keyword' in mode or mode == 'link' or mode == 'all':
         keyword_facts = kg_search_facts(engine, query, npc=npc, team=team,
                                         search_all_scopes=search_all_scopes)
         for f in keyword_facts:
             all_results[f] = {'content': f, 'type': 'fact', 'score': 0.7, 'source': 'keyword'}
 
-    # Embedding search
     if 'embedding' in mode or mode == 'all':
         try:
             emb_results = kg_embedding_search(
@@ -1720,7 +1676,6 @@ def kg_hybrid_search(
             )
             for r in emb_results:
                 if r['content'] in all_results:
-                    # Boost if found by multiple methods
                     all_results[r['content']]['score'] = max(
                         all_results[r['content']]['score'], r['score']
                     ) * 1.1
@@ -1731,7 +1686,6 @@ def kg_hybrid_search(
         except Exception as e:
             print(f"Embedding search failed: {e}")
 
-    # Link traversal
     if 'link' in mode or mode == 'all':
         link_results = kg_link_search(
             engine, query, npc=npc, team=team,
@@ -1742,7 +1696,6 @@ def kg_hybrid_search(
         )
         for r in link_results:
             if r['content'] in all_results:
-                # Boost linked results
                 all_results[r['content']]['score'] = max(
                     all_results[r['content']]['score'], r['score']
                 ) * 1.05
@@ -1753,10 +1706,8 @@ def kg_hybrid_search(
                 r['source'] = 'link'
                 all_results[r['content']] = r
 
-    # Sort and return
     final = sorted(all_results.values(), key=lambda x: -x['score'])
     return final[:max_results]
-
 
 def kg_backfill_from_memories(
     engine,
@@ -1797,12 +1748,10 @@ def kg_backfill_from_memories(
         'scopes': []
     }
 
-    # Get current counts
     with engine.connect() as conn:
         stats['facts_before'] = conn.execute(text("SELECT COUNT(*) FROM kg_facts")).scalar() or 0
         stats['concepts_before'] = conn.execute(text("SELECT COUNT(*) FROM kg_concepts")).scalar() or 0
 
-    # Get approved memories grouped by scope
     with engine.connect() as conn:
         result = conn.execute(text("""
             SELECT npc, team, directory_path, initial_memory, final_memory
@@ -1832,11 +1781,9 @@ def kg_backfill_from_memories(
         stats['scopes_processed'] = len(memories_by_scope)
         return stats
 
-    # Process each scope
     for (npc_name, team_name, directory_path), facts in memories_by_scope.items():
         existing_kg = load_kg_from_db(engine, team_name, npc_name, directory_path)
 
-        # Filter out facts already in KG
         existing_statements = {f['statement'] for f in existing_kg.get('facts', [])}
         new_facts = [f for f in facts if f['statement'] not in existing_statements]
 
@@ -1867,13 +1814,11 @@ def kg_backfill_from_memories(
         except Exception as e:
             print(f"Error processing scope {npc_name}/{team_name}: {e}")
 
-    # Get final counts
     with engine.connect() as conn:
         stats['facts_after'] = conn.execute(text("SELECT COUNT(*) FROM kg_facts")).scalar() or 0
         stats['concepts_after'] = conn.execute(text("SELECT COUNT(*) FROM kg_concepts")).scalar() or 0
 
     return stats
-
 
 def kg_explore_concept(
     engine,
@@ -1905,14 +1850,12 @@ def kg_explore_concept(
     }
 
     with engine.connect() as conn:
-        # Get facts directly linked to this concept
         rows = conn.execute(text("""
             SELECT source FROM kg_links
             WHERE target = :concept AND type = 'fact_to_concept'
         """), {"concept": concept_name})
         result['direct_facts'] = [r.source for r in rows]
 
-        # Get related concepts (concept-to-concept links)
         rows = conn.execute(text("""
             SELECT target FROM kg_links
             WHERE source = :concept AND type = 'concept_to_concept'
@@ -1922,7 +1865,6 @@ def kg_explore_concept(
         """), {"concept": concept_name})
         result['related_concepts'] = [r[0] for r in rows]
 
-        # Get facts from related concepts (1 hop)
         if result['related_concepts'] and max_depth > 0:
             placeholders = ','.join([f':c{i}' for i in range(len(result['related_concepts']))])
             params = {f'c{i}': c for i, c in enumerate(result['related_concepts'])}

@@ -1,4 +1,3 @@
-# structured fine tuning of LLMs to produce structured output
 from dataclasses import dataclass, field
 from datasets import Dataset
 import json
@@ -23,7 +22,6 @@ except:
 
 from typing import List, Dict, Any, Optional
 
-
 @dataclass
 class SFTConfig:
     base_model_name: str = "google/gemma-3-270m-it"
@@ -47,7 +45,6 @@ class SFTConfig:
     weight_decay: float = 0.01
     max_length: int = 512
     save_steps: int = 50
-
 
 def format_training_examples(
     inputs: List[str],
@@ -76,7 +73,6 @@ def format_training_examples(
         formatted.append({"text": text})
     
     return formatted
-
 
 def run_sft(
     X: List[str],
@@ -174,7 +170,6 @@ def run_sft(
     print(f"Model saved to {config.output_model_path}")
     
     return config.output_model_path
-
 
 def load_sft_model(model_path: str):
 

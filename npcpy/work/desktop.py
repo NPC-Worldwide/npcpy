@@ -47,7 +47,6 @@ def perform_action(action):
             import platform as _plat
             _typed = False
             if _plat.system() == "Linux":
-                # xdotool types reliably on X11 (handles focus, modifiers, speed)
                 try:
                     r = subprocess.run(
                         ["xdotool", "type", "--clearmodifiers", "--delay", "12", "--", text_to_type],
@@ -58,7 +57,6 @@ def perform_action(action):
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     pass
             if not _typed:
-                # Fallback: clipboard paste (works cross-platform, handles all chars)
                 try:
                     import pyperclip
                     pyperclip.copy(text_to_type)
@@ -69,7 +67,6 @@ def perform_action(action):
                 except Exception:
                     pass
             if not _typed:
-                # Last resort: character-by-character with interval
                 pyautogui.typewrite(text_to_type, interval=0.03)
             return {"status": "success", "output": f"Typed '{text_to_type}'."}
 

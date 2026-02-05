@@ -271,5 +271,3 @@ Get-CpuUsage",
 
     return {"messages": kwargs.get('messages'), "output": output}
 
-
-

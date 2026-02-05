@@ -20,10 +20,6 @@ try:
 except:
     pass
 
-
-
-
-
 def search_exa(query:str,
                api_key:str = None,
                top_k = 5,
@@ -38,7 +34,6 @@ def search_exa(query:str,
         text=True
     )
     return results.results[0:top_k]
-
 
 def search_searxng(query: str, num_results: int = 5, instance_url: str = None):
     """Search using SearXNG public instances."""
@@ -74,7 +69,6 @@ def search_searxng(query: str, num_results: int = 5, instance_url: str = None):
             continue
     return []
 
-
 def search_startpage(query: str, num_results: int = 5):
     """Search using Startpage (scraping)."""
     try:
@@ -105,7 +99,6 @@ def search_startpage(query: str, num_results: int = 5):
         print(f"Startpage search failed: {e}")
     return []
 
-
 def search_brave(query: str, num_results: int = 5, api_key: str = None):
     """Search using Brave Search API."""
     if api_key is None:
@@ -134,7 +127,6 @@ def search_brave(query: str, num_results: int = 5, api_key: str = None):
     except Exception as e:
         print(f"Brave search failed: {e}")
     return []
-
 
 def search_perplexity(
     query: str,
@@ -182,7 +174,6 @@ def search_perplexity(
 
     data = response.json()
     return [data["choices"][0]["message"]["content"], data.get("citations", [])]
-
 
 def search_web(
     query: str,

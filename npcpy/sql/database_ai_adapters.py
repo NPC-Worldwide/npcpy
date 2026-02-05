@@ -35,14 +35,12 @@ class DatabaseAIAdapter:
         if adapter_method:
             return adapter_method(prompt, **kwargs)
         
-        # Fallback to generic implementation
         return self._generic_ai_function(function_type, prompt, **kwargs)
 
     def _generic_ai_function(self, function_type: str, prompt: str, **kwargs) -> str:
         """
         Generic fallback implementation using Python-based AI processing
         """
-        # Create a temporary table-based approach for AI function simulation
         return textwrap.dedent(f'''
         WITH ai_input AS (
             SELECT '{prompt}' AS input_text
@@ -145,14 +143,12 @@ class AIFunctionRouter:
         adapter = DatabaseAIAdapter(engine)
         return adapter.generate_ai_function(function_type, prompt, **kwargs)
 
-# Example integration with existing ModelCompiler
 def _execute_ai_model(self, sql: str, model: SQLModel) -> pd.DataFrame:
     """
     Enhanced method to use AI function adapters
     """
     from npcpy.sql.database_ai_adapters import AIFunctionRouter
     
-    # Existing code to determine source and engine
     source_pattern = r'FROM\s+(\\w+)\\.(\\w+)'
     matches = re.findall(source_pattern, sql)
     
@@ -160,10 +156,8 @@ def _execute_ai_model(self, sql: str, model: SQLModel) -> pd.DataFrame:
         source_name, table_name = matches[0]
         engine = self._get_engine(source_name)
         
-        # Modify SQL to use database-specific AI functions
         for func_name, params in model.ai_functions.items():
             try:
-                # Route AI function through adapter
                 native_func_call = AIFunctionRouter.route_ai_function(
                     engine,
                     func_name, 
@@ -171,16 +165,13 @@ def _execute_ai_model(self, sql: str, model: SQLModel) -> pd.DataFrame:
                     **{k: v for k, v in params.items() if k != 'column'}
                 )
                 
-                # Replace the NQL function with native/adapted function
                 sql = sql.replace(
                     f"nql.{func_name}({params.get('column', '')})", 
                     native_func_call
                 )
             except Exception as e:
-                # Fallback to original method if transformation fails
                 print(f"Warning: AI function adaptation failed: {e}. Falling back to default.")
         
         return pd.read_sql(sql.replace(f"{source_name}.", ""), engine)
     
-    # Fallback to existing AI model execution
     return super()._execute_ai_model(sql, model)

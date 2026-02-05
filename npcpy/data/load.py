@@ -139,16 +139,14 @@ def _transcribe_audio(file_path: str, language: Optional[str] = None) -> str:
     Best-effort audio transcription using optional dependencies.
     Tries faster-whisper, then openai/whisper. Falls back to metadata only.
     """
-    # Prefer the existing audio module helper if present
     try:
-        from npcpy.data.audio import transcribe_audio_file  # type: ignore
+        from npcpy.data.audio import transcribe_audio_file
         text = transcribe_audio_file(file_path, language=language)
         if text:
             return text
     except Exception:
         pass
 
-    # Try faster-whisper first
     try:
         from faster_whisper import WhisperModel
         try:
@@ -162,7 +160,6 @@ def _transcribe_audio(file_path: str, language: Optional[str] = None) -> str:
     except Exception:
         pass
 
-    # Fallback: openai/whisper
     try:
         import whisper
         model = whisper.load_model("small")
@@ -171,7 +168,6 @@ def _transcribe_audio(file_path: str, language: Optional[str] = None) -> str:
     except Exception:
         pass
 
-    # Last resort metadata message
     return f"[Audio file at {file_path}; install faster-whisper or whisper for transcription]"
 
 def load_audio(file_path: str, language: Optional[str] = None) -> str:
@@ -212,14 +208,12 @@ def load_video(file_path: str, language: Optional[str] = None, max_audio_seconds
     """
     Summarize a video by reporting metadata and (optionally) transcribing its audio track.
     """
-    # Prefer the video module helper if present
     try:
-        from npcpy.data.video import summarize_video_file  # type: ignore
+        from npcpy.data.video import summarize_video_file
         return summarize_video_file(file_path, language=language, max_audio_seconds=max_audio_seconds)
     except Exception:
         pass
 
-    # Fallback to minimal summary/transcription
     meta_bits = []
     try:
         import cv2

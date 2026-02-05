@@ -69,9 +69,6 @@ def generate_video_diffusers(
     save_frames_to_video(output.frames, output_path)
     return output_path
 
-
-
-
 def generate_video_veo3(
     prompt: str,
     model: str, 

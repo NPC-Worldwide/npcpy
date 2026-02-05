@@ -13,7 +13,6 @@ try:
 except ImportError:
     JINJA_AVAILABLE = False
 
-# --- Explicitly import llm_funcs as a module object ---
 try:
     import npcpy.llm_funcs as llm_funcs
 except ImportError:
@@ -39,7 +38,6 @@ except ImportError:
             return {"response": f"MOCK: Embedding for '{text}'"}
     llm_funcs = MockLlmFuncs()
 
-# Assuming these are available in the npcpy environment
 from npcpy.memory.command_history import create_engine_from_path
 try:
     from npcpy.npc_compiler import Team
@@ -53,8 +51,6 @@ except ImportError:
             print(f"MOCK NPC: get_npc called for: {npc_ref}")
             return {"name": npc_ref, "type": "mock_npc"}
 
-
-# --- PANDAS BACKEND CONFIGURATION ---
 try:
     import modin.pandas as pd_modin
     import snowflake.snowpark.modin.plugin
@@ -68,10 +64,7 @@ except ImportError:
     except ImportError:
         import pandas as pd
         PANDAS_BACKEND = 'pandas'
-# print(f"Using pandas backend: {PANDAS_BACKEND}") # Removed for cleaner output
 
-
-# --- AI Function Mappings ---
 class DatabaseAIFunctionMapper:
     @staticmethod
     def get_snowflake_cortex_mapping() -> Dict[str, Dict[str, Any]]:
@@ -165,7 +158,6 @@ class DatabaseAIFunctionMapper:
             },
         }
 
-# --- Native Database AI Transformer (INCLUDED in the module) ---
 class NativeDatabaseAITransformer:
     def __init__(self, database_type: str):
         self.database_type = database_type.lower()
@@ -193,8 +185,6 @@ class NativeDatabaseAITransformer:
         
         return transformer(**kwargs)
 
-
-# --- NQL Jinja Context ---
 class NQLJinjaContext:
     """Provides Jinja template context for NQL models with access to NPCs, jinxs, and team."""
 
@@ -216,7 +206,6 @@ class NQLJinjaContext:
         if not npc_obj:
             return {'name': name, 'error': f'NPC {name} not found'}
 
-        # Build properties dict
         props = {
             'name': getattr(npc_obj, 'name', name),
             'model': getattr(npc_obj, 'model', 'gpt-4o-mini'),
@@ -281,14 +270,12 @@ class NQLJinjaContext:
         env = Environment(
             loader=BaseLoader(),
             undefined=DebugUndefined,
-            # Keep {{ ref(...) }} and {{ config(...) }} unprocessed for later
             variable_start_string='{%',
             variable_end_string='%}',
             block_start_string='{%%',
             block_end_string='%%}',
         )
 
-        # Add custom functions
         env.globals['npc'] = self.npc
         env.globals['jinx'] = self.jinx
         env.globals['team'] = self.get_team_context()
@@ -301,7 +288,6 @@ class NQLJinjaContext:
         if not JINJA_AVAILABLE:
             return content
 
-        # Only process if there are NQL Jinja expressions ({% ... %})
         if '{%' not in content:
             return content
 
@@ -313,8 +299,6 @@ class NQLJinjaContext:
             print(f"Warning: Jinja template error: {e}")
             return content
 
-
-# --- NPCSQL Operations ---
 class NPCSQLOperations:
     def __init__(
         self,
@@ -329,7 +313,7 @@ class NPCSQLOperations:
             self.engine = db_engine
 
         self.npc_loader = None
-        self.jinx_map = {}  # Maps jinx names to jinx objects
+        self.jinx_map = {}
         self.function_map = self._build_function_map()
 
     def _get_team(self):
@@ -357,14 +341,11 @@ class NPCSQLOperations:
             return
 
         try:
-            # Get all jinxs from the team's jinx catalog
             if hasattr(team, 'jinx_tool_catalog'):
                 for tool in team.jinx_tool_catalog:
                     jinx_name = tool.get('name', '').lower()
                     if jinx_name and jinx_name not in self.function_map:
-                        # Store reference to the jinx
                         self.jinx_map[jinx_name] = tool
-                        # Add a placeholder to function_map so it's recognized
                         self.function_map[jinx_name] = f"__jinx__{jinx_name}"
                         print(f"NQL: Registered team jinx '{jinx_name}' as NQL function")
         except Exception as e:
@@ -406,7 +387,6 @@ class NPCSQLOperations:
             if not jinx_info:
                 return f"Error: Jinx '{jinx_name}' not found"
 
-            # Build context for jinx execution
             jinx_context = {
                 'input': query,
                 'prompt': query,
@@ -414,7 +394,6 @@ class NPCSQLOperations:
                 'context': context,
             }
 
-            # Get the jinx object from team
             team = self._get_team()
             if team and hasattr(team, 'get_jinx'):
                 jinx = team.get_jinx(jinx_name)
@@ -472,7 +451,6 @@ class NPCSQLOperations:
 
             try:
                 if is_jinx:
-                    # Execute as jinx
                     result_value = self._execute_jinx(
                         func_name,
                         query,
@@ -480,10 +458,8 @@ class NPCSQLOperations:
                         params.get('context', '')
                     )
                 else:
-                    # Execute as llm_func
                     sig = py_inspect.signature(func)
 
-                    # Extract model/provider from NPC if available
                     npc_model = None
                     npc_provider = None
                     if resolved_npc and hasattr(resolved_npc, 'model'):
@@ -519,7 +495,6 @@ class NPCSQLOperations:
         return pd.Series(results, index=df.index)
     
 
-# --- SQL Model Definition ---
 class SQLModel:
     def __init__(
         self,
@@ -548,13 +523,11 @@ class SQLModel:
         self.dependencies = self._extract_dependencies()
         self.has_ai_function = self._check_ai_functions()
 
-        # DEBUG print to confirm if AI functions are found
         self.ai_functions = self._extract_ai_functions()
         if self.ai_functions:
             print(f"DEBUG SQLModel: Model '{self.name}' extracted AI functions: {list(self.ai_functions.keys())}")
         else:
             print(f"DEBUG SQLModel: Model '{self.name}' has no AI functions found by _extract_ai_functions.")
-
 
     def _parse_config(self, config_str: str) -> Dict:
         config = {}
@@ -578,7 +551,6 @@ class SQLModel:
         import types
 
         ai_functions = {}
-        # Pattern that captures: nql.function_name(args...) as alias
         pattern = r"nql\.(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(\s+as\s+(\w+))?"
         
         matches = re.finditer(pattern, self.content, flags=re.DOTALL | re.IGNORECASE)
@@ -590,9 +562,8 @@ class SQLModel:
             obj = getattr(llm_funcs, name)
             if (isinstance(obj, types.FunctionType) or
                 (isinstance(obj, types.MethodType) and obj.__self__ is not None)):
-                available_functions.append(name.lower())  # Store as lowercase for comparison
+                available_functions.append(name.lower())
 
-        # Add any additional functions (e.g., team jinxs)
         for fn in self.additional_functions:
             fn_lower = fn.lower()
             if fn_lower not in available_functions:
@@ -600,12 +571,11 @@ class SQLModel:
         
         for match in matches:
             full_call_string = match.group(0).strip()
-            func_name = match.group(1).lower()  # Convert to lowercase for lookup
+            func_name = match.group(1).lower()
             
             if func_name in available_functions:
                 params_str = match.group(2)
                 
-                # Simplified parameter extraction
                 params_list = []
                 balance = 0
                 in_quote = None
@@ -645,7 +615,6 @@ class SQLModel:
                 if self.npc_directory and npc_param.startswith(self.npc_directory):
                     npc_param = npc_param[len(self.npc_directory):].strip('/')
 
-                # Extract alias if present (group 4 from the pattern)
                 alias = match.group(4) if match.lastindex >= 4 and match.group(4) else f"{func_name}_result"
 
                 ai_functions[func_name] = {
@@ -654,7 +623,7 @@ class SQLModel:
                     "query": query_param,
                     "context": context_param,
                     "full_call_string": full_call_string,
-                    "original_func_name": match.group(1),  # Store original case
+                    "original_func_name": match.group(1),
                     "alias": alias
                 }
             else:
@@ -662,7 +631,6 @@ class SQLModel:
 
         return ai_functions
 
-# --- Model Compiler ---
 class ModelCompiler:
     def __init__(
         self, 
@@ -693,13 +661,11 @@ class ModelCompiler:
         try:
             self.npc_team = Team(team_path=npc_directory)
             self.npc_operations.npc_loader = self.npc_team
-            # Load team jinxs as NQL functions
             self.npc_operations.load_team_jinxs(self.npc_team)
         except Exception as e:
             self.npc_team = None
             print(f"Warning: Could not load NPC team from {npc_directory}. AI functions relying on NPC context might fail: {e}")
 
-        # Initialize Jinja context for template processing
         self.jinja_context = NQLJinjaContext(
             team=self.npc_team,
             npc_operations=self.npc_operations
@@ -722,7 +688,6 @@ class ModelCompiler:
         self.models = {}
         sql_files = list(self.models_dir.glob("**/*.sql"))
 
-        # Get list of available jinx names for NQL function recognition
         additional_funcs = list(self.npc_operations.jinx_map.keys())
 
         for sql_file in sql_files:
@@ -730,7 +695,6 @@ class ModelCompiler:
             with open(sql_file, "r") as f:
                 content = f.read()
 
-            # Process Jinja templates ({% npc(...) %}, {% team.forenpc %}, etc.)
             if JINJA_AVAILABLE and '{%' in content:
                 content = self.jinja_context.render_template(content)
 
@@ -788,19 +752,16 @@ class ModelCompiler:
         def replace_ref(match):
             model_name = match.group(1)
 
-            # First check if it's a model we're compiling
             if model_name in self.models:
                 if self.target_schema:
                     return f"{self.target_schema}.{model_name}"
                 return model_name
 
-            # Otherwise, check if it's an existing table in the database
             if self._table_exists(model_name):
                 if self.target_schema:
                     return f"{self.target_schema}.{model_name}"
                 return model_name
 
-            # If neither, raise an error
             raise ValueError(
                 f"Model or table '{model_name}' referenced by '{{{{ ref('{model_name}') }}}}' not found during compilation."
             )
@@ -841,7 +802,6 @@ class ModelCompiler:
             else:
                 print("  (None found in model.ai_functions to replace natively)")
 
-            # Replace NQL calls with native functions
             for func_name, params in model.ai_functions.items():
                 original_nql_call = params.get('full_call_string')
                 if not original_nql_call:
@@ -866,16 +826,10 @@ class ModelCompiler:
                     
                     print(f"DEBUG: Replacing '{original_nql_call}' with '{native_func_call}'")
                     
-                    # NORMALIZE WHITESPACE in both the original call and the SQL
-                    # This handles multiline NQL calls with varying indentation
                     normalized_original = re.sub(r'\s+', ' ', original_nql_call).strip()
                     normalized_sql = re.sub(r'\s+', ' ', sql_to_execute_with_native_ai).strip()
                     
-                    # Find the normalized pattern in the normalized SQL
                     if normalized_original in normalized_sql:
-                        # Now do the replacement on the ORIGINAL (non-normalized) SQL
-                        # by creating a flexible regex pattern
-                        # Escape special regex chars but allow flexible whitespace
                         pattern_parts = [re.escape(part) for part in original_nql_call.split()]
                         flexible_pattern = r'\s*'.join(pattern_parts)
                         pattern = re.compile(flexible_pattern, re.IGNORECASE | re.DOTALL)
@@ -893,7 +847,7 @@ class ModelCompiler:
                 except ValueError as e:
                     print(f"WARNING: Native translation failed for '{func_name}': {e}. This AI function will NOT be natively translated.")
                 except Exception as e: 
-                    print(f"ERROR: An unexpected error occurred during native AI transformation for '{func_name}': {e}. This AI function will NOT be natively translated.")            # Check for remaining NQL calls
+                    print(f"ERROR: An unexpected error occurred during native AI transformation for '{func_name}': {e}. This AI function will NOT be natively translated.")
             if "nql." in sql_to_execute_with_native_ai.lower():
                 print(f"WARNING: Some NQL calls remain after native translation attempts. Replacing remaining NQL calls with NULLs.")
                 sql_to_execute_with_native_ai = self._replace_nql_calls_with_null(sql_to_execute_with_native_ai, model)
@@ -902,20 +856,18 @@ class ModelCompiler:
             target_engine_for_native_ai = self.target_engine
             return pd.read_sql(sql_to_execute_with_native_ai, target_engine_for_native_ai)
 
-        else: # Fallback path when native AI is not supported for the determined DB type
+        else:
             print(f"DEBUG: Native AI functions are NOT supported for '{db_type}'. Entering Python fallback path.")
             sql_with_nql_as_null = self._replace_nql_calls_with_null(processed_sql, model)
             
             print(f"DEBUG: SQL to execute in pure fallback (NQL as NULLs for DB):\n{sql_with_nql_as_null}\n")
 
-            target_engine_for_fallback = self.target_engine # Use target_engine directly
+            target_engine_for_fallback = self.target_engine
             df = pd.read_sql(sql_with_nql_as_null, target_engine_for_fallback)
 
-            # Apply Python-driven AI functions on the DataFrame
             for func_name, params in model.ai_functions.items():
                 try:
                     result_series = self.npc_operations.execute_ai_function(func_name, df, **params)
-                    # Use the SQL alias if available, otherwise generate one
                     result_column_name = params.get('alias', f"{func_name}_result")
                     df[result_column_name] = result_series
                     print(f"DEBUG: AI function '{func_name}' result stored in column '{result_column_name}'.")
@@ -933,8 +885,6 @@ class ModelCompiler:
         """
         modified_sql = sql_content
 
-        # Pattern to match nql.function_name(...) with nested parentheses support
-        # Also captures the 'as alias' part if present
         nql_pattern = r'nql\.(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(\s+as\s+(\w+))?'
 
         def replace_with_null(match):
@@ -942,7 +892,6 @@ class ModelCompiler:
             alias_part = match.group(3) or ''
             alias_name = match.group(4)
 
-            # If no alias specified, generate one from function name
             if not alias_name:
                 alias_name = f"{func_name}_result"
                 alias_part = f" as {alias_name}"

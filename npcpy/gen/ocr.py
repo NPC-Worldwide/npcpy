@@ -16,10 +16,9 @@ from typing import Optional, Union
 try:
     from PIL import Image
 except ImportError:
-    Image = None  # Delayed import for lightweight environments
+    Image = None
 
 ImageInput = Union[str, bytes, "Image.Image"]
-
 
 @dataclass
 class DeepSeekOCR:
@@ -141,20 +140,17 @@ class DeepSeekOCR:
         try:
             result = self._model.infer(self._tokenizer, **infer_kwargs)
         finally:
-            # Clean up temp files created from bytes/PIL inputs.
             if should_cleanup and os.path.exists(image_file):
                 try:
                     os.remove(image_file)
                 except OSError:
                     pass
 
-        # Unsloth infer returns a dict-like object; stringify for callers.
         if isinstance(result, str):
             return result.strip()
         if isinstance(result, dict) and "text" in result:
             return str(result["text"]).strip()
         return str(result).strip()
-
 
 def deepseek_ocr(
     image: ImageInput,

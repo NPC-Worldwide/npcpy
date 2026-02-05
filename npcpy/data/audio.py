@@ -13,16 +13,14 @@ from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# Audio constants
 try:
     import pyaudio
     FORMAT = pyaudio.paInt16
 except ImportError:
-    FORMAT = 8  # paInt16 value fallback
+    FORMAT = 8
 CHANNELS = 1
 RATE = 16000
 CHUNK = 512
-
 
 def convert_mp3_to_wav(mp3_file, wav_file):
     try:
@@ -55,8 +53,6 @@ def convert_mp3_to_wav(mp3_file, wav_file):
         print(f"Unexpected error during conversion: {e}")
         raise
 
-
-
 def check_ffmpeg():
     try:
         subprocess.run(
@@ -66,13 +62,11 @@ def check_ffmpeg():
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
 
-
 def audio_callback(in_data, frame_count, time_info, status):
     import pyaudio
     audio_queue = queue.Queue()
     audio_queue.put(in_data)
     return (in_data, pyaudio.paContinue)
-
 
 def transcribe_recording(audio_data):
     if not audio_data:
@@ -82,7 +76,6 @@ def transcribe_recording(audio_data):
         np.frombuffer(b"".join(audio_data), dtype=np.int16).astype(np.float32) / 32768.0
     )
     return run_transcription(audio_np)
-
 
 def run_transcription(audio_np):
     try:
@@ -111,17 +104,15 @@ def run_transcription(audio_np):
         print(f"Transcription error: {str(e)}")
         return None
 
-
 def transcribe_audio_file(file_path: str, language=None) -> str:
     """
     File-based transcription helper that prefers the local faster-whisper/whisper
     setup used elsewhere in this module.
     """
-    # Try faster-whisper first
     try:
-        from faster_whisper import WhisperModel  # type: ignore
+        from faster_whisper import WhisperModel
         try:
-            import torch  # type: ignore
+            import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
         except Exception:
             device = "cpu"
@@ -133,9 +124,8 @@ def transcribe_audio_file(file_path: str, language=None) -> str:
     except Exception:
         pass
 
-    # Fallback to openai/whisper if available
     try:
-        import whisper  # type: ignore
+        import whisper
         model = whisper.load_model("small")
         result = model.transcribe(file_path, language=language)
         text = result.get("text", "").strip()
@@ -145,11 +135,6 @@ def transcribe_audio_file(file_path: str, language=None) -> str:
         pass
 
     return ""
-
-
-# =============================================================================
-# Speech-to-Text: Multi-Engine Support
-# =============================================================================
 
 def stt_whisper(
     audio_data: bytes,
@@ -212,7 +197,6 @@ def stt_whisper(
     finally:
         os.unlink(temp_path)
 
-
 def stt_openai(
     audio_data: bytes,
     api_key: str = None,
@@ -265,7 +249,6 @@ def stt_openai(
     else:
         return {"text": response.text.strip()}
 
-
 def stt_gemini(
     audio_data: bytes,
     api_key: str = None,
@@ -305,7 +288,6 @@ def stt_gemini(
     ])
 
     return {"text": response.text.strip()}
-
 
 def stt_elevenlabs(
     audio_data: bytes,
@@ -349,7 +331,6 @@ def stt_elevenlabs(
         "words": result.get("words", [])
     }
 
-
 def stt_groq(
     audio_data: bytes,
     api_key: str = None,
@@ -387,7 +368,6 @@ def stt_groq(
 
     return {"text": response.json().get("text", "").strip()}
 
-
 def speech_to_text(
     audio_data: bytes,
     engine: str = "whisper",
@@ -412,7 +392,6 @@ def speech_to_text(
         try:
             return stt_whisper(audio_data, language=language, **kwargs)
         except ImportError:
-            # Fallback to openai whisper
             import whisper
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 f.write(audio_data)
@@ -438,7 +417,6 @@ def speech_to_text(
 
     else:
         raise ValueError(f"Unknown STT engine: {engine}")
-
 
 def get_available_stt_engines() -> dict:
     """Get info about available STT engines."""
@@ -480,7 +458,6 @@ def get_available_stt_engines() -> dict:
         }
     }
 
-    # Check local whisper
     try:
         from faster_whisper import WhisperModel
         engines["whisper"]["available"] = True
@@ -491,7 +468,6 @@ def get_available_stt_engines() -> dict:
         except ImportError:
             pass
 
-    # Check API keys
     if os.environ.get('OPENAI_API_KEY'):
         engines["openai"]["available"] = True
 
@@ -505,13 +481,6 @@ def get_available_stt_engines() -> dict:
         engines["groq"]["available"] = True
 
     return engines
-
-
-
-
-# =============================================================================
-# TTS Playback Helpers (use unified audio_gen.text_to_speech)
-# =============================================================================
 
 def create_and_queue_audio(text, state, engine="kokoro", voice=None):
     """Create and play TTS audio using the unified engine interface.
@@ -536,7 +505,6 @@ def create_and_queue_audio(text, state, engine="kokoro", voice=None):
 
         audio_bytes = text_to_speech(text, engine=engine, voice=voice)
 
-        # Write to temp file and play
         suffix = '.mp3' if engine in ('elevenlabs', 'gtts') else '.wav'
         tmp_path = os.path.join(tempfile.gettempdir(), f"npc_tts_{uuid.uuid4()}{suffix}")
         with open(tmp_path, 'wb') as f:
@@ -561,7 +529,6 @@ def create_and_queue_audio(text, state, engine="kokoro", voice=None):
     finally:
         state["tts_is_speaking"] = False
         state["tts_just_finished"] = True
-
 
 def play_audio(filename, state):
     """Play a WAV file via pyaudio with state awareness."""
@@ -588,7 +555,6 @@ def play_audio(filename, state):
     stream.stop_stream()
     stream.close()
     p.terminate()
-
 
 def process_text_for_tts(text):
     """Clean text for TTS consumption."""
