@@ -26,6 +26,48 @@ except ImportError:
 except OSError:
     pass
 
+def sanitize_messages(messages: list) -> list:
+    """Remove orphaned tool messages that don't have matching assistant tool_calls.
+
+    Gemini and some other providers crash when a 'tool' role message appears
+    without a preceding 'assistant' message containing tool_calls with a matching
+    tool_call_id.  This function converts orphaned tool messages into regular
+    assistant messages so the conversation history remains valid.
+    """
+    if not messages:
+        return messages
+
+    # Collect all tool_call_ids from assistant messages with tool_calls
+    valid_tool_call_ids = set()
+    for msg in messages:
+        if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+            for tc in msg['tool_calls']:
+                if isinstance(tc, dict):
+                    tc_id = tc.get('id')
+                else:
+                    tc_id = getattr(tc, 'id', None)
+                if tc_id:
+                    valid_tool_call_ids.add(tc_id)
+
+    # Check for orphaned tool messages
+    cleaned = []
+    for msg in messages:
+        if msg.get('role') == 'tool':
+            tc_id = msg.get('tool_call_id')
+            if tc_id and tc_id not in valid_tool_call_ids:
+                # Orphaned tool message - convert to assistant message
+                content = msg.get('content', '')
+                name = msg.get('name', 'tool')
+                cleaned.append({
+                    'role': 'assistant',
+                    'content': f"[{name} result]: {content}" if name != 'tool' else content
+                })
+                continue
+        cleaned.append(msg)
+
+    return cleaned
+
+
 # Token costs per 1M tokens (input, output)
 TOKEN_COSTS = {
     # OpenAI
@@ -1298,6 +1340,8 @@ def get_litellm_response(
 
     
 
+    # Sanitize messages to remove orphaned tool messages that crash Gemini
+    result["messages"] = sanitize_messages(result["messages"])
     api_params = {"messages": result["messages"]}
 
     if include_usage:
@@ -1546,11 +1590,15 @@ def get_litellm_response(
                 processed_result["response"] = final_content
                 processed_result["messages"].append({"role": "assistant", "content": final_content})
             else:
-                # No choices returned, use the tool results summary directly
+                # No choices returned, use the tool results summary directly.
+                # IMPORTANT: Always append an assistant message so messages don't end
+                # with an orphaned tool response (which crashes Gemini/other providers).
                 if tool_results_summary:
-                    processed_result["response"] = "\n\n".join(tool_results_summary)
+                    fallback_content = "\n\n".join(tool_results_summary)
                 else:
-                    processed_result["response"] = "Tool executed successfully."
+                    fallback_content = "Tool executed successfully."
+                processed_result["response"] = fallback_content
+                processed_result["messages"].append({"role": "assistant", "content": fallback_content})
 
         return processed_result
         

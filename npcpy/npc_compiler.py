@@ -647,24 +647,28 @@ class Jinx:
                     #     f"(declarative): {e}"
                     # )
                     final_rendered_steps.append(raw_step)
-            # For python/bash engine steps, only inline macro expansion happens in the next block.
-            # The code content itself is preserved for runtime Jinja rendering.
+            # For python/bash engine steps, preserve fields with runtime template
+            # placeholders ({{var}}) for second-pass rendering. Only expand inline
+            # macros on fields that don't contain runtime variables.
             elif raw_step.get('engine') in ['python', 'bash']:
                 processed_step = {}
                 for key, value in raw_step.items():
                     if isinstance(value, str):
-                        try:
-                            template = jinja_env_for_macros.from_string(value)
-                            # Render with empty context for inline macros/static values
-                            rendered_value = template.render({})
-                            try:
-                                loaded_value = yaml.safe_load(rendered_value)
-                                processed_step[key] = loaded_value
-                            except yaml.YAMLError:
-                                processed_step[key] = rendered_value
-                        except Exception as e:
-                            # self._log_debug(f"Warning: Error during first-pass rendering of Jinx '{self.jinx_name}' step field '{key}' (inline macro): {e}")
+                        has_template_var = '{{' in value and '}}' in value
+                        if has_template_var:
+                            # Preserve for second-pass runtime rendering
                             processed_step[key] = value
+                        else:
+                            try:
+                                template = jinja_env_for_macros.from_string(value)
+                                rendered_value = template.render({})
+                                try:
+                                    loaded_value = yaml.safe_load(rendered_value)
+                                    processed_step[key] = loaded_value
+                                except yaml.YAMLError:
+                                    processed_step[key] = rendered_value
+                            except Exception as e:
+                                processed_step[key] = value
                     else:
                         processed_step[key] = value
                 final_rendered_steps.append(processed_step)
@@ -755,7 +759,7 @@ class Jinx:
                   messages: Optional[List[Dict[str, str]]] = None,
                   extra_globals: Optional[Dict[str, Any]] = None):
         
-        code_content = step.get("code", "")
+        code_content = step.get("code") or ""
         step_name = step.get("name", "unnamed_step")
         step_npc = step.get("npc")
         

@@ -4650,7 +4650,11 @@ def text_predict():
                     del cancellation_flags[current_stream_id]
                     print(f"Cleaned up cancellation flag for stream ID: {current_stream_id}")
 
-    return Response(event_stream_text_predict(stream_id), mimetype="text/event-stream")
+    return Response(event_stream_text_predict(stream_id), mimetype="text/event-stream", headers={
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+    })
 
 @app.route("/api/stream", methods=["POST"])
 def stream():
@@ -4866,22 +4870,33 @@ def stream():
 
     def clean_messages_for_llm(msgs):
         cleaned = []
-        valid_tool_call_ids = set()
+        # Collect all tool_call_ids that have corresponding tool results
+        tool_call_ids_with_results = set()
+        all_tool_call_ids = set()
         for msg in msgs:
             if msg.get('role') == 'assistant' and msg.get('tool_calls'):
                 for tc in msg['tool_calls']:
                     if isinstance(tc, dict) and tc.get('id'):
-                        valid_tool_call_ids.add(tc['id'])
+                        all_tool_call_ids.add(tc['id'])
+            if msg.get('role') == 'tool' and msg.get('tool_call_id'):
+                tool_call_ids_with_results.add(msg['tool_call_id'])
+
+        # Only consider tool_calls valid if they have matching results
+        valid_tool_call_ids = all_tool_call_ids & tool_call_ids_with_results
+
         for msg in msgs:
             if msg.get('role') == 'tool':
                 tool_call_id = msg.get('tool_call_id')
                 if not tool_call_id or tool_call_id not in valid_tool_call_ids:
                     continue
             if msg.get('role') == 'assistant':
-                clean_msg = {k: v for k, v in msg.items() if k != 'tool_calls' or (v and all(tc.get('id') in valid_tool_call_ids for tc in v if isinstance(tc, dict)))}
+                clean_msg = dict(msg)
                 if 'tool_calls' in msg and msg['tool_calls']:
-                    has_valid = any(tc.get('id') in valid_tool_call_ids for tc in msg['tool_calls'] if isinstance(tc, dict))
-                    if not has_valid:
+                    # Keep only tool_calls that have matching results
+                    valid_tcs = [tc for tc in msg['tool_calls'] if isinstance(tc, dict) and tc.get('id') in valid_tool_call_ids]
+                    if valid_tcs:
+                        clean_msg['tool_calls'] = valid_tcs
+                    else:
                         clean_msg.pop('tool_calls', None)
                 cleaned.append(clean_msg)
                 continue
@@ -4994,6 +5009,27 @@ def stream():
 
         mcp_client = app.mcp_clients[state_key]["client"]
         messages = app.mcp_clients[state_key].get("messages", messages)
+
+        # Sanitize MCP cached messages: remove orphaned tool_calls without results
+        def sanitize_mcp_messages(msgs):
+            ids_with_results = {m.get('tool_call_id') for m in msgs if m.get('role') == 'tool' and m.get('tool_call_id')}
+            sanitized = []
+            for m in msgs:
+                if m.get('role') == 'assistant' and m.get('tool_calls'):
+                    valid_tcs = [tc for tc in m['tool_calls'] if isinstance(tc, dict) and tc.get('id') in ids_with_results]
+                    clean = dict(m)
+                    if valid_tcs:
+                        clean['tool_calls'] = valid_tcs
+                    else:
+                        clean.pop('tool_calls', None)
+                    sanitized.append(clean)
+                elif m.get('role') == 'tool':
+                    if m.get('tool_call_id') and m['tool_call_id'] in ids_with_results:
+                        sanitized.append(m)
+                else:
+                    sanitized.append(m)
+            return sanitized
+        messages = sanitize_mcp_messages(messages)
 
         if not messages:
             messages = []
@@ -5534,7 +5570,7 @@ IMPORTANT AGENT BEHAVIOR:
                         done_reason = getattr(response_chunk, "done_reason", None) or (response_chunk.get("done_reason") if hasattr(response_chunk, "get") else None)
                         chunk_data = {
                             "id": None, "object": None,
-                            "created": created_at or datetime.datetime.now(),
+                            "created": str(created_at) if created_at else datetime.datetime.now().isoformat(),
                             "model": model_name,
                             "choices": [{"index": 0, "delta": {"content": chunk_content, "role": msg_role, "reasoning_content": reasoning_content}, "finish_reason": done_reason}]
                         }
@@ -5665,7 +5701,11 @@ IMPORTANT AGENT BEHAVIOR:
                 if current_stream_id in cancellation_flags:
                     del cancellation_flags[current_stream_id]
                     print(f"Cleaned up cancellation flag for stream ID: {current_stream_id}")
-    return Response(event_stream(stream_id), mimetype="text/event-stream")
+    return Response(event_stream(stream_id), mimetype="text/event-stream", headers={
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+    })
 
 @app.route('/api/delete_message', methods=['POST'])
 def delete_message():
