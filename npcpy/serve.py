@@ -41,10 +41,8 @@ class SilentUndefined(Undefined):
     def _fail_with_undefined_error(self, *args, **kwargs):
         return ""
 
-# Import ShellState and helper functions from npcsh
 from npcsh._state import ShellState, initialize_base_npcs_if_needed
 from npcsh.config import NPCSH_DB_PATH
-
 
 from npcpy.memory.knowledge_graph import load_kg_from_db, find_similar_facts_chroma
 from npcpy.memory.command_history import setup_chroma_db
@@ -53,7 +51,6 @@ from npcpy.memory.search import execute_rag_command, execute_brainblast_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
 from npcpy.data.image import capture_screenshot
-
 
 import base64
 import shutil
@@ -85,14 +82,8 @@ import os
 from pathlib import Path
 from flask_cors import CORS
 
-
-
-
-
-
 cancellation_flags = {}
 cancellation_lock = threading.Lock()
-
 
 def normalize_path_for_db(path_str):
     """
@@ -102,14 +93,10 @@ def normalize_path_for_db(path_str):
     """
     if not path_str:
         return path_str
-    # Convert backslashes to forward slashes
     normalized = path_str.replace('\\', '/')
-    # Remove trailing slashes for consistency
     normalized = normalized.rstrip('/')
     return normalized
 
-
-# Minimal MCP client (inlined from npcsh corca to avoid corca import)
 class MCPClientNPC:
     def __init__(self, debug: bool = True):
         self.debug = debug
@@ -236,7 +223,6 @@ class MCPClientNPC:
             self.session = None
             self._exit_stack = None
 
-
 def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools, stream, team, context=None):
     """Unified LLM response with basic exception handling (inlined from corca to avoid that dependency)."""
     try:
@@ -347,7 +333,6 @@ class MCPServerManager:
                 for path, proc in self._procs.items()
             }
 
-
 mcp_server_manager = MCPServerManager()
 
 def get_project_npc_directory(current_path=None):
@@ -365,7 +350,6 @@ def get_project_npc_directory(current_path=None):
     else:
         
         return os.path.abspath("./npc_team")
-
 
 def load_project_env(current_path):
     """
@@ -407,9 +391,6 @@ def load_project_env(current_path):
     
     return loaded_vars
 
-
-
-
 def load_kg_data(generation=None):
     """Helper function to load data up to a specific generation."""
     engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
@@ -425,7 +406,6 @@ def load_kg_data(generation=None):
     links_df = all_links_df[all_links_df['source'].isin(valid_nodes) & all_links_df['target'].isin(valid_nodes)]
         
     return concepts_df, facts_df, links_df
-
 
 app = Flask(__name__)
 app.config["REDIS_URL"] = "redis://localhost:6379"
@@ -452,7 +432,6 @@ def get_db_session():
     Session = sessionmaker(bind=engine)
     return Session()
 
-
 def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=False):
     """
     Resolve an MCP server path.
@@ -462,29 +441,24 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
     """
     import shutil
 
-    # 1. Check explicit path first
     if explicit_path:
         abs_path = os.path.abspath(os.path.expanduser(explicit_path))
         if os.path.exists(abs_path):
             return abs_path
 
-    # 2. Check if global mcp_server.py already exists
     global_mcp_path = os.path.expanduser("~/.npcsh/npc_team/mcp_server.py")
     if os.path.exists(global_mcp_path):
         return global_mcp_path
 
-    # 3. Find mcp_server.py in npcsh package and copy it
     try:
         import npcsh
         npcsh_package_dir = os.path.dirname(npcsh.__file__)
         package_mcp_server = os.path.join(npcsh_package_dir, "mcp_server.py")
 
         if os.path.exists(package_mcp_server):
-            # Ensure the target directory exists
             target_dir = os.path.dirname(global_mcp_path)
             os.makedirs(target_dir, exist_ok=True)
 
-            # Copy the mcp_server.py to the global location
             shutil.copy2(package_mcp_server, global_mcp_path)
             print(f"[MCP] Copied mcp_server.py from {package_mcp_server} to {global_mcp_path}")
             return global_mcp_path
@@ -493,7 +467,6 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
     except Exception as e:
         print(f"[MCP] Error finding/copying mcp_server.py from npcsh package: {e}")
 
-    # Return the global path anyway (caller will handle if it doesn't exist)
     return global_mcp_path
 
 extension_map = {
@@ -545,7 +518,6 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
     if source == 'project':
         directories = [get_project_npc_directory(current_path)]
     else:
-        # Check multiple global directories
         directories = [
             app.config['user_npc_directory'],
             os.path.expanduser("~/.npcsh/incognide/npc_team"),
@@ -565,7 +537,6 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
 
     print(f"NPC file not found: {name}.npc in {directories}")
     return None
-
 
 def get_conversation_history(conversation_id):
     """Fetch all messages for a conversation in chronological order."""
@@ -596,7 +567,6 @@ def get_conversation_history(conversation_id):
         print(f"Error fetching conversation history: {e}")
         return []
 
-
 def fetch_messages_for_conversation(conversation_id):
     """Fetch all messages for a conversation in chronological order."""
     engine = get_db_connection()
@@ -622,7 +592,6 @@ def fetch_messages_for_conversation(conversation_id):
                     "timestamp": message[2],
                 }
 
-                # Handle tool messages - extract tool_call_id from content JSON
                 if role == "tool" and content:
                     try:
                         content_parsed = json.loads(content) if isinstance(content, str) else content
@@ -636,7 +605,6 @@ def fetch_messages_for_conversation(conversation_id):
                     except (json.JSONDecodeError, TypeError):
                         pass
 
-                # Parse tool_calls JSON if present (for assistant messages)
                 if message[3]:
                     try:
                         raw_tool_calls = json.loads(message[3]) if isinstance(message[3], str) else message[3]
@@ -657,7 +625,6 @@ def fetch_messages_for_conversation(conversation_id):
                         msg_dict["tool_calls"] = normalized_tool_calls
                     except (json.JSONDecodeError, TypeError):
                         pass
-                # Parse tool_results JSON if present
                 if message[4]:
                     try:
                         msg_dict["tool_results"] = json.loads(message[4]) if isinstance(message[4], str) else message[4]
@@ -764,7 +731,7 @@ def search_kg():
     try:
         q = request.args.get('q', '').strip().lower()
         generation = request.args.get('generation', type=int)
-        search_type = request.args.get('type', 'both')  # fact, concept, or both
+        search_type = request.args.get('type', 'both')
         limit = request.args.get('limit', 50, type=int)
 
         if not q:
@@ -773,7 +740,6 @@ def search_kg():
         concepts_df, facts_df, links_df = load_kg_data(generation)
         results = {"facts": [], "concepts": [], "query": q}
 
-        # Search facts
         if search_type in ('both', 'fact'):
             for _, row in facts_df.iterrows():
                 statement = str(row.get('statement', '')).lower()
@@ -789,7 +755,6 @@ def search_kg():
                     if len(results["facts"]) >= limit:
                         break
 
-        # Search concepts
         if search_type in ('both', 'concept'):
             for _, row in concepts_df.iterrows():
                 name = str(row.get('name', '')).lower()
@@ -818,13 +783,11 @@ def embed_kg_facts():
         generation = data.get('generation')
         batch_size = data.get('batch_size', 10)
 
-        # Load facts from SQL
         _, facts_df, _ = load_kg_data(generation)
 
         if facts_df.empty:
             return jsonify({"message": "No facts to embed", "count": 0})
 
-        # Setup Chroma
         chroma_db_path = os.path.expanduser('~/npcsh_chroma_db')
         _, chroma_collection = setup_chroma_db(
             "knowledge_graph",
@@ -832,7 +795,6 @@ def embed_kg_facts():
             chroma_db_path
         )
 
-        # Process in batches
         from npcpy.memory.knowledge_graph import store_fact_with_embedding
         import hashlib
 
@@ -844,7 +806,6 @@ def embed_kg_facts():
         for i in range(0, len(statements), batch_size):
             batch = statements[i:i + batch_size]
 
-            # Get embeddings for batch
             try:
                 embeddings = get_embeddings(batch)
             except Exception as e:
@@ -854,7 +815,6 @@ def embed_kg_facts():
             for j, statement in enumerate(batch):
                 fact_id = hashlib.md5(statement.encode()).hexdigest()
 
-                # Check if already exists
                 try:
                     existing = chroma_collection.get(ids=[fact_id])
                     if existing and existing.get('ids'):
@@ -863,7 +823,6 @@ def embed_kg_facts():
                 except:
                     pass
 
-                # Get metadata from dataframe
                 row = facts_df[facts_df['statement'] == statement].iloc[0] if len(facts_df[facts_df['statement'] == statement]) > 0 else None
                 metadata = {
                     "generation": int(row.get('generation', 0)) if row is not None and pd.notna(row.get('generation')) else 0,
@@ -871,7 +830,6 @@ def embed_kg_facts():
                     "type": str(row.get('type', '')) if row is not None else '',
                 }
 
-                # Store with embedding
                 result = store_fact_with_embedding(
                     chroma_collection, statement, metadata, embeddings[j]
                 )
@@ -900,7 +858,6 @@ def search_kg_semantic():
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-        # Setup Chroma connection
         chroma_db_path = os.path.expanduser('~/npcsh_chroma_db')
         try:
             _, chroma_collection = setup_chroma_db(
@@ -915,7 +872,6 @@ def search_kg_semantic():
                 "query": q
             }), 200
 
-        # Get query embedding
         try:
             query_embedding = get_embeddings([q])[0]
         except Exception as e:
@@ -925,12 +881,10 @@ def search_kg_semantic():
                 "query": q
             }), 200
 
-        # Build metadata filter for generation if specified
         metadata_filter = None
         if generation is not None:
             metadata_filter = {"generation": generation}
 
-        # Search Chroma
         similar_facts = find_similar_facts_chroma(
             chroma_collection,
             q,
@@ -939,7 +893,6 @@ def search_kg_semantic():
             metadata_filter=metadata_filter
         )
 
-        # Format results
         results = {
             "facts": [
                 {
@@ -1018,7 +971,6 @@ def get_kg_concepts():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/api/attachments/<message_id>", methods=["GET"])
 def get_message_attachments(message_id):
     """Get all attachments for a message"""
@@ -1028,7 +980,6 @@ def get_message_attachments(message_id):
         return jsonify({"attachments": attachments, "error": None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/api/attachment/<attachment_id>", methods=["GET"])
 def get_attachment(attachment_id):
@@ -1046,7 +997,6 @@ def get_attachment(attachment_id):
         return jsonify({"error": "Attachment not found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/api/capture_screenshot", methods=["GET"])
 def capture():
@@ -1077,7 +1027,7 @@ def get_global_settings():
             "is_predictive_text_enabled": False,
             "predictive_text_model": "llama3.2",
             "predictive_text_provider": "ollama",
-            "backend_python_path": "",  # Empty means use bundled backend
+            "backend_python_path": "",
         }
         global_vars = {}
 
@@ -1113,7 +1063,7 @@ def get_global_settings():
                         "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED": "is_predictive_text_enabled",
                         "NPC_STUDIO_PREDICTIVE_TEXT_MODEL": "predictive_text_model",
                         "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER": "predictive_text_provider",
-                        "BACKEND_PYTHON_PATH": "backend_python_path",  # Custom Python for backend
+                        "BACKEND_PYTHON_PATH": "backend_python_path",
                     }
 
                     if key in key_mapping:
@@ -1165,20 +1115,17 @@ def get_available_jinxs():
                 pass
             return os.path.basename(filepath)[:-5]
 
-        # 1. Project jinxs
         if current_path:
             team_jinxs_dir = os.path.join(current_path, 'npc_team', 'jinxs')
             jinx_paths = _get_jinx_files_recursively(team_jinxs_dir)
             for path in jinx_paths:
                 jinx_names.add(get_jinx_name_from_file(path))
 
-        # 2. Global user jinxs (~/.npcsh)
         global_jinxs_dir = os.path.expanduser('~/.npcsh/npc_team/jinxs')
         jinx_paths = _get_jinx_files_recursively(global_jinxs_dir)
         for path in jinx_paths:
             jinx_names.add(get_jinx_name_from_file(path))
 
-        # 3. Package built-in jinxs (from npcsh package)
         try:
             import npcsh
             package_dir = os.path.dirname(npcsh.__file__)
@@ -1194,7 +1141,6 @@ def get_available_jinxs():
         print(f"Error getting available jinxs: {str(e)}")
         traceback.print_exc()
         return jsonify({'jinxs': [], 'error': str(e)}), 500
-
 
 @app.route("/api/jinx/execute", methods=["POST"])
 def execute_jinx():
@@ -1269,7 +1215,6 @@ def execute_jinx():
                     jinx = Jinx(jinx_path=global_jinx_path)
                     print(f"Found jinx at: {global_jinx_path}", file=sys.stderr)
                     
-                    # Initialize jinx steps by calling render_first_pass
                     from jinja2 import Environment
                     temp_env = Environment()
                     jinx.render_first_pass(temp_env, {})
@@ -1292,7 +1237,6 @@ def execute_jinx():
     fixed_args = []
     i = 0
     
-    # Filter out None values from jinx_args before processing
     cleaned_jinx_args = [arg for arg in jinx_args if arg is not None]
 
     while i < len(cleaned_jinx_args):
@@ -1335,7 +1279,6 @@ def execute_jinx():
     print(f"jinx_local_context BEFORE Jinx execution: {jinx_local_context}", file=sys.stderr)
 
     
-    # Create state object
     state = ShellState(
         npc=npc_object,
         team=None,
@@ -1348,14 +1291,11 @@ def execute_jinx():
         embedding_provider=os.getenv('NPCSH_EMBEDDING_PROVIDER', 'ollama'),
     )
     
-    # Build extra_globals with state and all necessary functions
     extra_globals_for_jinx = {
         **jinx_local_context,
         'state': state,
         'CommandHistory': CommandHistory,
         'load_kg_from_db': load_kg_from_db,
-        #'get_relevant_memories': get_relevant_memories,
-        #'search_kg_facts': search_kg_facts,
     }
 
     jinx_execution_result = jinx.execute(
@@ -1379,7 +1319,6 @@ def execute_jinx():
 
     user_message_id = generate_message_id()
     
-    # Use cleaned_jinx_args for logging the user message
     user_command_log = f"/{jinx_name} {' '.join(cleaned_jinx_args)}"
     save_conversation_message(
         command_history,
@@ -1406,7 +1345,6 @@ def execute_jinx():
         message_id=assistant_message_id
     )
 
-    # Determine mimetype based on content
     is_html = bool(re.search(r'<[a-z][\s\S]*>', final_output_string, re.IGNORECASE))
     
     if is_html:
@@ -1433,7 +1371,7 @@ def save_global_settings():
             "is_predictive_text_enabled": "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED",
             "predictive_text_model": "NPC_STUDIO_PREDICTIVE_TEXT_MODEL",
             "predictive_text_provider": "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER",
-            "backend_python_path": "BACKEND_PYTHON_PATH",  # Custom Python for backend (requires restart)
+            "backend_python_path": "BACKEND_PYTHON_PATH",
         }
 
         os.makedirs(os.path.dirname(npcshrc_path), exist_ok=True)
@@ -1441,8 +1379,7 @@ def save_global_settings():
         with open(npcshrc_path, "w") as f:
 
             for key, value in data.get("global_settings", {}).items():
-                if key in key_mapping and value is not None: # Check for None explicitly
-                    # Handle boolean conversion for saving
+                if key in key_mapping and value is not None:
                     if key == "is_predictive_text_enabled":
                         value_to_write = str(value).upper()
                     elif " " in str(value):
@@ -1452,7 +1389,7 @@ def save_global_settings():
                     f.write(f"export {key_mapping[key]}={value_to_write}\n")
 
             for key, value in data.get("global_vars", {}).items():
-                if key and value is not None: # Check for None explicitly
+                if key and value is not None:
                     if " " in str(value):
                         value_to_write = f'"{value}"'
                     else:
@@ -1492,7 +1429,6 @@ def get_project_settings():
         print(f"Error in get_project_settings: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/api/settings/project", methods=["POST", "OPTIONS"])  
 def save_project_settings():
     if request.method == "OPTIONS":
@@ -1517,7 +1453,6 @@ def save_project_settings():
     except Exception as e:
         print(f"Error in save_project_settings: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/api/models", methods=["GET"])
 def get_models():
@@ -1552,10 +1487,8 @@ def get_models():
             
             display_model = m
             if m.endswith(('.gguf', '.ggml')):
-                # For local GGUF/GGML files, show just the filename
                 display_model = os.path.basename(m)
             elif p == 'lora':
-                # For LoRA adapters, show just the folder name
                 display_model = os.path.basename(m.rstrip('/'))
 
             display_name = f"{display_model} | {p} {text_only}".strip()
@@ -1674,7 +1607,6 @@ def test_jinx():
     conversation_id = f"jinx_test_{uuid.uuid4().hex[:8]}"
     command_history = CommandHistory(app.config.get('DB_PATH'))
     
-    # 1. Save user's test command to conversation_history to get a message_id
     user_test_command = f"Testing jinx /{jinx.jinx_name} with inputs: {test_inputs}"
     user_message_id = generate_message_id()
     save_conversation_message(
@@ -1683,16 +1615,15 @@ def test_jinx():
         "user",
         user_test_command,
         wd=current_path,
-        model=None, # Or appropriate model/provider for the test context
+        model=None,
         provider=None,
         npc=None,
         message_id=user_message_id
     )
 
-    # Jinx execution status and output are now part of the assistant's response
     jinx_execution_status = "success"
     jinx_error_message = None
-    output = "Jinx execution did not complete." # Default output
+    output = "Jinx execution did not complete."
 
     try:
         result = jinx.execute(
@@ -1703,7 +1634,7 @@ def test_jinx():
             jinja_env=temp_env
         )
         output = result.get('output', str(result))
-        if result.get('error'): # Assuming jinx.execute might return an 'error' key
+        if result.get('error'):
             jinx_execution_status = "failed"
             jinx_error_message = str(result.get('error'))
     except Exception as e:
@@ -1711,18 +1642,12 @@ def test_jinx():
         jinx_error_message = str(e)
         output = f"Jinx execution failed: {e}"
 
-    # The jinx_executions table is populated by a trigger from conversation_history.
-    # The details of the execution (inputs, output, status) are now expected to be
-    # derived by analyzing the user's command and the subsequent assistant's response.
-    # No explicit update to jinx_executions is needed here.
-
-    # 2. Save assistant's response to conversation_history
-    assistant_response_message_id = generate_message_id() # ID for the assistant's response
+    assistant_response_message_id = generate_message_id()
     save_conversation_message(
         command_history,
         conversation_id,
         "assistant",
-        output, # The jinx output is the assistant's response for the test
+        output,
         wd=current_path,
         model=None,
         provider=None,
@@ -1733,7 +1658,7 @@ def test_jinx():
     return jsonify({
         "output": output,
         "conversation_id": conversation_id,
-        "execution_id": user_message_id, # Return the user's message_id as the execution_id
+        "execution_id": user_message_id,
         "error": jinx_error_message
     })
 from npcpy.ft.diff import train_diffusion, DiffusionConfig
@@ -1741,10 +1666,10 @@ import threading
 
 from npcpy.memory.knowledge_graph import (
     load_kg_from_db,
-    save_kg_to_db # ADD THIS LINE to import the correct function
+    save_kg_to_db
 )
 
-from collections import defaultdict # ADD THIS LINE for collecting links if not already present
+from collections import defaultdict
 
 finetune_jobs = {}
 
@@ -1761,7 +1686,6 @@ def extract_and_store_memories(
 ):
     from npcpy.llm_funcs import get_facts
     from npcpy.memory.command_history import format_memory_context
-    # Your CommandHistory.get_memory_examples_for_context returns a dict with 'approved' and 'rejected'
     memory_examples_dict = command_history.get_memory_examples_for_context(
         npc=npc_name,
         team=team_name,
@@ -1780,7 +1704,6 @@ def extract_and_store_memories(
     
     memories_for_approval = []
     
-    # Initialize structures to collect KG data for a single save_kg_to_db call
     kg_facts_to_save = []
     kg_concepts_to_save = []
     fact_to_concept_links_temp = defaultdict(list)
@@ -1788,7 +1711,6 @@ def extract_and_store_memories(
     
     if facts:
         for i, fact in enumerate(facts):
-            # Store memory in memory_lifecycle table
             memory_id = command_history.add_memory_to_database(
                 message_id=f"{conversation_id}_{datetime.datetime.now().strftime('%H%M%S')}_{i}",
                 conversation_id=conversation_id,
@@ -1799,7 +1721,7 @@ def extract_and_store_memories(
                 status="pending_approval",
                 model=npc_object.model if npc_object else model,
                 provider=npc_object.provider if npc_object else provider,
-                final_memory=None # Explicitly None for pending memories
+                final_memory=None
             )
             
             memories_for_approval.append({
@@ -1810,40 +1732,19 @@ def extract_and_store_memories(
                 "npc": npc_name or "default"
             })
             
-            # Collect facts and concepts for the Knowledge Graph
-            #if fact.get('type') == 'concept':
-            #    kg_concepts_to_save.append({
-            #        "name": fact.get('statement'),
-            #        "generation": current_kg_generation,
-            #        "origin": "organic" # Assuming 'organic' for extracted facts
-            #    })
-            #else: # It's a fact (or unknown type, treat as fact for KG)
-            #    kg_facts_to_save.append({
-            #        "statement": fact.get('statement'),
-            #        "source_text": fact.get('source_text', conversation_text), # Use source_text if available, else conversation_text
-            #        "type": fact.get('type', 'fact'), # Default to 'fact' if type is unknown
-            #        "generation": current_kg_generation,
-            #        "origin": "organic"
-            #    })
-            #    if fact.get('concepts'): # If this fact has related concepts
-            #        for concept_name in fact.get('concepts'):
-            #            fact_to_concept_links_temp[fact.get('statement')].append(concept_name)
     
-    # After processing all facts, save them to the KG database in one go
     if kg_facts_to_save or kg_concepts_to_save:
         temp_kg_data = {
             "facts": kg_facts_to_save,
             "concepts": kg_concepts_to_save,
             "generation": current_kg_generation,
             "fact_to_concept_links": fact_to_concept_links_temp,
-            "concept_links": [], # Assuming no concept-to-concept links from direct extraction
-            "fact_to_fact_links": [] # Assuming no fact-to-fact links from direct extraction
+            "concept_links": [],
+            "fact_to_fact_links": []
         }
         
-        # Get the SQLAlchemy engine using your existing helper function
         db_engine = get_db_connection(app.config.get('DB_PATH'))
         
-        # Call the existing save_kg_to_db function
         save_kg_to_db(
             engine=db_engine,
             kg_data=temp_kg_data,
@@ -1857,24 +1758,20 @@ def extract_and_store_memories(
 def get_finetuned_models():
     current_path = request.args.get("currentPath")
     
-    # Define a list of potential root directories where fine-tuned models might be saved.
-    # We'll be very generous here, including both 'models' and 'images' directories
-    # at both global and project levels, as the user's logs indicate saving to 'images'.
     potential_root_paths = [
-        os.path.expanduser('~/.npcsh/models'),  # Standard global models directory
-        os.path.expanduser('~/.npcsh/images'),  # Global images directory (where user's model was saved)
+        os.path.expanduser('~/.npcsh/models'),
+        os.path.expanduser('~/.npcsh/images'),
     ]
     if current_path:
-        # Add project-specific model directories if a current_path is provided
         project_models_path = os.path.join(current_path, 'models')
-        project_images_path = os.path.join(current_path, 'images') # Also check project images directory
+        project_images_path = os.path.join(current_path, 'images')
         potential_root_paths.extend([project_models_path, project_images_path])
             
     finetuned_models = []
     
-    print(f"🌋 Searching for fine-tuned models in potential root paths: {set(potential_root_paths)}") # Use set for unique paths
+    print(f"🌋 Searching for fine-tuned models in potential root paths: {set(potential_root_paths)}")
 
-    for root_path in set(potential_root_paths): # Iterate through unique potential root paths
+    for root_path in set(potential_root_paths):
         if not os.path.exists(root_path) or not os.path.isdir(root_path):
             print(f"🌋 Skipping non-existent or non-directory root path: {root_path}")
             continue
@@ -1887,19 +1784,17 @@ def get_finetuned_models():
                 print(f"🌋 Skipping {full_model_path}: Not a directory.")
                 continue
 
-            # NEW STRATEGY: Check for user's specific output files
-            # Look for 'model_final.pt' or the 'checkpoints' directory
             has_model_final_pt = os.path.exists(os.path.join(full_model_path, 'model_final.pt'))
             has_checkpoints_dir = os.path.isdir(os.path.join(full_model_path, 'checkpoints'))
 
             if has_model_final_pt or has_checkpoints_dir:
                 print(f"🌋 Identified fine-tuned model: {model_dir_name} at {full_model_path} (found model_final.pt or checkpoints dir)")
                 finetuned_models.append({
-                    "value": full_model_path, # This is the path to the directory containing the .pt files
-                    "provider": "diffusers",   # Provider is still "diffusers"
+                    "value": full_model_path,
+                    "provider": "diffusers",
                     "display_name": f"{model_dir_name} | Fine-tuned Diffuser"
                 })
-                continue # Move to the next model_dir_name found in this root_path
+                continue
 
             print(f"🌋 Skipping {full_model_path}: No model_final.pt or checkpoints directory found at root.")
     
@@ -1991,9 +1886,8 @@ def finetune_diffusers():
             traceback.print_exc()
         print(f"🌋 Finetuning job {job_id}: Asynchronous training thread finished.")
 
-    # Start the training in a separate thread
     thread = threading.Thread(target=run_training_async)
-    thread.daemon = True # Allow the main program to exit even if this thread is still running
+    thread.daemon = True
     thread.start()
     
     print(f"🌋 Finetuning job {job_id} successfully launched in background. Returning initial status.")
@@ -2002,7 +1896,6 @@ def finetune_diffusers():
         'jobId': job_id,
         'message': f"Finetuning job '{job_id}' started. Check /api/finetune_status/{job_id} for updates."
     })
-
 
 @app.route('/api/finetune_status/<job_id>', methods=['GET'])
 def finetune_status(job_id):
@@ -2036,10 +1929,7 @@ def finetune_status(job_id):
         'start_time': job.get('start_time')
     })
 
-
-# Instruction fine-tuning jobs storage
 instruction_finetune_jobs = {}
-
 
 @app.route('/api/finetune_instruction', methods=['POST'])
 def finetune_instruction():
@@ -2082,7 +1972,7 @@ def finetune_instruction():
     training_data = data.get('trainingData', [])
     output_name = data.get('outputName', 'my_instruction_model')
     base_model = data.get('baseModel', 'google/gemma-3-270m-it')
-    strategy = data.get('strategy', 'sft')  # sft, usft, dpo, memory_classifier
+    strategy = data.get('strategy', 'sft')
     num_epochs = data.get('epochs', 20)
     learning_rate = data.get('learningRate', 3e-5)
     batch_size = data.get('batchSize', 2)
@@ -2133,7 +2023,6 @@ def finetune_instruction():
         print(f"🎓 Job {job_id}: Starting {strategy.upper()} training thread...")
         try:
             if strategy == 'sft':
-                # Supervised Fine-Tuning with input/output pairs
                 X = []
                 y = []
                 for example in training_data:
@@ -2168,10 +2057,8 @@ def finetune_instruction():
                 print(f"🎓 Job {job_id}: SFT complete! Model saved to: {model_path}")
 
             elif strategy == 'usft':
-                # Unsupervised Fine-Tuning - domain adaptation on raw text
                 texts = []
                 for example in training_data:
-                    # Combine input and output as training text, or just use text field
                     if 'text' in example:
                         texts.append(example['text'])
                     else:
@@ -2203,7 +2090,6 @@ def finetune_instruction():
                 print(f"🎓 Job {job_id}: USFT complete! Model saved to: {model_path}")
 
             elif strategy == 'dpo':
-                # Direct Preference Optimization - needs quality/reward scores
                 traces = []
                 for example in training_data:
                     traces.append({
@@ -2236,7 +2122,6 @@ def finetune_instruction():
                 print(f"🎓 Job {job_id}: DPO complete! Adapter saved to: {adapter_path}")
 
             elif strategy == 'memory_classifier':
-                # Train memory approval/rejection classifier
                 from npcpy.ft.memory_trainer import MemoryTrainer
 
                 approved_memories = []
@@ -2302,7 +2187,6 @@ def finetune_instruction():
         'message': f"Instruction fine-tuning job '{job_id}' started. Check /api/finetune_instruction_status/{job_id} for updates."
     })
 
-
 @app.route('/api/finetune_instruction_status/<job_id>', methods=['GET'])
 def finetune_instruction_status(job_id):
     """Get the status of an instruction fine-tuning job."""
@@ -2342,7 +2226,6 @@ def finetune_instruction_status(job_id):
         'num_examples': job.get('num_examples', 0)
     })
 
-
 @app.route('/api/instruction_models', methods=['GET'])
 def get_instruction_models():
     """Get list of available instruction-tuned models."""
@@ -2369,7 +2252,6 @@ def get_instruction_models():
             if not os.path.isdir(full_model_path):
                 continue
 
-            # Check for adapter_config.json (LoRA models) or config.json (full models)
             has_adapter_config = os.path.exists(os.path.join(full_model_path, 'adapter_config.json'))
             has_config = os.path.exists(os.path.join(full_model_path, 'config.json'))
             has_tokenizer = os.path.exists(os.path.join(full_model_path, 'tokenizer_config.json'))
@@ -2387,11 +2269,8 @@ def get_instruction_models():
     print(f"🎓 Found {len(instruction_models)} instruction models.")
     return jsonify({"models": instruction_models, "error": None})
 
-
-# Genetic Evolution jobs storage
 ge_jobs = {}
-ge_populations = {}  # Store active populations by ID
-
+ge_populations = {}
 
 @app.route('/api/genetic/create_population', methods=['POST'])
 def create_genetic_population():
@@ -2434,9 +2313,7 @@ def create_genetic_population():
 
     print(f"🧬 Creating genetic population {population_id} (type: {population_type})")
 
-    # Define type-specific functions based on population type
     if population_type == 'prompt':
-        # Evolve prompts for better responses
         import random
 
         def initialize_fn():
@@ -2461,11 +2338,9 @@ def create_genetic_population():
             return ' '.join(words1[:mid] + words2[mid:])
 
         def fitness_fn(individual):
-            # Placeholder - should be overridden with actual evaluation
-            return len(individual) / 100.0  # Longer prompts score higher (placeholder)
+            return len(individual) / 100.0
 
     elif population_type == 'npc_config':
-        # Evolve NPC configurations
         import random
 
         def initialize_fn():
@@ -2493,10 +2368,9 @@ def create_genetic_population():
             return child
 
         def fitness_fn(individual):
-            return 0.5  # Placeholder
+            return 0.5
 
     else:
-        # Custom type - use simple string evolution
         import random
 
         def initialize_fn():
@@ -2518,7 +2392,7 @@ def create_genetic_population():
 
         def fitness_fn(individual):
             if isinstance(individual, dict):
-                return 1.0 - abs(individual.get('value', 0) - 0.5)  # Closer to 0.5 is better
+                return 1.0 - abs(individual.get('value', 0) - 0.5)
             return 0.5
 
     evolver = GeneticEvolver(
@@ -2549,7 +2423,6 @@ def create_genetic_population():
         'message': f"Population '{population_id}' created with {population_size} individuals"
     })
 
-
 @app.route('/api/genetic/evolve', methods=['POST'])
 def evolve_population():
     """
@@ -2575,9 +2448,7 @@ def evolve_population():
 
     print(f"🧬 Evolving population {population_id} for {generations} generations")
 
-    # If external fitness scores provided, inject them
     if fitness_scores and len(fitness_scores) == len(evolver.population):
-        # Override the fitness function temporarily
         original_fitness = evolver.fitness_fn
         score_iter = iter(fitness_scores)
         evolver.fitness_fn = lambda x: next(score_iter, 0.5)
@@ -2594,7 +2465,6 @@ def evolve_population():
             'bestIndividual': gen_stats['best_individual']
         })
 
-    # Restore original fitness function
     if fitness_scores:
         evolver.fitness_fn = original_fitness
 
@@ -2604,9 +2474,8 @@ def evolve_population():
         'currentGeneration': pop_data['generation'],
         'results': results,
         'bestIndividual': results[-1]['bestIndividual'] if results else None,
-        'population': evolver.population[:5]  # Return top 5 individuals
+        'population': evolver.population[:5]
     })
-
 
 @app.route('/api/genetic/population/<population_id>', methods=['GET'])
 def get_population(population_id):
@@ -2623,11 +2492,10 @@ def get_population(population_id):
         'generation': pop_data['generation'],
         'populationSize': len(evolver.population),
         'population': evolver.population,
-        'history': pop_data['history'][-50:],  # Last 50 generations
+        'history': pop_data['history'][-50:],
         'createdAt': pop_data['created_at'],
         'npc': pop_data.get('npc')
     })
-
 
 @app.route('/api/genetic/populations', methods=['GET'])
 def list_populations():
@@ -2645,7 +2513,6 @@ def list_populations():
 
     return jsonify({'populations': populations})
 
-
 @app.route('/api/genetic/population/<population_id>', methods=['DELETE'])
 def delete_population(population_id):
     """Delete a population."""
@@ -2656,7 +2523,6 @@ def delete_population(population_id):
     print(f"🧬 Deleted population {population_id}")
 
     return jsonify({'message': f"Population '{population_id}' deleted"})
-
 
 @app.route('/api/genetic/inject', methods=['POST'])
 def inject_individuals():
@@ -2682,7 +2548,6 @@ def inject_individuals():
     evolver = pop_data['evolver']
 
     if replace_worst:
-        # Evaluate and sort population, replace worst with new individuals
         fitness_scores = evolver.evaluate_population()
         sorted_pop = sorted(zip(evolver.population, fitness_scores), key=lambda x: x[1], reverse=True)
         keep_count = len(sorted_pop) - len(individuals)
@@ -2697,7 +2562,6 @@ def inject_individuals():
         'injectedCount': len(individuals),
         'newPopulationSize': len(evolver.population)
     })
-
 
 @app.route("/api/ml/train", methods=["POST"])
 def train_ml_model():
@@ -2788,7 +2652,6 @@ def train_ml_model():
         "error": None
     })
 
-
 @app.route("/api/ml/predict", methods=["POST"])
 def ml_predict():
     import joblib
@@ -2825,7 +2688,6 @@ def label_jinx_execution():
     
     return jsonify({"success": True, "error": None})
 
-
 @app.route("/api/npc/executions", methods=["GET"])
 def get_npc_executions():
     npc_name = request.args.get("npcName")
@@ -2835,7 +2697,6 @@ def get_npc_executions():
     executions = command_history.get_npc_executions(npc_name)
     
     return jsonify({"executions": executions, "error": None})
-
 
 @app.route("/api/npc/executions/label", methods=["POST"])
 def label_npc_execution():
@@ -2847,7 +2708,6 @@ def label_npc_execution():
     command_history.label_npc_execution(execution_id, label)
     
     return jsonify({"success": True, "error": None})
-
 
 @app.route("/api/training/dataset", methods=["POST"])
 def build_training_dataset():
@@ -2922,7 +2782,6 @@ def get_jinxs_global():
                 if raw_data is None:
                     continue
 
-                # Preserve full input definitions including defaults
                 inputs = raw_data.get("inputs", [])
                 
                 rel_path = os.path.relpath(jinx_path, global_jinx_directory)
@@ -2959,7 +2818,6 @@ def get_jinxs_project():
                 if raw_data is None:
                     continue
 
-                # Preserve full input definitions including defaults
                 inputs = raw_data.get("inputs", [])
                 
                 rel_path = os.path.relpath(jinx_path, project_dir)
@@ -2975,7 +2833,6 @@ def get_jinxs_project():
     print(jinx_data)
     return jsonify({"jinxs": jinx_data, "error": None})
 
-# ============== SQL Models (npcsql) API Endpoints ==============
 @app.route("/api/npcsql/run_model", methods=["POST"])
 def run_npcsql_model():
     """Execute a single SQL model using ModelCompiler"""
@@ -3107,7 +2964,6 @@ def list_npcsql_models():
 def get_npc_team_global():
     npc_data = []
 
-    # Scan multiple team directories
     team_dirs = [
         os.path.expanduser("~/.npcsh/npc_team"),
         os.path.expanduser("~/.npcsh/incognide/npc_team"),
@@ -3141,7 +2997,6 @@ def get_npc_team_global():
                 })
 
     return jsonify({"npcs": npc_data, "error": None})
-
 
 @app.route("/api/npc_team_project", methods=["GET"])
 def get_npc_team_project():
@@ -3188,7 +3043,6 @@ def get_last_used_model_and_npc_in_directory(directory_path):
     engine = get_db_connection()
     try:
         with engine.connect() as conn:
-            # Normalize path for cross-platform compatibility
             query = text("""
                 SELECT model, npc
                 FROM conversation_history
@@ -3225,8 +3079,6 @@ def get_last_used_model_and_npc_in_conversation(conversation_id):
     except Exception as e:
         print(f"Error getting last used model/NPC for conversation {conversation_id}: {e}")
         return {"model": None, "npc": None, "error": str(e)}
-
-
 
 @app.route("/api/last_used_in_directory", methods=["GET"])
 def api_get_last_used_in_directory():
@@ -3270,7 +3122,6 @@ def get_ctx_path(is_global, current_path=None, create_default=False):
             return os.path.join(ctx_dir, "team.ctx")
         return None
 
-
 def read_ctx_file(file_path):
     """Reads and parses a YAML .ctx file, normalizing list of strings to list of objects."""
     if file_path and os.path.exists(file_path):
@@ -3290,7 +3141,6 @@ def read_ctx_file(file_path):
                 if 'preferences' in data and isinstance(data['preferences'], list):
                     data['preferences'] = [{"value": item} for item in data['preferences']]
 
-                # Normalize websites list
                 if 'websites' in data and isinstance(data['websites'], list):
                     data['websites'] = [{"value": item} for item in data['websites']]
 
@@ -3320,7 +3170,6 @@ def write_ctx_file(file_path, data):
     if 'preferences' in data_to_save and isinstance(data_to_save['preferences'], list):
         data_to_save['preferences'] = [item.get("value", "") for item in data_to_save['preferences'] if isinstance(item, dict)]
 
-    # Denormalize websites list
     if 'websites' in data_to_save and isinstance(data_to_save['websites'], list):
         data_to_save['websites'] = [item.get("value", "") for item in data_to_save['websites'] if isinstance(item, dict)]
 
@@ -3328,7 +3177,6 @@ def write_ctx_file(file_path, data):
     with open(file_path, 'w') as f:
         yaml.dump(data_to_save, f, default_flow_style=False, sort_keys=False)
     return True
-
 
 @app.route("/api/context/global", methods=["GET"])
 def get_global_context():
@@ -3400,7 +3248,6 @@ def init_project_team():
         if not project_path:
             return jsonify({"error": "Project path is required."}), 400
 
-        # Use the existing initialize_npc_project function
         result = initialize_npc_project(directory=project_path)
         return jsonify({"message": "Project team initialized.", "path": result, "error": None})
     except Exception as e:
@@ -3413,7 +3260,6 @@ def check_npcsh_folder():
     try:
         npcsh_path = os.path.expanduser("~/.npcsh")
         npc_team_path = os.path.join(npcsh_path, "npc_team")
-        # Check if npc_team exists and has .npc files (actual initialization)
         initialized = os.path.isdir(npc_team_path) and any(
             f.endswith('.npc') for f in os.listdir(npc_team_path)
         ) if os.path.exists(npc_team_path) else False
@@ -3438,7 +3284,6 @@ def get_package_contents():
         jinxs = []
 
         if os.path.exists(package_npc_team_dir):
-            # Get NPCs
             for f in os.listdir(package_npc_team_dir):
                 if f.endswith('.npc'):
                     npc_path = os.path.join(package_npc_team_dir, f)
@@ -3453,7 +3298,6 @@ def get_package_contents():
                     except Exception as e:
                         print(f"Error reading NPC {f}: {e}")
 
-            # Get jinxs recursively
             jinxs_dir = os.path.join(package_npc_team_dir, "jinxs")
             if os.path.exists(jinxs_dir):
                 for root, dirs, files in os.walk(jinxs_dir):
@@ -3483,7 +3327,6 @@ def get_package_contents():
         traceback.print_exc()
         return jsonify({"error": str(e), "npcs": [], "jinxs": []}), 500
 
-
 @app.route("/api/npcsh/init", methods=["POST"])
 def init_npcsh_folder():
     """Initialize npcsh with config and default npc_team."""
@@ -3511,7 +3354,6 @@ def get_context_websites():
         data = read_ctx_file(ctx_path)
         
         websites = data.get("websites", [])
-        # Normalize to list of objects if needed
         if isinstance(websites, list):
             normalized = []
             for item in websites:
@@ -3530,7 +3372,6 @@ def get_context_websites():
         print(f"Error getting websites from context: {e}")
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/api/context/websites", methods=["POST"])
 def save_context_websites():
     """Saves the websites list to a .ctx file."""
@@ -3545,10 +3386,8 @@ def save_context_websites():
         if not ctx_path:
             return jsonify({"error": "Could not determine ctx file path. Provide a path or use global=true."}), 400
         
-        # Read existing ctx data
         existing_data = read_ctx_file(ctx_path) or {}
         
-        # Normalize websites to list of strings for YAML storage
         normalized_websites = []
         for item in websites:
             if isinstance(item, dict) and "value" in item:
@@ -3571,12 +3410,6 @@ def save_context_websites():
     except Exception as e:
         print(f"Error saving websites to context: {e}")
         return jsonify({"error": str(e)}), 500
-
-
-
-
-
-
 
 @app.route("/api/get_attachment_response", methods=["POST"])
 def get_attachment_response():
@@ -3756,7 +3589,6 @@ IMAGE_MODELS = {
     ],
 }
 
-# Map provider names to their environment variable keys
 IMAGE_PROVIDER_API_KEYS = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
@@ -3771,21 +3603,16 @@ IMAGE_PROVIDER_API_KEYS = {
     "leonardo": "LEONARDO_API_KEY",
     "ideogram": "IDEOGRAM_API_KEY",
 }
-# In npcpy/serve.py, find the @app.route('/api/finetuned_models', methods=['GET'])
-# and replace the entire function with this:
 
-# This is now an internal helper function, not a Flask route.
-def _get_finetuned_models_internal(current_path=None): # Renamed to indicate internal use
+def _get_finetuned_models_internal(current_path=None):
     
-    # Define a list of potential root directories where fine-tuned models might be saved.
     potential_root_paths = [
-        os.path.expanduser('~/.npcsh/models'),  # Standard global models directory
-        os.path.expanduser('~/.npcsh/images'),  # Global images directory (where user's model was saved)
+        os.path.expanduser('~/.npcsh/models'),
+        os.path.expanduser('~/.npcsh/images'),
     ]
     if current_path:
-        # Add project-specific model directories if a current_path is provided
         project_models_path = os.path.join(current_path, 'models')
-        project_images_path = os.path.join(current_path, 'images') # Also check project images directory
+        project_images_path = os.path.join(current_path, 'images')
         potential_root_paths.extend([project_models_path, project_images_path])
             
     finetuned_models = []
@@ -3805,15 +3632,14 @@ def _get_finetuned_models_internal(current_path=None): # Renamed to indicate int
                 print(f"🌋 (Internal) Skipping {full_model_path}: Not a directory.")
                 continue
 
-            # Check for 'model_final.pt' or the 'checkpoints' directory
             has_model_final_pt = os.path.exists(os.path.join(full_model_path, 'model_final.pt'))
             has_checkpoints_dir = os.path.isdir(os.path.join(full_model_path, 'checkpoints'))
 
             if has_model_final_pt or has_checkpoints_dir:
                 print(f"🌋 (Internal) Identified fine-tuned model: {model_dir_name} at {full_model_path} (found model_final.pt or checkpoints dir)")
                 finetuned_models.append({
-                    "value": full_model_path, # This is the path to the directory containing the .pt files
-                    "provider": "diffusers",   # Provider is still "diffusers"
+                    "value": full_model_path,
+                    "provider": "diffusers",
                     "display_name": f"{model_dir_name} | Fine-tuned Diffuser"
                 })
                 continue
@@ -3821,8 +3647,7 @@ def _get_finetuned_models_internal(current_path=None): # Renamed to indicate int
             print(f"🌋 (Internal) Skipping {full_model_path}: No model_final.pt or checkpoints directory found at root.")
     
     print(f"🌋 (Internal) Finished scanning. Found {len(finetuned_models)} fine-tuned models.")
-    # <--- CRITICAL FIX: Directly return the list of models, not a Flask Response
-    return {"models": finetuned_models, "error": None} # Return a dict for consistency
+    return {"models": finetuned_models, "error": None}
 def get_available_image_models(current_path=None):
     """
     Retrieves available image generation models based on environment variables
@@ -3834,7 +3659,6 @@ def get_available_image_models(current_path=None):
     
     all_image_models = []
 
-    # Add models configured via environment variables
     env_image_model = os.getenv("NPCSH_IMAGE_MODEL")
     env_image_provider = os.getenv("NPCSH_IMAGE_PROVIDER")
 
@@ -3845,16 +3669,13 @@ def get_available_image_models(current_path=None):
             "display_name": f"{env_image_model} | {env_image_provider} (Configured)"
         })
 
-    # Add predefined models - diffusers always available, others require API keys
     for provider_key, models_list in IMAGE_MODELS.items():
         if provider_key == "diffusers":
-            # Diffusers (local) is always available
             all_image_models.extend([
                 {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
                 for model in models_list
             ])
         else:
-            # Check if API key is present for this provider
             api_key_env = IMAGE_PROVIDER_API_KEYS.get(provider_key)
             if api_key_env and os.environ.get(api_key_env):
                 all_image_models.extend([
@@ -3862,7 +3683,6 @@ def get_available_image_models(current_path=None):
                     for model in models_list
                 ])
         
-    # <--- CRITICAL FIX: Directly call the internal helper function for fine-tuned models
     try:
         finetuned_data_result = _get_finetuned_models_internal(current_path)
         if finetuned_data_result and finetuned_data_result.get("models"):
@@ -3874,7 +3694,6 @@ def get_available_image_models(current_path=None):
     except Exception as e:
         print(f"Error calling _get_finetuned_models_internal: {e}")
 
-    # Deduplicate models
     seen_models = set()
     unique_models = []
     for model_entry in all_image_models:
@@ -3883,7 +3702,6 @@ def get_available_image_models(current_path=None):
             seen_models.add(key)
             unique_models.append(model_entry)
 
-    # Return the combined, deduplicated list of models as a dictionary with a 'models' key
     return unique_models
 
 @app.route('/api/generative_fill', methods=['POST'])
@@ -3928,7 +3746,6 @@ def generative_fill():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 
 def inpaint_openai(image, mask, prompt, model):
     import io
@@ -4211,8 +4028,6 @@ def generate_images():
         traceback.print_exc()
         return jsonify({"images": [], "filenames": [], "error": str(e)}), 500
 
-
-
 @app.route("/api/mcp_tools", methods=["GET"])
 def get_mcp_tools():
     """
@@ -4230,7 +4045,6 @@ def get_mcp_tools():
     if not raw_server_path:
         return jsonify({"error": "mcpServerPath parameter is required."}), 400
 
-    # Normalize/expand the provided path so cwd/tilde don't break imports
     resolved_path = resolve_mcp_server_path(
         current_path=current_path_arg,
         explicit_path=raw_server_path,
@@ -4238,7 +4052,6 @@ def get_mcp_tools():
     )
     server_path = os.path.abspath(os.path.expanduser(resolved_path))
 
-    # MCPClientNPC is defined inline at the top of this file
     temp_mcp_client = None
     jinx_tools = []
     try:
@@ -4261,7 +4074,6 @@ def get_mcp_tools():
         temp_mcp_client = MCPClientNPC()
         if temp_mcp_client.connect_sync(server_path):
             tools = temp_mcp_client.available_tools_llm
-            # Append Jinx-derived tools discovered from global/project jinxs
             try:
                 jinx_dirs = []
                 if current_path_arg:
@@ -4300,7 +4112,6 @@ def get_mcp_tools():
             print(f"Disconnecting temporary MCP client for {server_path}.")
             temp_mcp_client.disconnect_sync()
 
-
 @app.route("/api/mcp/server/resolve", methods=["GET"])
 def api_mcp_resolve():
     current_path = request.args.get("currentPath")
@@ -4310,7 +4121,6 @@ def api_mcp_resolve():
         return jsonify({"serverPath": resolved, "error": None})
     except Exception as e:
         return jsonify({"serverPath": None, "error": str(e)}), 500
-
 
 @app.route("/api/mcp/server/start", methods=["POST"])
 def api_mcp_start():
@@ -4326,7 +4136,6 @@ def api_mcp_start():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/api/mcp/server/stop", methods=["POST"])
 def api_mcp_stop():
     data = request.get_json() or {}
@@ -4340,7 +4149,6 @@ def api_mcp_stop():
         print(f"Error stopping MCP server: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/api/mcp/server/status", methods=["GET"])
 def api_mcp_status():
@@ -4358,7 +4166,6 @@ def api_mcp_status():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/api/image_models", methods=["GET"]) 
 def get_image_models_api():
     """
@@ -4374,7 +4181,6 @@ def get_image_models_api():
         traceback.print_exc()
         return jsonify({"models": [], "error": str(e)}), 500
 
-
 @app.route("/api/generate_video", methods=["POST"])
 def generate_video_api():
     """
@@ -4386,26 +4192,23 @@ def generate_video_api():
         model = data.get("model", "veo-3.1-generate-preview")
         provider = data.get("provider", "gemini")
         duration = data.get("duration", 5)
-        output_dir = data.get("output_dir")  # Optional user-specified path
+        output_dir = data.get("output_dir")
         negative_prompt = data.get("negative_prompt", "")
-        reference_image = data.get("reference_image")  # Optional base64 image
+        reference_image = data.get("reference_image")
 
         if not prompt:
             return jsonify({"error": "Prompt is required"}), 400
 
-        # Create output directory - use user-specified path or default to ~/.npcsh/videos
         if output_dir:
             save_dir = os.path.expanduser(output_dir)
         else:
             save_dir = os.path.expanduser("~/.npcsh/videos")
         os.makedirs(save_dir, exist_ok=True)
 
-        # Generate unique filename
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_filename = f"video_{timestamp}.mp4"
         output_path = os.path.join(save_dir, output_filename)
 
-        # Calculate num_frames based on duration (assuming ~25fps for diffusers)
         num_frames = int(duration * 25) if provider == "diffusers" else 25
 
         print(f"Generating video with model={model}, provider={provider}, duration={duration}s")
@@ -4420,7 +4223,6 @@ def generate_video_api():
         )
 
         if result and "output" in result:
-            # Read the generated video file and encode to base64
             video_path = output_path
             if os.path.exists(video_path):
                 with open(video_path, "rb") as f:
@@ -4443,24 +4245,18 @@ def generate_video_api():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/api/video_models", methods=["GET"])
 def get_video_models_api():
     """
     API endpoint to retrieve available video generation models.
     """
     video_models = [
-        # Google Veo via Gemini API (requires GEMINI_API_KEY)
         {"value": "veo-3.1-generate-preview", "display_name": "Veo 3.1 | gemini", "provider": "gemini", "max_duration": 8},
         {"value": "veo-3.1-fast-generate-preview", "display_name": "Veo 3.1 Fast | gemini", "provider": "gemini", "max_duration": 8},
         {"value": "veo-2.0-generate-001", "display_name": "Veo 2 | gemini", "provider": "gemini", "max_duration": 8},
-        # Diffusers - damo-vilab/text-to-video-ms-1.7b (local)
         {"value": "damo-vilab/text-to-video-ms-1.7b", "display_name": "ModelScope 1.7B (Local) | diffusers", "provider": "diffusers", "max_duration": 4},
     ]
     return jsonify({"models": video_models, "error": None})
-
-
-
 
 def _run_stream_post_processing(
     conversation_turn_text,
@@ -4472,7 +4268,7 @@ def _run_stream_post_processing(
     model,
     provider,
     npc_object,
-    messages # For context compression
+    messages
 ):
     """
     Runs memory extraction and context compression in a background thread.
@@ -4480,9 +4276,8 @@ def _run_stream_post_processing(
     """
     print(f"🌋 Background task started for conversation {conversation_id}!")
 
-    # Memory extraction and KG fact insertion
     try:
-        if len(conversation_turn_text) > 50: # Only extract memories if the turn is substantial
+        if len(conversation_turn_text) > 50:
             memories_for_approval = extract_and_store_memories(
                 conversation_turn_text,
                 conversation_id,
@@ -4502,31 +4297,28 @@ def _run_stream_post_processing(
         print(f"🌋 Background: Error during memory extraction and KG insertion for conversation {conversation_id}: {e}")
         traceback.print_exc()
 
-    # Context compression using breathe from llm_funcs
     try:
-        if len(messages) > 30: # Use the threshold specified in your request
-            # Directly call breathe for summarization
+        if len(messages) > 30:
             breathe_result = breathe(
                 messages=messages,
                 model=model,
                 provider=provider,
-                npc=npc_object # Pass npc for context if available
+                npc=npc_object
             )
             compressed_output = breathe_result.get('output', '')
             
             if compressed_output:
-                # Save the compressed context as a new system message in conversation_history
                 compressed_message_id = generate_message_id()
                 save_conversation_message(
                     command_history,
                     conversation_id,
-                    "system", # Role for compressed context
+                    "system",
                     f"[AUTOMATIC CONTEXT COMPRESSION]: {compressed_output}",
                     wd=current_path,
-                    model=model, # Use the same model/provider that generated the summary
+                    model=model,
                     provider=provider,
-                    npc=npc_name, # Associate with the NPC
-                    team=team_name, # Associate with the team
+                    npc=npc_name,
+                    team=team_name,
                     message_id=compressed_message_id
                 )
                 print(f"💨 Background: Compressed context for conversation {conversation_id} saved as new system message: {compressed_output[:100]}...")
@@ -4539,9 +4331,6 @@ def _run_stream_post_processing(
         traceback.print_exc()
 
     print(f"🌋 Background task finished for conversation {conversation_id}!")
-
-
-
 
 @app.route("/api/text_predict", methods=["POST"])
 def text_predict():
@@ -4557,20 +4346,18 @@ def text_predict():
     print(f"Starting text prediction stream with ID: {stream_id}")
     print('data')
 
-
     text_content = data.get("text_content", "")
     cursor_position = data.get("cursor_position", len(text_content))
     current_path = data.get("currentPath")
     model = data.get("model")
     provider = data.get("provider")
-    context_type = data.get("context_type", "general") # e.g., 'code', 'chat', 'general'
-    file_path = data.get("file_path") # Optional: for code context
+    context_type = data.get("context_type", "general")
+    file_path = data.get("file_path")
 
     if current_path:
         load_project_env(current_path)
 
     text_before_cursor = text_content[:cursor_position]
-
 
     if context_type == 'code':
         prompt_for_llm = f"You are an AI code completion assistant. Your task is to complete the provided code snippet.\nYou MUST ONLY output the code that directly completes the snippet.\nDO NOT include any explanations, comments, or additional text.\nDO NOT wrap the completion in markdown code blocks.\n\nHere is the code context where the completion should occur (file: {file_path or 'unknown'}):\n\n{text_before_cursor}\n\nPlease provide the completion starting from the end of the last line shown.\n"
@@ -4578,12 +4365,11 @@ def text_predict():
     elif context_type == 'chat':
         prompt_for_llm = f"You are an AI chat assistant. Your task is to provide a natural and helpful completion to the user's ongoing message.\nYou MUST ONLY output the text that directly completes the message.\nDO NOT include any explanations or additional text.\n\nHere is the message context where the completion should occur:\n\n{text_before_cursor}\n\nPlease provide the completion starting from the end of the last line shown.\n"
         system_prompt = "You are an AI chat assistant. Only provide natural language completion. Do not add explanations or any other text."
-    else: # general text prediction
+    else:
         prompt_for_llm = f"You are an AI text completion assistant. Your task is to provide a natural and helpful completion to the user's ongoing text.\nYou MUST ONLY output the text that directly completes the snippet.\nDO NOT include any explanations or additional text.\n\nHere is the text context where the completion should occur:\n\n{text_before_cursor}\n\nPlease provide the completion starting from the end of the last line shown.\n"
         system_prompt = "You are an AI text completion assistant. Only provide natural language completion. Do not add explanations or any other text."
 
-
-    npc_object = None # For prediction, we don't necessarily use a specific NPC
+    npc_object = None
 
     messages_for_llm = [
         {"role": "system", "content": system_prompt},
@@ -4602,11 +4388,9 @@ def text_predict():
                 stream=True,
             )
 
-            # get_llm_response returns a dict with 'response' as a generator when stream=True
             if isinstance(stream_response_generator, dict) and 'response' in stream_response_generator:
                 stream_generator = stream_response_generator['response']
             else:
-                # Fallback for non-streaming LLM responses or errors
                 output_content = ""
                 if isinstance(stream_response_generator, dict) and 'output' in stream_response_generator:
                     output_content = stream_response_generator['output']
@@ -4617,7 +4401,6 @@ def text_predict():
                 yield f"data: [DONE]\n\n"
                 return
 
-
             for response_chunk in stream_generator:
                 with cancellation_lock:
                     if cancellation_flags.get(current_stream_id, False):
@@ -4625,10 +4408,9 @@ def text_predict():
                         break
 
                 chunk_content = ""
-                # Handle different LLM API response formats
-                if "hf.co" in model or (provider == 'ollama' and 'gpt-oss' not in model): # Heuristic for Ollama/HF models
+                if "hf.co" in model or (provider == 'ollama' and 'gpt-oss' not in model):
                     chunk_content = response_chunk["message"]["content"] if "message" in response_chunk and "content" in response_chunk["message"] else ""
-                else: # Assume OpenAI-like streaming format
+                else:
                     chunk_content = "".join(choice.delta.content for choice in response_chunk.choices if choice.delta.content is not None)
 
                 print(chunk_content, end='')
@@ -4644,7 +4426,7 @@ def text_predict():
 
         finally:
             print(f"\nText prediction stream {current_stream_id} finished.")
-            yield f"data: [DONE]\n\n" # Signal end of stream
+            yield f"data: [DONE]\n\n"
             with cancellation_lock:
                 if current_stream_id in cancellation_flags:
                     del cancellation_flags[current_stream_id]
@@ -4685,12 +4467,9 @@ def stream():
     current_path = data.get("currentPath")
     is_resend = data.get("isResend", False)
     parent_message_id = data.get("parentMessageId", None)
-    # Accept frontend-generated message IDs to maintain parent-child relationships after reload
     frontend_user_message_id = data.get("userMessageId", None)
     frontend_assistant_message_id = data.get("assistantMessageId", None)
-    # For sub-branches: the parent of the user message (points to an assistant message)
     user_parent_message_id = data.get("userParentMessageId", None)
-    # LLM generation parameters - build params dict if any are provided
     params = {}
     if data.get("temperature") is not None:
         params["temperature"] = data.get("temperature")
@@ -4710,7 +4489,6 @@ def stream():
     team_object = None
     team = None
     tool_results_for_db = []
-    # Initialize stream_response early to ensure it's always defined for closures
     stream_response = {"output": "", "messages": []}
     if npc_name:
         if hasattr(app, 'registered_teams'):
@@ -4794,9 +4572,6 @@ def stream():
             else:
                 print(f"Warning: Could not load NPC {npc_name}")
 
-
-
-
     attachments = data.get("attachments", [])
     print(f"[DEBUG] Received attachments: {attachments}")
     command_history = CommandHistory(app.config.get('DB_PATH'))
@@ -4804,7 +4579,6 @@ def stream():
     attachments_for_db = []
     attachment_paths_for_llm = []
 
-    # Use frontend-provided ID if available, otherwise generate new one
     message_id = frontend_user_message_id if frontend_user_message_id else generate_message_id()
     if attachments:
         print(f"[DEBUG] Processing {len(attachments)} attachments")
@@ -4818,7 +4592,6 @@ def stream():
                 file_path = None
                 file_content_bytes = None
 
-                # Use original path directly if available
                 if "path" in attachment and attachment["path"]:
                     file_path = attachment["path"]
                     if os.path.exists(file_path):
@@ -4826,7 +4599,6 @@ def stream():
                             file_content_bytes = f.read()
                     else:
                         print(f"Warning: Attachment file does not exist: {file_path}")
-                        # Try data fallback if path doesn't exist
                         if "data" in attachment and attachment["data"]:
                             file_content_bytes = base64.b64decode(attachment["data"])
                             import tempfile
@@ -4835,10 +4607,8 @@ def stream():
                             with open(file_path, "wb") as f:
                                 f.write(file_content_bytes)
 
-                # Fall back to base64 data if no path
                 elif "data" in attachment and attachment["data"]:
                     file_content_bytes = base64.b64decode(attachment["data"])
-                    # Save to temp file for LLM processing
                     import tempfile
                     temp_dir = tempfile.mkdtemp()
                     file_path = os.path.join(temp_dir, file_name)
@@ -4931,12 +4701,10 @@ def stream():
         if 'tools' in tool_args and tool_args['tools']:
             tool_args['tool_choice'] = {"type": "auto"}
     
-    # Default stream response so closures below always have a value
     stream_response = {"output": "", "messages": messages}
 
     exe_mode = data.get('executionMode','chat')
 
-    # Initialize api_url with default before checking npc_object
     api_url = None
     if npc_object is not None:
         try:
@@ -4965,7 +4733,6 @@ def stream():
         mcp_server_path_from_request = data.get("mcpServerPath")
         selected_mcp_tools_from_request = data.get("selectedMcpTools", [])
 
-        # Resolve MCP server path (explicit -> team ctx -> default resolver)
         effective_mcp_server_path = mcp_server_path_from_request
         if not effective_mcp_server_path and team_object and hasattr(team_object, 'team_ctx') and team_object.team_ctx:
             mcp_servers_list = team_object.team_ctx.get('mcp_servers', [])
@@ -5105,12 +4872,9 @@ IMPORTANT AGENT BEHAVIOR:
                             return
 
                     if "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
-                        # Ollama returns ChatResponse objects - support both attribute and dict access
                         msg = getattr(response_chunk, "message", None) or (response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {})
                         chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
-                        # Extract Ollama thinking/reasoning tokens
                         reasoning_content = getattr(msg, "thinking", None) or (msg.get("thinking") if hasattr(msg, "get") else None)
-                        # Handle tool calls with robust attribute/dict access
                         tool_calls = getattr(msg, "tool_calls", None) or (msg.get("tool_calls") if hasattr(msg, "get") else None)
                         if tool_calls:
                             for tool_call in tool_calls:
@@ -5125,7 +4889,6 @@ IMPORTANT AGENT BEHAVIOR:
                                             arg_str = json.dumps(arg_str)
                                         elif arg_str is None:
                                             arg_str = "{}"
-                                        # Add to collected_tool_calls for Ollama
                                         collected_tool_calls.append({
                                             "id": tc_id or f"call_{len(collected_tool_calls)}",
                                             "type": "function",
@@ -5133,13 +4896,11 @@ IMPORTANT AGENT BEHAVIOR:
                                         })
                         if chunk_content:
                             collected_content += chunk_content
-                        # Extract other fields with robust access
                         created_at = getattr(response_chunk, "created_at", None) or (response_chunk.get("created_at") if hasattr(response_chunk, "get") else None)
                         model_name = getattr(response_chunk, "model", None) or (response_chunk.get("model") if hasattr(response_chunk, "get") else model)
                         msg_role = getattr(msg, "role", None) or (msg.get("role") if hasattr(msg, "get") else "assistant")
                         done_reason = getattr(response_chunk, "done_reason", None) or (response_chunk.get("done_reason") if hasattr(response_chunk, "get") else None)
 
-                        # Build chunk_data with proper structure
                         chunk_data = {
                             "id": None,
                             "object": None,
@@ -5257,7 +5018,6 @@ IMPORTANT AGENT BEHAVIOR:
                     yield {"type": "tool_start", "name": tool_name, "id": tool_id, "args": tool_args}
                     try:
                         tool_content = ""
-                        # First, try local Jinx execution
                         if npc_object and hasattr(npc_object, "jinxs_dict") and tool_name in npc_object.jinxs_dict:
                             jinx_obj = npc_object.jinxs_dict[tool_name]
                             try:
@@ -5269,14 +5029,12 @@ IMPORTANT AGENT BEHAVIOR:
                             except Exception as e:
                                 tool_content = f"Jinx execution error: {str(e)}"
                         else:
-                            # Execute via MCP client
                             if mcp_client and tool_name in mcp_client.tool_map:
                                 try:
                                     tool_func = mcp_client.tool_map[tool_name]
                                     print(f"[MCP] Calling tool_func for {tool_name}")
                                     result = tool_func(**(tool_args if isinstance(tool_args, dict) else {}))
                                     print(f"[MCP] Raw result type: {type(result)}, value: {result}")
-                                    # Handle MCP CallToolResult
                                     if hasattr(result, 'content'):
                                         print(f"[MCP] Result has content attr, content={result.content}")
                                         if result.content and len(result.content) > 0:
@@ -5344,7 +5102,6 @@ IMPORTANT AGENT BEHAVIOR:
             if txt is not None:
                 user_message_filled += txt
     
-    # Only save user message if it's NOT a resend
     if not is_resend:
         save_conversation_message(
             command_history,
@@ -5358,20 +5115,16 @@ IMPORTANT AGENT BEHAVIOR:
             team=team,
             attachments=attachments_for_db,
             message_id=message_id,
-            parent_message_id=user_parent_message_id,  # For sub-branches: points to assistant message
+            parent_message_id=user_parent_message_id,
             gen_params=params,
         )
 
-
-
-
-    # Use frontend-provided assistant message ID if available
     message_id = frontend_assistant_message_id if frontend_assistant_message_id else generate_message_id()
 
     def event_stream(current_stream_id):
         complete_response = []
-        complete_reasoning = []  # Accumulate reasoning content
-        accumulated_tool_calls = []  # Accumulate all tool calls
+        complete_reasoning = []
+        accumulated_tool_calls = []
         dot_count = 0
         interrupted = False
         tool_call_data = {"id": None, "function_name": None, "arguments": ""}
@@ -5379,7 +5132,6 @@ IMPORTANT AGENT BEHAVIOR:
         total_output_tokens = 0
 
         try:
-            # New: handle generators (tool_agent streaming)
             if hasattr(stream_response, "__iter__") and not isinstance(stream_response, (dict, str)):
                 for chunk in stream_response:
                     with cancellation_lock:
@@ -5399,11 +5151,9 @@ IMPORTANT AGENT BEHAVIOR:
                                 content_piece = delta.get("content")
                                 if content_piece:
                                     complete_response.append(content_piece)
-                                # Accumulate reasoning content from generator chunks
                                 reasoning_piece = delta.get("reasoning_content")
                                 if reasoning_piece:
                                     complete_reasoning.append(reasoning_piece)
-                        # Accumulate tool calls from generator chunks
                         if chunk.get("type") == "tool_call":
                             tc = chunk.get("tool_call", {})
                             if tc.get("id") and tc.get("name"):
@@ -5430,7 +5180,6 @@ IMPORTANT AGENT BEHAVIOR:
                             total_output_tokens += chunk.get("output_tokens", 0) or 0
                         continue
                     yield f"data: {json.dumps({'choices':[{'delta':{'content': str(chunk), 'role': 'assistant'},'finish_reason':None}]})}\n\n"
-                # Generator finished - skip the other stream handling paths
 
             elif isinstance(stream_response, str) :
                 print('stream a str and not a gen')
@@ -5475,7 +5224,6 @@ IMPORTANT AGENT BEHAVIOR:
                 yield f"data: {json.dumps(chunk_data)}\n\n"
 
             elif isinstance(stream_response, dict):
-                # Handle LoRA responses - they return the full response at once, not streaming
                 if provider == 'lora':
                     lora_text = stream_response.get('response', stream_response.get('output', ''))
                     if lora_text:
@@ -5508,7 +5256,6 @@ IMPORTANT AGENT BEHAVIOR:
                     print('.', end="", flush=True)
                     dot_count += 1
                     if provider == 'llamacpp':
-                        # llama-cpp-python returns OpenAI-format dicts
                         chunk_content = ""
                         reasoning_content = None
                         if isinstance(response_chunk, dict) and response_chunk.get("choices"):
@@ -5528,12 +5275,9 @@ IMPORTANT AGENT BEHAVIOR:
                         }
                         yield f"data: {json.dumps(chunk_data)}\n\n"
                     elif "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
-                        # Ollama returns ChatResponse objects - support both attribute and dict access
                         msg = getattr(response_chunk, "message", None) or response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {}
                         chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
-                        # Extract Ollama thinking/reasoning tokens
                         reasoning_content = getattr(msg, "thinking", None) or (msg.get("thinking") if hasattr(msg, "get") else None)
-                        # Handle tool calls with robust attribute/dict access
                         tool_calls = getattr(msg, "tool_calls", None) or (msg.get("tool_calls") if hasattr(msg, "get") else None)
                         if tool_calls:
                             for tool_call in tool_calls:
@@ -5551,19 +5295,16 @@ IMPORTANT AGENT BEHAVIOR:
                                         if isinstance(arg_val, dict):
                                             arg_val = json.dumps(arg_val)
                                         tool_call_data["arguments"] += arg_val
-                                # Accumulate complete tool call info for DB storage (Ollama path)
                                 if tc_id and tc_func and tc_name:
                                     accumulated_tool_calls.append({
                                         "id": tc_id,
                                         "function_name": tc_name,
                                         "arguments": arg_val if tc_args else ""
                                     })
-                        # Accumulate reasoning content
                         if reasoning_content:
                             complete_reasoning.append(reasoning_content)
                         if chunk_content:
                             complete_response.append(chunk_content)
-                        # Extract other fields with robust access
                         created_at = getattr(response_chunk, "created_at", None) or (response_chunk.get("created_at") if hasattr(response_chunk, "get") else None)
                         model_name = getattr(response_chunk, "model", None) or (response_chunk.get("model") if hasattr(response_chunk, "get") else model)
                         msg_role = getattr(msg, "role", None) or (msg.get("role") if hasattr(msg, "get") else "assistant")
@@ -5588,7 +5329,6 @@ IMPORTANT AGENT BEHAVIOR:
                                             tool_call_data["function_name"] = tool_call.function.name
                                         if hasattr(tool_call.function, "arguments") and tool_call.function.arguments:
                                             tool_call_data["arguments"] += tool_call.function.arguments
-                                    # Accumulate complete tool call info for DB storage
                                     if tool_call.id and tool_call.function and tool_call.function.name:
                                         accumulated_tool_calls.append({
                                             "id": tool_call.id,
@@ -5619,10 +5359,8 @@ IMPORTANT AGENT BEHAVIOR:
 
             final_response_text = ''.join(complete_response)
 
-            # Yield message_stop immediately so the client's stream ends quickly
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
 
-            # Persist tool call metadata and results before final assistant content
             if tool_call_data.get("function_name") or tool_call_data.get("arguments"):
                 save_conversation_message(
                     command_history,
@@ -5652,7 +5390,6 @@ IMPORTANT AGENT BEHAVIOR:
                         message_id=generate_message_id(),
                     )
 
-            # Save assistant message to the database with reasoning content and tool calls
             npc_name_to_save = npc_object.name if npc_object else ''
             cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else None
             save_conversation_message(
@@ -5676,8 +5413,6 @@ IMPORTANT AGENT BEHAVIOR:
                 cost=cost,
             )
 
-            # Start background tasks for memory extraction and context compression
-            # These will run without blocking the main response stream.
             conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
             background_thread = threading.Thread(
                 target=_run_stream_post_processing,
@@ -5686,15 +5421,15 @@ IMPORTANT AGENT BEHAVIOR:
                     conversation_id,
                     command_history,
                     npc_name,
-                    team, # Pass the team variable from the outer scope
+                    team,
                     current_path,
                     model,
                     provider,
                     npc_object,
-                    messages # Pass messages for context compression
+                    messages
                 )
             )
-            background_thread.daemon = True # Allow the main program to exit even if this thread is still running
+            background_thread.daemon = True
             background_thread.start()
 
             with cancellation_lock:
@@ -5719,7 +5454,6 @@ def delete_message():
     try:
         command_history = CommandHistory(app.config.get('DB_PATH'))
         
-        # Delete the message from the database
         result = command_history.delete_message(conversation_id, message_id)
         
         print(f"[DELETE_MESSAGE] Deleted message {message_id} from conversation {conversation_id}. Rows affected: {result}")
@@ -5797,7 +5531,6 @@ def get_pending_memories():
         command_history = CommandHistory(app.config.get('DB_PATH'))
         results = command_history.get_pending_memories(limit=limit)
 
-        # Filter by scope if provided
         if npc or team or directory_path:
             filtered = []
             for mem in results:
@@ -5839,10 +5572,6 @@ def get_memories_by_scope():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-
-
-
-
 @app.route("/api/interrupt", methods=["POST"])
 def interrupt_stream():
     data = request.json
@@ -5857,8 +5586,6 @@ def interrupt_stream():
 
     return jsonify({"success": True, "message": f"Interruption for stream {stream_id_to_cancel} registered."})
 
-
-
 @app.route("/api/conversations", methods=["GET"])
 def get_conversations():
     try:
@@ -5870,8 +5597,6 @@ def get_conversations():
         engine = get_db_connection()
         try:
             with engine.connect() as conn:
-                # Use REPLACE to normalize paths in the query for cross-platform compatibility
-                # This handles both forward slashes and backslashes stored in the database
                 query = text("""
                 SELECT DISTINCT conversation_id,
                        MIN(timestamp) as start_time,
@@ -5883,7 +5608,6 @@ def get_conversations():
                 ORDER BY MAX(timestamp) DESC
                 """)
 
-                # Normalize the input path (convert backslashes to forward slashes, strip trailing slashes)
                 normalized_path = normalize_path_for_db(path)
 
                 result = conn.execute(query, {
@@ -5915,8 +5639,6 @@ def get_conversations():
     except Exception as e:
         print(f"Error getting conversations: {str(e)}")
         return jsonify({"error": str(e), "conversations": []}), 500
-
-
 
 @app.route("/api/conversation/<conversation_id>/messages", methods=["GET"])
 def get_conversation_messages(conversation_id):
@@ -5988,7 +5710,7 @@ def get_conversation_messages(conversation_id):
                             "parentMessageId": msg[14] if len(msg) > 14 else None,
                             "attachments": (
                                 get_message_attachments(msg[1])
-                                if len(msg) > 1 and msg[15]  # attachment_ids is now at index 15
+                                if len(msg) > 1 and msg[15]
                                 else []
                             ),
                         }
@@ -6001,9 +5723,6 @@ def get_conversation_messages(conversation_id):
     except Exception as e:
         print(f"Error getting conversation messages: {str(e)}")
         return jsonify({"error": str(e), "messages": []}), 500
-
-
-# ==================== CONVERSATION BRANCHES ====================
 
 @app.route("/api/conversation/<conversation_id>/branches", methods=["GET"])
 def get_conversation_branches(conversation_id):
@@ -6037,7 +5756,6 @@ def get_conversation_branches(conversation_id):
     except Exception as e:
         print(f"Error getting branches: {e}")
         return jsonify({"branches": [], "error": str(e)}), 500
-
 
 @app.route("/api/conversation/<conversation_id>/branches", methods=["POST"])
 def create_conversation_branch(conversation_id):
@@ -6074,19 +5792,15 @@ def create_conversation_branch(conversation_id):
         print(f"Error creating branch: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-
 @app.route("/api/conversation/<conversation_id>/branches/<branch_id>", methods=["DELETE"])
 def delete_conversation_branch(conversation_id, branch_id):
     """Delete a branch."""
     try:
         engine = get_db_connection()
         with engine.connect() as conn:
-            # Delete branch metadata
             query = text("DELETE FROM conversation_branches WHERE id = :branch_id AND conversation_id = :conversation_id")
             conn.execute(query, {"branch_id": branch_id, "conversation_id": conversation_id})
 
-            # Optionally delete messages on this branch (or leave them orphaned)
-            # For now, we leave them - they just won't be displayed
             conn.commit()
 
         return jsonify({"success": True})
@@ -6094,14 +5808,12 @@ def delete_conversation_branch(conversation_id, branch_id):
         print(f"Error deleting branch: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-
 @app.route("/api/conversation/<conversation_id>/messages/branch/<branch_id>", methods=["GET"])
 def get_branch_messages(conversation_id, branch_id):
     """Get messages for a specific branch."""
     try:
         engine = get_db_connection()
         with engine.connect() as conn:
-            # For 'main' branch, get messages with NULL or 'main' branch_id
             if branch_id == 'main':
                 query = text("""
                     SELECT message_id, timestamp, role, content, model, provider, npc, reasoning_content, tool_calls, tool_results
@@ -6152,17 +5864,12 @@ def get_branch_messages(conversation_id, branch_id):
         print(f"Error getting branch messages: {e}")
         return jsonify({"messages": [], "error": str(e)}), 500
 
-
-# ==================== END CONVERSATION BRANCHES ====================
-
 @app.after_request
 def after_request(response):
     response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
     response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
     response.headers.add("Access-Control-Allow-Credentials", "true")
     return response
-
-
 
 @app.route('/api/ollama/status', methods=['GET'])
 def ollama_status():
@@ -6178,7 +5885,6 @@ def ollama_status():
     except Exception as e:
         print(f"An unexpected error occurred during Ollama status check: {e}")
         return jsonify({"status": "not_found"})
-
 
 @app.route("/api/ollama/tool_models", methods=["GET"])
 def get_ollama_tool_models():
@@ -6198,7 +5904,6 @@ def get_ollama_tool_models():
         print(f"Error listing Ollama models: {e}")
         return jsonify({"models": [], "error": str(e)}), 500
 
-
 @app.route('/api/ollama/models', methods=['GET'])
 def get_ollama_models():
     response = ollama.list()
@@ -6214,8 +5919,6 @@ def get_ollama_models():
             
     return jsonify(models_list)
 
-
-
 @app.route('/api/ollama/delete', methods=['POST'])
 def delete_ollama_model():
     data = request.get_json()
@@ -6230,7 +5933,6 @@ def delete_ollama_model():
         return jsonify({"error": e.error}), e.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/api/ollama/pull', methods=['POST'])
 def pull_ollama_model():
@@ -6298,16 +6000,12 @@ extension_map = {
     "ISO": "archives",
 }
 
-
     
-
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok", "error": None})
 
-
-# OpenAI-compatible completions API
 @app.route("/v1/chat/completions", methods=["POST"])
 def openai_chat_completions():
     """
@@ -6325,19 +6023,16 @@ def openai_chat_completions():
         temperature = data.get("temperature", 0.7)
         max_tokens = data.get("max_tokens", 4096)
 
-        # Extra: agent/npc selection
         agent_name = data.get("agent") or data.get("npc")
 
         current_path = request.headers.get("X-Current-Path", os.getcwd())
 
-        # Load team and NPC
         db_path = app.config.get('DB_PATH') or os.path.expanduser("~/npcsh_history.db")
         db_conn = create_engine(f'sqlite:///{db_path}')
 
         npc = None
         team = None
 
-        # Try to load from project or global
         project_team_path = os.path.join(current_path, "npc_team")
         global_team_path = os.path.expanduser("~/.npcsh/npc_team")
 
@@ -6353,20 +6048,17 @@ def openai_chat_completions():
             except Exception as e:
                 print(f"Error loading team: {e}")
 
-        # Extract the prompt from messages
         prompt = ""
         conversation_messages = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if isinstance(content, list):
-                # Handle multimodal content
                 content = " ".join([c.get("text", "") for c in content if c.get("type") == "text"])
             conversation_messages.append({"role": role, "content": content})
             if role == "user":
                 prompt = content
 
-        # Determine provider from model name
         provider = data.get("provider")
         if not provider:
             if "gpt" in model or "o1" in model or model.startswith("o3"):
@@ -6376,7 +6068,7 @@ def openai_chat_completions():
             elif "gemini" in model:
                 provider = "gemini"
             else:
-                provider = "openai"  # default
+                provider = "openai"
 
         if stream:
             def generate_stream():
@@ -6390,7 +6082,7 @@ def openai_chat_completions():
                         provider=provider,
                         npc=npc,
                         team=team,
-                        messages=conversation_messages[:-1],  # exclude last user message (it's the prompt)
+                        messages=conversation_messages[:-1],
                         stream=True,
                         temperature=temperature,
                         max_tokens=max_tokens,
@@ -6419,7 +6111,6 @@ def openai_chat_completions():
                             }
                             yield f"data: {json.dumps(chunk_data)}\n\n"
 
-                    # Final chunk
                     final_chunk = {
                         "id": request_id,
                         "object": "chat.completion.chunk",
@@ -6453,7 +6144,6 @@ def openai_chat_completions():
                 }
             )
         else:
-            # Non-streaming response
             response = get_llm_response(
                 prompt,
                 model=model,
@@ -6506,7 +6196,6 @@ def openai_chat_completions():
             }
         }), 500
 
-
 @app.route("/v1/models", methods=["GET"])
 def openai_list_models():
     """OpenAI-compatible models listing - returns available NPCs as models."""
@@ -6514,7 +6203,6 @@ def openai_list_models():
 
     models = []
 
-    # Add NPCs as available "models"
     project_team_path = os.path.join(current_path, "npc_team")
     global_team_path = os.path.expanduser("~/.npcsh/npc_team")
 
@@ -6533,24 +6221,20 @@ def openai_list_models():
         "data": models
     })
 
-
-# ============== GGUF/GGML Model Scanning ==============
 @app.route('/api/models/gguf/scan', methods=['GET'])
 def scan_gguf_models():
     """Scan for GGUF/GGML model files in specified or default directories."""
     directory = request.args.get('directory')
 
-    # Default directories to scan (using platform-specific paths)
     models_dir = get_models_dir()
     default_dirs = [
         os.path.join(models_dir, 'gguf'),
         models_dir,
         os.path.expanduser('~/models'),
         os.path.join(get_cache_dir(), 'huggingface/hub'),
-        os.path.expanduser('~/.cache/huggingface/hub'),  # Fallback
+        os.path.expanduser('~/.cache/huggingface/hub'),
     ]
 
-    # Add env var directory if set
     env_dir = os.environ.get('NPCSH_GGUF_DIR')
     if env_dir:
         default_dirs.insert(0, os.path.expanduser(env_dir))
@@ -6583,7 +6267,6 @@ def scan_gguf_models():
 
     return jsonify({'models': models, 'error': None})
 
-
 @app.route('/api/models/hf/download', methods=['POST'])
 def download_hf_model():
     """Download a GGUF model from HuggingFace."""
@@ -6596,13 +6279,8 @@ def download_hf_model():
     os.makedirs(target_dir, exist_ok=True)
 
     try:
-        # Parse HuggingFace URL or model ID
-        # Formats:
-        # - TheBloke/Llama-2-7B-GGUF
-        # - https://huggingface.co/TheBloke/Llama-2-7B-GGUF/resolve/main/llama-2-7b.Q4_K_M.gguf
 
         if url.startswith('http'):
-            # Direct URL - download the file
             import requests
             filename = url.split('/')[-1].split('?')[0]
             target_path = os.path.join(target_dir, filename)
@@ -6617,18 +6295,15 @@ def download_hf_model():
 
             return jsonify({'path': target_path, 'error': None})
         else:
-            # Model ID - use huggingface_hub to download
             try:
                 from huggingface_hub import hf_hub_download, list_repo_files
 
-                # List files in repo to find GGUF files
                 files = list_repo_files(url)
                 gguf_files = [f for f in files if f.endswith('.gguf')]
 
                 if not gguf_files:
                     return jsonify({'error': 'No GGUF files found in repository'}), 400
 
-                # Download the first/smallest Q4 quantized version or first available
                 q4_files = [f for f in gguf_files if 'Q4' in f or 'q4' in f]
                 file_to_download = q4_files[0] if q4_files else gguf_files[0]
 
@@ -6648,7 +6323,6 @@ def download_hf_model():
         print(f"Error downloading HF model: {e}")
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/api/models/hf/search', methods=['GET'])
 def search_hf_models():
     """Search HuggingFace for GGUF models."""
@@ -6662,7 +6336,6 @@ def search_hf_models():
         from huggingface_hub import HfApi
 
         api = HfApi()
-        # Search for models with GGUF in name or tags
         models = api.list_models(
             search=query,
             filter="gguf",
@@ -6689,7 +6362,6 @@ def search_hf_models():
         print(f"Error searching HF models: {e}")
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/api/models/hf/files', methods=['GET'])
 def list_hf_model_files():
     """List GGUF files in a HuggingFace repository."""
@@ -6701,24 +6373,19 @@ def list_hf_model_files():
     try:
         from huggingface_hub import list_repo_files, repo_info
 
-        # Get repo info
         info = repo_info(repo_id)
 
-        # List all files
         all_files = list_repo_files(repo_id)
 
-        # Filter for GGUF files and get their sizes
         gguf_files = []
         for f in all_files:
             if f.endswith('.gguf'):
-                # Try to get file size from siblings
                 size = None
                 for sibling in info.siblings or []:
                     if sibling.rfilename == f:
                         size = sibling.size
                         break
 
-                # Parse quantization from filename
                 quant = 'unknown'
                 for q in ['Q2_K', 'Q3_K_S', 'Q3_K_M', 'Q3_K_L', 'Q4_0', 'Q4_1', 'Q4_K_S', 'Q4_K_M', 'Q5_0', 'Q5_1', 'Q5_K_S', 'Q5_K_M', 'Q6_K', 'Q8_0', 'F16', 'F32', 'IQ1', 'IQ2', 'IQ3', 'IQ4']:
                     if q.lower() in f.lower() or q in f:
@@ -6732,7 +6399,6 @@ def list_hf_model_files():
                     'quantization': quant,
                 })
 
-        # Sort by quantization quality (Q4_K_M is usually best balance)
         quant_order = {'Q4_K_M': 0, 'Q4_K_S': 1, 'Q5_K_M': 2, 'Q5_K_S': 3, 'Q3_K_M': 4, 'Q6_K': 5, 'Q8_0': 6}
         gguf_files.sort(key=lambda x: quant_order.get(x['quantization'], 99))
 
@@ -6748,7 +6414,6 @@ def list_hf_model_files():
     except Exception as e:
         print(f"Error listing HF files: {e}")
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/models/hf/download_file', methods=['POST'])
 def download_hf_file():
@@ -6783,15 +6448,12 @@ def download_hf_file():
         print(f"Error downloading HF file: {e}")
         return jsonify({'error': str(e)}), 500
 
-
-# ============== Local Model Provider Status ==============
 @app.route('/api/models/local/scan', methods=['GET'])
 def scan_local_models():
     """Scan for models from local providers (LM Studio, llama.cpp)."""
     provider = request.args.get('provider', '')
 
     if provider == 'lmstudio':
-        # LM Studio typically runs on port 1234
         try:
             import requests
             response = requests.get('http://127.0.0.1:1234/v1/models', timeout=2)
@@ -6804,7 +6466,6 @@ def scan_local_models():
         return jsonify({'models': [], 'error': 'LM Studio not running or not accessible'})
 
     elif provider == 'llamacpp':
-        # llama.cpp server typically runs on port 8080
         try:
             import requests
             response = requests.get('http://127.0.0.1:8080/v1/models', timeout=2)
@@ -6817,7 +6478,6 @@ def scan_local_models():
         return jsonify({'models': [], 'error': 'llama.cpp server not running or not accessible'})
 
     return jsonify({'models': [], 'error': f'Unknown provider: {provider}'})
-
 
 @app.route('/api/models/local/status', methods=['GET'])
 def get_local_model_status():
@@ -6846,8 +6506,6 @@ def get_local_model_status():
 
     return jsonify({'status': 'unknown', 'running': False, 'error': f'Unknown provider: {provider}'})
 
-
-# ============== Audio / Voice ==============
 @app.route('/api/audio/tts', methods=['POST'])
 def text_to_speech_endpoint():
     """Convert text to speech and return audio file."""
@@ -6860,19 +6518,17 @@ def text_to_speech_endpoint():
 
         data = request.json or {}
         text = data.get('text', '')
-        engine = data.get('engine', 'kokoro')  # kokoro, elevenlabs, openai, gemini, gtts
+        engine = data.get('engine', 'kokoro')
         voice = data.get('voice', 'af_heart')
 
         if not text:
             return jsonify({'success': False, 'error': 'No text provided'}), 400
 
-        # Check engine availability
         engines = get_available_engines()
         if engine not in engines:
             return jsonify({'success': False, 'error': f'Unknown engine: {engine}'}), 400
 
         if not engines[engine]['available']:
-            # Try fallback to kokoro or gtts
             if engines.get('kokoro', {}).get('available'):
                 engine = 'kokoro'
             elif engines.get('gtts', {}).get('available'):
@@ -6884,16 +6540,13 @@ def text_to_speech_endpoint():
                     'error': f'{engine} not available. Install: {engines[engine].get("install", engines[engine].get("requires", ""))}'
                 }), 400
 
-        # Generate audio
         audio_bytes = text_to_speech(text, engine=engine, voice=voice)
 
-        # Determine format
         if engine in ['kokoro']:
             audio_format = 'wav'
         elif engine in ['elevenlabs', 'gtts']:
             audio_format = 'mp3'
         elif engine in ['openai', 'gemini']:
-            # These return PCM16, convert to WAV
             audio_bytes = pcm16_to_wav(audio_bytes, sample_rate=24000)
             audio_format = 'wav'
         else:
@@ -6916,7 +6569,6 @@ def text_to_speech_endpoint():
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
-
 @app.route('/api/audio/stt', methods=['POST'])
 def speech_to_text_endpoint():
     """Convert speech audio to text using various STT engines."""
@@ -6926,19 +6578,17 @@ def speech_to_text_endpoint():
         from npcpy.data.audio import speech_to_text, get_available_stt_engines
 
         data = request.json or {}
-        audio_data = data.get('audio')  # Base64 encoded audio
-        audio_format = data.get('format', 'webm')  # webm, wav, mp3
-        language = data.get('language')  # None for auto-detect
-        engine = data.get('engine', 'whisper')  # whisper, openai, gemini, elevenlabs, groq
-        model_size = data.get('model', 'base')  # For whisper: tiny, base, small, medium, large
+        audio_data = data.get('audio')
+        audio_format = data.get('format', 'webm')
+        language = data.get('language')
+        engine = data.get('engine', 'whisper')
+        model_size = data.get('model', 'base')
 
         if not audio_data:
             return jsonify({'success': False, 'error': 'No audio data provided'}), 400
 
-        # Decode base64 audio
         audio_bytes = base64.b64decode(audio_data)
 
-        # Convert to wav if needed
         wav_bytes = audio_bytes
         if audio_format != 'wav':
             with tempfile.NamedTemporaryFile(suffix=f'.{audio_format}', delete=False) as f:
@@ -6948,7 +6598,6 @@ def speech_to_text_endpoint():
             wav_path = temp_path.replace(f'.{audio_format}', '.wav')
             converted = False
 
-            # Try ffmpeg first
             try:
                 subprocess.run([
                     'ffmpeg', '-y', '-i', temp_path,
@@ -6964,7 +6613,6 @@ def speech_to_text_endpoint():
             except subprocess.CalledProcessError:
                 pass
 
-            # Try pydub as fallback
             if not converted:
                 try:
                     from pydub import AudioSegment
@@ -6988,7 +6636,6 @@ def speech_to_text_endpoint():
                     'error': 'Audio conversion failed. Install ffmpeg: sudo apt-get install ffmpeg'
                 }), 500
 
-        # Use the unified speech_to_text function
         result = speech_to_text(
             wav_bytes,
             engine=engine,
@@ -7008,7 +6655,6 @@ def speech_to_text_endpoint():
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
-
 @app.route('/api/audio/stt/engines', methods=['GET'])
 def get_stt_engines_endpoint():
     """Get available STT engines."""
@@ -7019,7 +6665,6 @@ def get_stt_engines_endpoint():
     except Exception as e:
         print(f"Error getting STT engines: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
 
 @app.route('/api/audio/voices', methods=['GET'])
 def get_available_voices_endpoint():
@@ -7053,31 +6698,22 @@ def get_available_voices_endpoint():
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
-
-# ============== Activity Tracking ==============
 @app.route('/api/activity/track', methods=['POST'])
 def track_activity():
     """Track user activity for predictive features."""
     try:
         data = request.json or {}
-        # For now, just acknowledge the activity - can be expanded later
-        # to store in database for RNN-based predictions
         activity_type = data.get('type', 'unknown')
         return jsonify({'success': True, 'tracked': activity_type})
     except Exception as e:
         print(f"Error tracking activity: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-
-# ============== Studio Actions for MCP ==============
-# Storage for pending actions that the frontend needs to execute
 _pending_studio_actions = {}
 _studio_action_counter = 0
 
-# Storage for pending action results that agents are waiting for
 _studio_action_results = {}
 
-# SSE subscribers - list of queues to push new actions to
 import queue
 import threading
 _sse_subscribers = []
@@ -7111,11 +6747,9 @@ def studio_action():
         if not action:
             return jsonify({'success': False, 'error': 'Missing action'}), 400
 
-        # Generate unique action ID
         _studio_action_counter += 1
         action_id = f"mcp_action_{_studio_action_counter}"
 
-        # Store the pending action
         action_data = {
             'action': action,
             'args': args,
@@ -7125,13 +6759,11 @@ def studio_action():
 
         print(f"[Studio] Queued action {action_id}: {action}")
 
-        # Notify SSE subscribers
         _notify_sse_subscribers(action_id, action_data)
 
-        # Wait for result (with timeout)
         import time
         start_time = time.time()
-        timeout = 30  # 30 second timeout
+        timeout = 30
 
         while time.time() - start_time < timeout:
             if action_id in _studio_action_results:
@@ -7140,14 +6772,12 @@ def studio_action():
                 return jsonify(result)
             time.sleep(0.1)
 
-        # Timeout - clean up and return error
         _pending_studio_actions.pop(action_id, None)
         return jsonify({'success': False, 'error': 'Action timed out waiting for frontend'}), 504
 
     except Exception as e:
         print(f"Error processing studio action: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
 
 @app.route('/api/studio/pending_actions', methods=['GET'])
 def get_pending_studio_actions():
@@ -7165,7 +6795,6 @@ def get_pending_studio_actions():
         print(f"Error getting pending actions: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-
 @app.route('/api/studio/actions_stream', methods=['GET'])
 def studio_actions_stream():
     """
@@ -7179,20 +6808,17 @@ def studio_actions_stream():
         with _sse_lock:
             _sse_subscribers.append(q)
         try:
-            # Send any existing pending actions first
             for aid, action in _pending_studio_actions.items():
                 if action.get('status') == 'pending':
                     data = json_module.dumps({'id': aid, **action})
                     yield f"data: {data}\n\n"
 
-            # Then wait for new actions
             while True:
                 try:
-                    action = q.get(timeout=30)  # 30s keepalive
+                    action = q.get(timeout=30)
                     data = json_module.dumps(action)
                     yield f"data: {data}\n\n"
                 except queue.Empty:
-                    # Send keepalive
                     yield ": keepalive\n\n"
         finally:
             with _sse_lock:
@@ -7204,7 +6830,6 @@ def studio_actions_stream():
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no'
     })
-
 
 @app.route('/api/studio/action_complete', methods=['POST'])
 def studio_action_complete():
@@ -7220,7 +6845,6 @@ def studio_action_complete():
         if not action_id:
             return jsonify({'success': False, 'error': 'Missing actionId'}), 400
 
-        # Mark action as complete and store result
         if action_id in _pending_studio_actions:
             _pending_studio_actions[action_id]['status'] = 'complete'
 
@@ -7231,7 +6855,6 @@ def studio_action_complete():
     except Exception as e:
         print(f"Error completing studio action: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
 
 @app.route('/api/studio/action_result', methods=['POST'])
 def studio_action_result():
@@ -7248,7 +6871,6 @@ def studio_action_result():
         if not stream_id or not tool_id:
             return jsonify({'success': False, 'error': 'Missing streamId or toolId'}), 400
 
-        # Store the result keyed by stream_id and tool_id
         key = f"{stream_id}_{tool_id}"
         _studio_action_results[key] = result
 
@@ -7257,7 +6879,6 @@ def studio_action_result():
     except Exception as e:
         print(f"Error storing studio action result: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
 
 @app.route('/api/studio/action_result/<stream_id>/<tool_id>', methods=['GET'])
 def get_studio_action_result(stream_id, tool_id):
@@ -7271,13 +6892,11 @@ def get_studio_action_result(stream_id, tool_id):
         if result is None:
             return jsonify({'success': False, 'pending': True}), 202
 
-        # Remove the result after retrieval (one-time use)
         del _studio_action_results[key]
         return jsonify({'success': True, 'result': result})
     except Exception as e:
         print(f"Error retrieving studio action result: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
 
 def start_flask_server(
     port=5337,
@@ -7327,27 +6946,22 @@ def start_flask_server(
     except Exception as e:
         print(f"Error starting server: {str(e)}")
 
-
 if __name__ == "__main__":
 
     SETTINGS_FILE = Path(os.path.expanduser("~/.npcshrc"))
 
-    # Use environment variable for DB path, or fall back to home directory path (matching Electron app)
     db_path = os.environ.get('INCOGNIDE_DB_PATH', os.path.expanduser("~/npcsh_history.db"))
     user_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
 
-    # Ensure directories exist
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     os.makedirs(user_npc_directory, exist_ok=True)
 
-    # Initialize base NPCs if needed (creates ~/.npcsh structure)
     try:
         initialize_base_npcs_if_needed(db_path)
         print(f"[SERVE] Base NPCs initialized")
     except Exception as e:
         print(f"[SERVE] Warning: Failed to initialize base NPCs: {e}")
 
-    # Get port from environment or use default
     port = int(os.environ.get('INCOGNIDE_PORT', 5337))
 
     start_flask_server(db_path=db_path, user_npc_directory=user_npc_directory, port=port)

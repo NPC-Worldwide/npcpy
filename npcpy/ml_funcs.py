@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 
-# Lazy imports for optional dependencies
 _sklearn_available = False
 _torch_available = False
 _xgboost_available = False
@@ -53,11 +52,7 @@ try:
 except ImportError:
     pass
 
-
-# ==================== Model Registry ====================
-
 SKLEARN_MODELS = {
-    # Classification
     'LogisticRegression': 'sklearn.linear_model.LogisticRegression',
     'RandomForestClassifier': 'sklearn.ensemble.RandomForestClassifier',
     'GradientBoostingClassifier': 'sklearn.ensemble.GradientBoostingClassifier',
@@ -68,7 +63,6 @@ SKLEARN_MODELS = {
     'GaussianNB': 'sklearn.naive_bayes.GaussianNB',
     'MLPClassifier': 'sklearn.neural_network.MLPClassifier',
 
-    # Regression
     'LinearRegression': 'sklearn.linear_model.LinearRegression',
     'Ridge': 'sklearn.linear_model.Ridge',
     'Lasso': 'sklearn.linear_model.Lasso',
@@ -80,17 +74,14 @@ SKLEARN_MODELS = {
     'DecisionTreeRegressor': 'sklearn.tree.DecisionTreeRegressor',
     'MLPRegressor': 'sklearn.neural_network.MLPRegressor',
 
-    # Clustering
     'KMeans': 'sklearn.cluster.KMeans',
     'DBSCAN': 'sklearn.cluster.DBSCAN',
     'AgglomerativeClustering': 'sklearn.cluster.AgglomerativeClustering',
 
-    # Dimensionality Reduction
     'PCA': 'sklearn.decomposition.PCA',
     'TSNE': 'sklearn.manifold.TSNE',
     'UMAP': 'umap.UMAP',
 }
-
 
 def _import_model_class(model_path: str):
     """Dynamically import a model class from path"""
@@ -101,7 +92,6 @@ def _import_model_class(model_path: str):
         module = importlib.import_module(module_path)
         return getattr(module, class_name)
     raise ValueError(f"Invalid model path: {model_path}")
-
 
 def _get_model_instance(model_name: str, **kwargs):
     """Get model instance from name"""
@@ -115,9 +105,6 @@ def _get_model_instance(model_name: str, **kwargs):
             return xgb.XGBRegressor(**kwargs)
     else:
         raise ValueError(f"Unknown model: {model_name}")
-
-
-# ==================== Core ML Functions ====================
 
 def fit_model(
     X: Any,
@@ -163,12 +150,10 @@ def fit_model(
                 pass
         return {'model': model_instance, 'score': score}
 
-    # Handle matrix (grid search)
     use_matrix = matrix is not None and len(matrix) > 0
     multi_sample = n_samples and n_samples > 1
 
     if not use_matrix and not multi_sample:
-        # Single fit
         if isinstance(model, str):
             model_instance = _get_model_instance(model, **kwargs)
         elif hasattr(model, 'fit'):
@@ -183,7 +168,6 @@ def fit_model(
             'scores': [result['score']] if result['score'] is not None else None
         }
 
-    # Build all combinations
     combos = []
     if use_matrix:
         keys = list(matrix.keys())
@@ -194,13 +178,11 @@ def fit_model(
     else:
         combos = [{}]
 
-    # Add sampling
     all_tasks = []
     for combo in combos:
         for sample_idx in range(max(1, n_samples)):
             all_tasks.append((combo, sample_idx))
 
-    # Execute fits
     results = []
     if parallel and len(all_tasks) > 1:
         with ThreadPoolExecutor(max_workers=min(8, len(all_tasks))) as executor:
@@ -246,7 +228,6 @@ def fit_model(
             except Exception as e:
                 results.append({'error': str(e), 'params': combo, 'sample_index': sample_idx})
 
-    # Aggregate
     models = [r['model'] for r in results if 'model' in r]
     scores = [r['score'] for r in results if 'score' in r and r['score'] is not None]
 
@@ -256,7 +237,6 @@ def fit_model(
         'scores': scores if scores else None,
         'results': results
     }
-
 
 def predict_model(
     X: Any,
@@ -317,7 +297,6 @@ def predict_model(
         'all_predictions': predictions
     }
 
-
 def score_model(
     X: Any,
     y: Any,
@@ -375,9 +354,6 @@ def score_model(
         'all_scores': all_scores
     }
 
-
-# ==================== PyTorch Functions ====================
-
 def fit_torch(
     model: Any,
     train_loader: Any,
@@ -410,11 +386,9 @@ def fit_torch(
 
     model = model.to(device)
 
-    # Get optimizer
     opt_class = getattr(torch.optim, optimizer)
     opt = opt_class(model.parameters(), lr=lr)
 
-    # Get criterion
     crit_class = getattr(nn, criterion)
     crit = crit_class()
 
@@ -437,7 +411,7 @@ def fit_torch(
             if targets is not None:
                 loss = crit(outputs, targets)
             else:
-                loss = outputs  # Assume model returns loss
+                loss = outputs
 
             loss.backward()
             opt.step()
@@ -445,7 +419,6 @@ def fit_torch(
 
         history['train_loss'].append(epoch_loss / len(train_loader))
 
-        # Validation
         if val_loader is not None:
             model.eval()
             val_loss = 0.0
@@ -470,7 +443,6 @@ def fit_torch(
         'final_train_loss': history['train_loss'][-1] if history['train_loss'] else None,
         'final_val_loss': history['val_loss'][-1] if history['val_loss'] else None
     }
-
 
 def forward_torch(
     model: Any,
@@ -509,9 +481,6 @@ def forward_torch(
         'outputs': outputs,
         'output_numpy': outputs.cpu().numpy() if hasattr(outputs, 'cpu') else outputs
     }
-
-
-# ==================== Time Series Functions ====================
 
 def fit_timeseries(
     series: Any,
@@ -569,7 +538,6 @@ def fit_timeseries(
     else:
         raise ValueError(f"Unknown time series method: {method}")
 
-
 def forecast_timeseries(
     model: Any,
     horizon: int,
@@ -595,16 +563,12 @@ def forecast_timeseries(
 
     result = {'forecast': forecast}
 
-    # Try to get confidence intervals
     if hasattr(model, 'get_forecast'):
         fc = model.get_forecast(steps=horizon)
         result['conf_int'] = fc.conf_int()
         result['forecast_mean'] = fc.predicted_mean
 
     return result
-
-
-# ==================== Ensemble Functions ====================
 
 def ensemble_predict(
     X: Any,
@@ -624,7 +588,6 @@ def ensemble_predict(
     Returns:
         Dict with ensemble predictions
     """
-    # Get individual predictions
     all_preds = []
     for m in models:
         pred = m.predict(X)
@@ -633,7 +596,6 @@ def ensemble_predict(
     all_preds = np.array(all_preds)
 
     if method == "vote":
-        # Majority voting (for classification)
         from scipy import stats
         ensemble_pred, _ = stats.mode(all_preds, axis=0)
         ensemble_pred = ensemble_pred.flatten()
@@ -655,7 +617,6 @@ def ensemble_predict(
         'individual_predictions': all_preds,
         'method': method
     }
-
 
 def cross_validate(
     X: Any,
@@ -704,9 +665,6 @@ def cross_validate(
 
     return results
 
-
-# ==================== Utility Functions ====================
-
 def serialize_model(model: Any, path: str, format: str = "joblib") -> None:
     """
     Serialize model to file using safe formats (no pickle).
@@ -732,7 +690,6 @@ def serialize_model(model: Any, path: str, format: str = "joblib") -> None:
     else:
         raise ValueError(f"Unsupported format: {format}. Use 'joblib' or 'safetensors'.")
 
-
 def deserialize_model(path: str, format: str = "auto") -> Any:
     """
     Deserialize model from file using safe formats (no pickle).
@@ -748,7 +705,6 @@ def deserialize_model(path: str, format: str = "auto") -> Any:
         ImportError: If required library is not installed
         ValueError: If format cannot be determined
     """
-    # Auto-detect format from extension
     if format == "auto":
         if path.endswith('.safetensors'):
             format = "safetensors"
@@ -769,7 +725,6 @@ def deserialize_model(path: str, format: str = "auto") -> Any:
     else:
         raise ValueError(f"Unsupported format: {format}. Use 'joblib' or 'safetensors'.")
 
-
 def get_model_params(model: Any) -> Dict[str, Any]:
     """Get model hyperparameters"""
     if hasattr(model, 'get_params'):
@@ -778,7 +733,6 @@ def get_model_params(model: Any) -> Dict[str, Any]:
         return {'type': 'torch', 'params': list(model.state_dict().keys())}
     else:
         return {}
-
 
 def set_model_params(model: Any, params: Dict[str, Any]) -> Any:
     """Set model hyperparameters"""

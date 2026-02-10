@@ -27,11 +27,6 @@ import asyncio
 import tempfile
 from typing import Optional, Callable, Any
 
-
-# =============================================================================
-# Kokoro TTS (Local Neural)
-# =============================================================================
-
 def tts_kokoro(
     text: str,
     voice: str = "af_heart",
@@ -70,7 +65,6 @@ def tts_kokoro(
     wav_buffer.seek(0)
     return wav_buffer.read()
 
-
 def get_kokoro_voices() -> list:
     """Get available Kokoro voices."""
     return [
@@ -86,11 +80,6 @@ def get_kokoro_voices() -> list:
         {"id": "bm_george", "name": "George", "gender": "male", "lang": "b"},
         {"id": "bm_lewis", "name": "Lewis", "gender": "male", "lang": "b"},
     ]
-
-
-# =============================================================================
-# ElevenLabs TTS
-# =============================================================================
 
 def tts_elevenlabs(
     text: str,
@@ -123,7 +112,6 @@ def tts_elevenlabs(
     )
 
     return b''.join(chunk for chunk in audio_generator)
-
 
 async def tts_elevenlabs_stream(
     text: str,
@@ -176,7 +164,6 @@ async def tts_elevenlabs_stream(
 
     return b''.join(all_audio)
 
-
 def get_elevenlabs_voices(api_key: Optional[str] = None) -> list:
     """Get available ElevenLabs voices."""
     if api_key is None:
@@ -192,11 +179,6 @@ def get_elevenlabs_voices(api_key: Optional[str] = None) -> list:
         return [{"id": v.voice_id, "name": v.name} for v in voices.voices]
     except Exception:
         return []
-
-
-# =============================================================================
-# OpenAI Realtime Voice API
-# =============================================================================
 
 async def openai_realtime_connect(
     api_key: Optional[str] = None,
@@ -251,14 +233,12 @@ async def openai_realtime_connect(
 
     return ws
 
-
 async def openai_realtime_send_audio(ws, audio_data: bytes):
     """Send audio to OpenAI Realtime (PCM16, 24kHz, mono)."""
     await ws.send(json.dumps({
         "type": "input_audio_buffer.append",
         "audio": base64.b64encode(audio_data).decode()
     }))
-
 
 async def openai_realtime_send_text(ws, text: str):
     """Send text message to OpenAI Realtime."""
@@ -271,7 +251,6 @@ async def openai_realtime_send_text(ws, text: str):
         }
     }))
     await ws.send(json.dumps({"type": "response.create"}))
-
 
 async def openai_realtime_receive(ws, on_audio=None, on_text=None):
     """
@@ -309,7 +288,6 @@ async def openai_realtime_receive(ws, on_audio=None, on_text=None):
 
     return b''.join(audio_chunks), ''.join(text_chunks)
 
-
 async def tts_openai_realtime(
     text: str,
     api_key: Optional[str] = None,
@@ -329,7 +307,6 @@ async def tts_openai_realtime(
     finally:
         await ws.close()
 
-
 def get_openai_voices() -> list:
     """Get available OpenAI Realtime voices."""
     return [
@@ -342,11 +319,6 @@ def get_openai_voices() -> list:
         {"id": "sage", "name": "Sage"},
         {"id": "verse", "name": "Verse"},
     ]
-
-
-# =============================================================================
-# Google Gemini Live API
-# =============================================================================
 
 async def gemini_live_connect(
     api_key: Optional[str] = None,
@@ -391,7 +363,6 @@ async def gemini_live_connect(
 
     return ws
 
-
 async def gemini_live_send_audio(ws, audio_data: bytes, mime_type: str = "audio/pcm"):
     """Send audio to Gemini Live."""
     await ws.send(json.dumps({
@@ -403,7 +374,6 @@ async def gemini_live_send_audio(ws, audio_data: bytes, mime_type: str = "audio/
         }
     }))
 
-
 async def gemini_live_send_text(ws, text: str):
     """Send text message to Gemini Live."""
     await ws.send(json.dumps({
@@ -412,7 +382,6 @@ async def gemini_live_send_text(ws, text: str):
             "turn_complete": True
         }
     }))
-
 
 async def gemini_live_receive(ws, on_audio=None, on_text=None):
     """
@@ -447,7 +416,6 @@ async def gemini_live_receive(ws, on_audio=None, on_text=None):
 
     return b''.join(audio_chunks), ''.join(text_chunks)
 
-
 async def tts_gemini_live(
     text: str,
     api_key: Optional[str] = None,
@@ -467,7 +435,6 @@ async def tts_gemini_live(
     finally:
         await ws.close()
 
-
 def get_gemini_voices() -> list:
     """Get available Gemini Live voices."""
     return [
@@ -477,11 +444,6 @@ def get_gemini_voices() -> list:
         {"id": "Fenrir", "name": "Fenrir"},
         {"id": "Aoede", "name": "Aoede"},
     ]
-
-
-# =============================================================================
-# Qwen3-TTS (Local High-Quality Multilingual)
-# =============================================================================
 
 _qwen3_model_cache = {}
 
@@ -517,7 +479,6 @@ def _get_qwen3_model(
 
     repo_id = type_map.get(model_type, type_map["custom_voice"])
 
-    # Try local cache first, then download
     cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "qwen-tts")
     model_dir = os.path.join(cache_dir, repo_id.split("/")[-1])
 
@@ -525,7 +486,6 @@ def _get_qwen3_model(
         os.makedirs(cache_dir, exist_ok=True)
         snapshot_download(repo_id=repo_id, local_dir=model_dir)
 
-    # Import the model class
     try:
         from qwen_tts import Qwen3TTSModel
     except ImportError:
@@ -538,11 +498,9 @@ def _get_qwen3_model(
         model_dir, device_map=device, dtype=dtype
     )
 
-    # Clear old entries if switching configs
     _qwen3_model_cache.clear()
     _qwen3_model_cache[cache_key] = model
     return model
-
 
 def tts_qwen3(
     text: str,
@@ -612,7 +570,6 @@ def tts_qwen3(
     wav_buffer.seek(0)
     return wav_buffer.read()
 
-
 def get_qwen3_voices() -> list:
     """Get available Qwen3-TTS preset voices."""
     return [
@@ -626,11 +583,6 @@ def get_qwen3_voices() -> list:
         {"id": "ono_anna", "name": "Ono Anna", "gender": "female"},
         {"id": "uncle_fu", "name": "Uncle Fu", "gender": "male"},
     ]
-
-
-# =============================================================================
-# gTTS (Google Text-to-Speech) - Fallback
-# =============================================================================
 
 def tts_gtts(text: str, lang: str = "en") -> bytes:
     """
@@ -647,7 +599,6 @@ def tts_gtts(text: str, lang: str = "en") -> bytes:
     mp3_buffer.seek(0)
     return mp3_buffer.read()
 
-
 def get_gtts_voices() -> list:
     """Get available gTTS languages."""
     return [
@@ -661,11 +612,6 @@ def get_gtts_voices() -> list:
         {"id": "ko", "name": "Korean"},
         {"id": "zh-CN", "name": "Chinese"},
     ]
-
-
-# =============================================================================
-# Unified Interface
-# =============================================================================
 
 def text_to_speech(
     text: str,
@@ -716,7 +662,6 @@ def text_to_speech(
     else:
         raise ValueError(f"Unknown TTS engine: {engine}")
 
-
 def get_available_voices(engine: str = "kokoro") -> list:
     """Get available voices for an engine."""
     engine = engine.lower()
@@ -735,7 +680,6 @@ def get_available_voices(engine: str = "kokoro") -> list:
         return get_gtts_voices()
     else:
         return []
-
 
 def get_available_engines() -> dict:
     """Get info about available TTS engines."""
@@ -812,11 +756,6 @@ def get_available_engines() -> dict:
 
     return engines
 
-
-# =============================================================================
-# Audio Utilities
-# =============================================================================
-
 def pcm16_to_wav(pcm_data: bytes, sample_rate: int = 24000, channels: int = 1) -> bytes:
     """Convert raw PCM16 audio to WAV format."""
     import struct
@@ -840,7 +779,6 @@ def pcm16_to_wav(pcm_data: bytes, sample_rate: int = 24000, channels: int = 1) -
     wav_buffer.seek(0)
     return wav_buffer.read()
 
-
 def wav_to_pcm16(wav_data: bytes) -> tuple:
     """Extract PCM16 data from WAV. Returns (pcm_data, sample_rate)."""
     import struct
@@ -863,11 +801,9 @@ def wav_to_pcm16(wav_data: bytes) -> tuple:
 
     raise ValueError("No data chunk found in WAV")
 
-
 def audio_to_base64(audio_data: bytes) -> str:
     """Encode audio to base64 string."""
     return base64.b64encode(audio_data).decode('utf-8')
-
 
 def base64_to_audio(b64_string: str) -> bytes:
     """Decode base64 string to audio bytes."""

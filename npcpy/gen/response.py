@@ -27,17 +27,9 @@ except OSError:
     pass
 
 def sanitize_messages(messages: list) -> list:
-    """Remove orphaned tool messages that don't have matching assistant tool_calls.
-
-    Gemini and some other providers crash when a 'tool' role message appears
-    without a preceding 'assistant' message containing tool_calls with a matching
-    tool_call_id.  This function converts orphaned tool messages into regular
-    assistant messages so the conversation history remains valid.
-    """
     if not messages:
         return messages
 
-    # Collect all tool_call_ids from assistant messages with tool_calls
     valid_tool_call_ids = set()
     for msg in messages:
         if msg.get('role') == 'assistant' and msg.get('tool_calls'):
@@ -49,13 +41,11 @@ def sanitize_messages(messages: list) -> list:
                 if tc_id:
                     valid_tool_call_ids.add(tc_id)
 
-    # Check for orphaned tool messages
     cleaned = []
     for msg in messages:
         if msg.get('role') == 'tool':
             tc_id = msg.get('tool_call_id')
             if tc_id and tc_id not in valid_tool_call_ids:
-                # Orphaned tool message - convert to assistant message
                 content = msg.get('content', '')
                 name = msg.get('name', 'tool')
                 cleaned.append({
@@ -68,9 +58,7 @@ def sanitize_messages(messages: list) -> list:
     return cleaned
 
 
-# Token costs per 1M tokens (input, output)
 TOKEN_COSTS = {
-    # OpenAI
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4-turbo": (10.00, 30.00),
@@ -82,7 +70,6 @@ TOKEN_COSTS = {
     "o3": (10.00, 40.00),
     "o3-mini": (1.10, 4.40),
     "o4-mini": (1.10, 4.40),
-    # Anthropic
     "claude-3-5-sonnet": (3.00, 15.00),
     "claude-3-opus": (15.00, 75.00),
     "claude-3-haiku": (0.25, 1.25),
@@ -91,26 +78,21 @@ TOKEN_COSTS = {
     "claude-opus-4-5": (5.00, 25.00),
     "claude-sonnet-4-5": (3.00, 15.00),
     "claude-haiku-4": (0.80, 4.00),
-    # Google
     "gemini-1.5-pro": (1.25, 5.00),
     "gemini-1.5-flash": (0.075, 0.30),
     "gemini-2.0-flash": (0.10, 0.40),
     "gemini-2.5-pro": (1.25, 10.00),
     "gemini-2.5-flash": (0.15, 0.60),
     "gemini-3-pro": (2.00, 12.00),
-    # Groq (free tier limits, paid is cheap)
     "llama-3": (0.05, 0.08),
     "llama-3.1": (0.05, 0.08),
     "llama-3.2": (0.05, 0.08),
     "llama-4": (0.05, 0.10),
     "mixtral": (0.24, 0.24),
-    # DeepSeek
     "deepseek-v3": (0.27, 1.10),
     "deepseek-r1": (0.55, 2.19),
-    # Mistral
     "mistral-large": (2.00, 6.00),
     "mistral-small": (0.20, 0.60),
-    # xAI
     "grok-2": (2.00, 10.00),
     "grok-3": (3.00, 15.00),
 }
@@ -120,10 +102,8 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     if not model:
         return 0.0
 
-    # Normalize model name - strip provider prefix and lowercase
     model_key = model.split("/")[-1].lower()
 
-    # Check for exact or partial match
     costs = None
     for key, cost in TOKEN_COSTS.items():
         if key in model_key or model_key in key:
@@ -131,7 +111,7 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
             break
 
     if not costs:
-        return 0.0  # Unknown/local model, assume free
+        return 0.0
 
     input_cost, output_cost = costs
     return (input_tokens * input_cost / 1_000_000) + (output_tokens * output_cost / 1_000_000)
@@ -302,7 +282,6 @@ def get_ollama_response(
                     except Exception:
                         pass
                 else:
-                    # Handle text-based files
                     text_extensions = {'.txt', '.text', '.log', '.md', '.markdown', '.rst', '.json', '.yaml', '.yml', '.toml', '.ini', '.conf', '.cfg', '.xml', '.html', '.htm', '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.h', '.cpp', '.hpp', '.go', '.rs', '.rb', '.php', '.sh', '.bash', '.sql', '.css', '.scss'}
                     filename = os.path.basename(attachment)
                     if ext in text_extensions or ext == '':
@@ -319,7 +298,6 @@ def get_ollama_response(
                                     prompt = f"Content from {filename}:\n```\n{text_content}\n```"
                         except Exception:
                             pass
-
 
     if prompt:
         if messages and messages[-1]["role"] == "user":
@@ -379,7 +357,6 @@ def get_ollama_response(
             last_user_idx = len(messages) - 1
         messages[last_user_idx]["images"] = image_paths
 
-    # Ollama's pydantic model requires tool_calls arguments to be dicts, not strings
     for msg in messages:
         if msg.get("tool_calls"):
             for tc in msg["tool_calls"]:
@@ -399,7 +376,6 @@ def get_ollama_response(
         api_params["tools"] = tools
         if tool_choice:
             options["tool_choice"] = tool_choice
-
 
     if think is not None:
         api_params['think'] = think
@@ -439,11 +415,9 @@ def get_ollama_response(
         result["raw_response"] = res
 
         if stream:
-            # Return immediately for streaming - don't check 'in' on generator as it consumes it
             result["response"] = res
             return result
 
-        # Extract usage from ollama response (only for non-streaming)
         if hasattr(res, 'prompt_eval_count') or 'prompt_eval_count' in res:
             input_tokens = getattr(res, 'prompt_eval_count', None) or res.get('prompt_eval_count', 0) or 0
             output_tokens = getattr(res, 'eval_count', None) or res.get('eval_count', 0) or 0
@@ -492,7 +466,6 @@ def get_ollama_response(
 
             return result
 
-
     logger.debug(f"ollama api_params: {api_params}")
     res = ollama.chat(**api_params, options=options)
     result["raw_response"] = res
@@ -524,25 +497,53 @@ def get_ollama_response(
                                               tools=tools)
         
         
-        if stream:
+        clean_messages = []
+        tool_results_summary = []
 
-            
-            
-            final_messages = processed_result["messages"]
-            
-            
-            final_api_params = {
-                "model": model,
-                "messages": final_messages,
-                "stream": True,
-            }
-            
-            if tools:
-                final_api_params["tools"] = tools
-            
+        for msg in processed_result["messages"]:
+            role = msg.get('role', '')
+            if role == 'assistant' and 'tool_calls' in msg:
+                continue
+            elif role == 'tool':
+                content = msg.get('content', '')
+                if len(content) > 2000:
+                    content = content[:2000] + "... (truncated)"
+                tool_results_summary.append(content)
+            else:
+                clean_messages.append(msg)
+
+        if tool_results_summary:
+            clean_messages.append({
+                "role": "assistant",
+                "content": "I executed the requested tools. Here are the results:\n\n" + "\n\n".join(tool_results_summary)
+            })
+
+        clean_messages.append({
+            "role": "user",
+            "content": "Based on the tool results above, provide a brief summary of what happened. Do NOT output any code - the tool has already executed. Just describe the results concisely."
+        })
+
+        final_api_params = {
+            "model": model,
+            "messages": clean_messages,
+            "stream": stream,
+        }
+
+        if stream:
             final_stream = ollama.chat(**final_api_params, options=options)
             processed_result["response"] = final_stream
-            
+        else:
+            final_resp = ollama.chat(**final_api_params, options=options)
+            final_message = final_resp.get("message", {})
+            final_content = final_message.get("content", "")
+            if final_content:
+                processed_result["response"] = final_content
+                processed_result["messages"].append({"role": "assistant", "content": final_content})
+            elif tool_results_summary:
+                processed_result["response"] = "\n\n".join(tool_results_summary)
+            else:
+                processed_result["response"] = "Tool executed successfully."
+
         return processed_result
     
     
@@ -629,7 +630,6 @@ def get_ollama_response(
 
 import time
 
-
 def get_lora_response(
     prompt: str = None,
     model: str = None,
@@ -678,7 +678,6 @@ def get_lora_response(
             "error": f"No adapter_config.json found at {adapter_path}"
         }
 
-    # Read base model from adapter config
     try:
         with open(adapter_config_path, 'r') as f:
             adapter_config = json.load(f)
@@ -724,7 +723,6 @@ Do not include any additional markdown formatting or leading ```json tags in you
         logger.info(f"Loading LoRA adapter: {adapter_path}")
         model_with_adapter = PeftModel.from_pretrained(base_model, adapter_path)
 
-        # Apply chat template
         chat_text = tokenizer.apply_chat_template(
             result["messages"],
             tokenize=False,
@@ -771,7 +769,6 @@ Do not include any additional markdown formatting or leading ```json tags in you
 
     return result
 
-
 def get_llamacpp_response(
     prompt: str = None,
     model: str = None,
@@ -816,9 +813,8 @@ def get_llamacpp_response(
             messages.append({"role": "user", "content": prompt})
 
     try:
-        # Load model
         n_ctx = kwargs.get("n_ctx", 4096)
-        n_gpu_layers = kwargs.get("n_gpu_layers", -1)  # -1 = all layers on GPU if available
+        n_gpu_layers = kwargs.get("n_gpu_layers", -1)
 
         llm = Llama(
             model_path=model,
@@ -827,7 +823,6 @@ def get_llamacpp_response(
             verbose=False
         )
 
-        # Build params
         params = {
             "messages": messages,
             "stream": stream,
@@ -846,7 +841,6 @@ def get_llamacpp_response(
 
             def generate():
                 for chunk in response:
-                    # Yield the full chunk dict for proper streaming handling
                     yield chunk
 
             result["response"] = generate()
@@ -870,7 +864,6 @@ def get_llamacpp_response(
         result["response"] = ""
 
     return result
-
 
 _AIRLLM_MODEL_CACHE = {}
 _AIRLLM_MLX_PATCHED = False
@@ -984,7 +977,6 @@ def get_airllm_response(
         result["error"] = "airllm not installed. Install with: pip install airllm"
         return result
 
-    # Patch airllm MLX classes to support models with bias (e.g. Qwen)
     if is_macos:
         _patch_airllm_mlx_bias()
 
@@ -1001,13 +993,11 @@ Do not include any additional markdown formatting or leading ```json tags in you
             result["messages"][-1]["content"] += "\n" + json_instruction
 
     model_name = model or "meta-llama/Meta-Llama-3.1-70B-Instruct"
-    # 4-bit compression requires CUDA via bitsandbytes; skip on macOS
     default_compression = None if is_macos else "4bit"
     compression = kwargs.get("compression", default_compression)
     max_tokens = kwargs.get("max_tokens", 256)
     temperature = kwargs.get("temperature", 0.7)
 
-    # Resolve HF token for gated model access
     hf_token = kwargs.get("hf_token")
     if not hf_token:
         hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -1018,7 +1008,6 @@ Do not include any additional markdown formatting or leading ```json tags in you
         except Exception:
             pass
 
-    # Load or retrieve cached model
     cache_key = f"{model_name}:{compression}"
     if cache_key not in _AIRLLM_MODEL_CACHE:
         load_kwargs = {"pretrained_model_name_or_path": model_name}
@@ -1026,7 +1015,6 @@ Do not include any additional markdown formatting or leading ```json tags in you
             load_kwargs["compression"] = compression
         if hf_token:
             load_kwargs["hf_token"] = hf_token
-        # Pass through additional airllm kwargs
         for k in ["delete_original", "max_seq_len", "prefetching"]:
             if k in kwargs:
                 load_kwargs[k] = kwargs[k]
@@ -1039,7 +1027,6 @@ Do not include any additional markdown formatting or leading ```json tags in you
             result["messages"], tokenize=False, add_generation_prompt=True
         )
     except Exception:
-        # Fallback if chat template is not available
         chat_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in result["messages"]
         )
@@ -1055,7 +1042,6 @@ Do not include any additional markdown formatting or leading ```json tags in you
                 mx.array(tokens['input_ids']),
                 max_new_tokens=max_tokens,
             )
-            # MLX backend returns string directly
             response_content = output if isinstance(output, str) else str(output)
         else:
             tokens = air_model.tokenizer(
@@ -1065,16 +1051,13 @@ Do not include any additional markdown formatting or leading ```json tags in you
                 tokens['input_ids'].cuda(),
                 max_new_tokens=max_tokens,
             )
-            # CUDA backend returns token IDs, decode them
             output_ids = gen_out.sequences[0] if hasattr(gen_out, 'sequences') else gen_out[0]
             response_content = air_model.tokenizer.decode(output_ids, skip_special_tokens=True)
-            # Strip the input prompt from the output
             input_text = air_model.tokenizer.decode(tokens['input_ids'][0], skip_special_tokens=True)
             if response_content.startswith(input_text):
                 response_content = response_content[len(input_text):]
 
         response_content = response_content.strip()
-        # Strip at common stop/special tokens that airllm doesn't handle
         for stop_tok in ["<|im_end|>", "<|endoftext|>", "<|eot_id|>", "</s>"]:
             if stop_tok in response_content:
                 response_content = response_content[:response_content.index(stop_tok)].strip()
@@ -1098,7 +1081,6 @@ Do not include any additional markdown formatting or leading ```json tags in you
             result["error"] = f"Invalid JSON response: {response_content}"
 
     return result
-
 
 def get_litellm_response(
     prompt: str = None,
@@ -1203,22 +1185,17 @@ def get_litellm_response(
             **kwargs
         )
     elif provider == 'lmstudio' or (model and '.lmstudio' in str(model)):
-        # LM Studio uses OpenAI-compatible API on port 1234
-        # Also detect models with .lmstudio in path (e.g., /home/user/.lmstudio/models/...)
         api_url = api_url or "http://127.0.0.1:1234/v1"
         provider = "openai"
-        api_key = api_key or "lm-studio"  # LM Studio doesn't require real API key
-        # Default timeout for local CPU inference (can be overridden via kwargs)
+        api_key = api_key or "lm-studio"
         if 'timeout' not in kwargs:
-            kwargs['timeout'] = 300  # 5 minutes for CPU inference with large prompts
+            kwargs['timeout'] = 300
     elif provider == 'llamacpp-server':
-        # llama.cpp server uses OpenAI-compatible API on port 8080
         api_url = api_url or "http://127.0.0.1:8080/v1"
         provider = "openai"
-        api_key = api_key or "llamacpp"  # llama.cpp server doesn't require real API key
-        # Default timeout for local CPU inference (can be overridden via kwargs)
+        api_key = api_key or "llamacpp"
         if 'timeout' not in kwargs:
-            kwargs['timeout'] = 300  # 5 minutes for CPU inference with large prompts
+            kwargs['timeout'] = 300
 
     if attachments:
         for attachment in attachments:
@@ -1255,7 +1232,6 @@ def get_litellm_response(
                     except Exception:
                         pass
                 else:
-                    # Handle text-based files
                     text_extensions = {'.txt', '.text', '.log', '.md', '.markdown', '.rst', '.json', '.yaml', '.yml', '.toml', '.ini', '.conf', '.cfg', '.xml', '.html', '.htm', '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.h', '.cpp', '.hpp', '.go', '.rs', '.rb', '.php', '.sh', '.bash', '.sql', '.css', '.scss'}
                     filename = os.path.basename(attachment)
                     if ext in text_extensions or ext == '':
@@ -1337,7 +1313,6 @@ def get_litellm_response(
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
                 )
 
-
     
 
     # Sanitize messages to remove orphaned tool messages that crash Gemini
@@ -1369,13 +1344,9 @@ def get_litellm_response(
     if provider is None:
         provider = os.environ.get("NPCSH_CHAT_PROVIDER")
 
-    # For OpenAI-compatible endpoints with api_base, always prefix with provider
-    # LiteLLM needs this to know how to route the request
-    # Also handle file paths (starting with /) which contain slashes but still need prefix
     if "api_base" in api_params and provider == "openai":
         api_params["model"] = f"openai/{model}"
     elif "/" not in model or model.startswith("/"):
-        # No provider prefix in model, or model is a file path - add provider prefix
         api_params["model"] = f"{provider}/{model}"
     else:
         api_params["model"] = model
@@ -1400,14 +1371,12 @@ def get_litellm_response(
         resp = completion(**api_params)
         result["raw_response"] = resp
 
-        # Extract usage if available (handles both standard litellm and ollama formats)
         if hasattr(resp, 'usage') and resp.usage:
             result["usage"] = {
                 "input_tokens": getattr(resp.usage, 'prompt_tokens', 0) or 0,
                 "output_tokens": getattr(resp.usage, 'completion_tokens', 0) or 0,
             }
         elif hasattr(resp, 'prompt_eval_count'):
-            # Ollama format
             result["usage"] = {
                 "input_tokens": getattr(resp, 'prompt_eval_count', 0) or 0,
                 "output_tokens": getattr(resp, 'eval_count', 0) or 0,
@@ -1473,16 +1442,13 @@ def get_litellm_response(
                     if isinstance(llm_response, str):
                         llm_response = llm_response.strip()
 
-                        # Strip ```yaml markdown if present
                         if '```yaml' in llm_response:
                             start = llm_response.find('```yaml') + 7
                             end = llm_response.rfind('```')
                             if end > start:
                                 llm_response = llm_response[start:end].strip()
                         elif '```' in llm_response:
-                            # Generic code block
                             start = llm_response.find('```') + 3
-                            # Skip any language identifier on the same line
                             newline = llm_response.find('\n', start)
                             if newline != -1:
                                 start = newline + 1
@@ -1515,7 +1481,6 @@ def get_litellm_response(
 
     result["raw_response"] = resp
 
-    # Extract usage if available
     if hasattr(resp, 'usage') and resp.usage:
         result["usage"] = {
             "input_tokens": getattr(resp.usage, 'prompt_tokens', 0) or 0,
@@ -1539,34 +1504,27 @@ def get_litellm_response(
                                               stream=False,
                                               tools=tools)
 
-        # Always do a follow-up call to get a proper response after tool execution
-        # Convert tool interactions to a clean format for the follow-up call
         clean_messages = []
         tool_results_summary = []
 
         for msg in processed_result["messages"]:
             role = msg.get('role', '')
             if role == 'assistant' and 'tool_calls' in msg:
-                # Skip the tool_calls message - we'll summarize results instead
                 continue
             elif role == 'tool':
-                # Collect tool results for summary
                 content = msg.get('content', '')
-                # Truncate very long results
                 if len(content) > 2000:
                     content = content[:2000] + "... (truncated)"
                 tool_results_summary.append(content)
             else:
                 clean_messages.append(msg)
 
-        # Add tool results as an assistant message summarizing what was done
         if tool_results_summary:
             clean_messages.append({
                 "role": "assistant",
                 "content": "I executed the requested tools. Here are the results:\n\n" + "\n\n".join(tool_results_summary)
             })
 
-        # Add instruction for the LLM to provide a helpful response
         clean_messages.append({
             "role": "user",
             "content": "Based on the tool results above, provide a brief summary of what happened. Do NOT output any code - the tool has already executed. Just describe the results concisely."
@@ -1590,9 +1548,6 @@ def get_litellm_response(
                 processed_result["response"] = final_content
                 processed_result["messages"].append({"role": "assistant", "content": final_content})
             else:
-                # No choices returned, use the tool results summary directly.
-                # IMPORTANT: Always append an assistant message so messages don't end
-                # with an orphaned tool response (which crashes Gemini/other providers).
                 if tool_results_summary:
                     fallback_content = "\n\n".join(tool_results_summary)
                 else:
@@ -1642,14 +1597,11 @@ def process_tool_calls(response_dict, tool_map, model, provider, messages, strea
     if not tool_calls:
         return result
 
-    # First, add the assistant message with tool_calls (required by Gemini and other providers)
-    # This must come BEFORE the tool results
     tool_calls_for_message = []
     for tc in tool_calls:
         if isinstance(tc, dict):
             tool_calls_for_message.append(tc)
         else:
-            # Convert object to dict format
             tool_calls_for_message.append({
                 "id": getattr(tc, "id", str(uuid.uuid4())),
                 "type": "function",
@@ -1717,7 +1669,6 @@ def process_tool_calls(response_dict, tool_map, model, provider, messages, strea
                 "result": serializable_result
             })
 
-            # Add tool result as a tool message (proper format for multi-turn)
             result["messages"].append({
                 "role": "tool",
                 "tool_call_id": tool_id,

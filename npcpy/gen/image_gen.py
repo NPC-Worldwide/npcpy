@@ -10,7 +10,6 @@ from litellm import image_generation
 import requests
 from urllib.request import urlopen
 
-
 def generate_image_diffusers(
     prompt: str,
     model: str = "runwayml/stable-diffusion-v1-5",
@@ -134,7 +133,6 @@ def generate_image_diffusers(
         else:
             raise e
 
-
 def openai_image_gen(
     prompt: str,
     model: str = "dall-e-2",
@@ -210,7 +208,6 @@ def openai_image_gen(
         collected_images.append(image)
         
     return collected_images
-
 
 def gemini_image_gen(
     prompt: str,
@@ -338,7 +335,6 @@ def gemini_image_gen(
         else:
             raise ValueError(f"Unsupported Gemini image model or API usage for new generation: '{model}'")
 
-
 def ollama_image_gen(
     prompt: str,
     model: str = "x/z-image-turbo",
@@ -416,7 +412,6 @@ def ollama_image_gen(
             )
 
     return collected_images
-
 
 def generate_image(
     prompt: str,
@@ -558,7 +553,6 @@ def generate_image(
                 print(f"Warning: Attempting to save non-PIL image item: {type(img_item)}. Skipping save for this item.")
 
     return all_generated_pil_images
-
 
 def edit_image(
     prompt: str,

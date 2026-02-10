@@ -1,7 +1,5 @@
-# Import statements
 import numpy as np
 
-# Define sample primary directives for NPCs
 sample_primary_directives = [
     ("Research Assistant", "Help users find and analyze information"),
     ("Creativity Coach", "Assist with creative tasks and idea generation"),

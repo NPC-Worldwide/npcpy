@@ -15,38 +15,32 @@ class DatabaseAIFunctionMapper:
         }
         """
         return {
-            # Text Generation Mapping
             'generate_text': {
                 'cortex_function': 'COMPLETE',
                 'transformer': lambda prompt, **kwargs: f"SNOWFLAKE.CORTEX.COMPLETE('{prompt}')"
             },
             
-            # Summarization Mapping
             'summarize': {
                 'cortex_function': 'SUMMARIZE',
                 'transformer': lambda text, **kwargs: f"SNOWFLAKE.CORTEX.SUMMARIZE('{text}')"
             },
             
-            # Sentiment Analysis Mapping
             'analyze_sentiment': {
                 'cortex_function': 'SENTIMENT',
                 'transformer': lambda text, **kwargs: f"SNOWFLAKE.CORTEX.SENTIMENT('{text}')"
             },
             
-            # Translation Mapping
             'translate': {
                 'cortex_function': 'TRANSLATE',
                 'transformer': lambda text, source_lang='auto', target_lang='en', **kwargs: 
                     f"SNOWFLAKE.CORTEX.TRANSLATE('{text}', '{source_lang}', '{target_lang}')"
             },
             
-            # Named Entity Recognition
             'extract_entities': {
                 'cortex_function': 'EXTRACT_ENTITIES',
                 'transformer': lambda text, **kwargs: f"SNOWFLAKE.CORTEX.EXTRACT_ENTITIES('{text}')"
             },
             
-            # Embedding Generation
             'generate_embedding': {
                 'cortex_function': 'EMBED_TEXT',
                 'transformer': lambda text, model='snowflake-arctic', **kwargs: 
@@ -60,13 +54,11 @@ class DatabaseAIFunctionMapper:
         Map NPC AI functions to Databricks AI functions
         """
         return {
-            # Databricks uses different function names and approaches
             'generate_text': {
                 'databricks_function': 'serving.predict',
                 'transformer': lambda prompt, model='databricks-dolly', **kwargs: 
                     f"serving.predict('{model}', '{prompt}')"
             },
-            # Add more Databricks-specific mappings
         }
     
     @staticmethod
@@ -80,7 +72,6 @@ class DatabaseAIFunctionMapper:
                 'transformer': lambda prompt, model='text-bison', **kwargs:
                     f"ML.GENERATE_TEXT(MODEL `{model}`, '{prompt}')"
             },
-            # Add more BigQuery-specific mappings
         }
 
 class NativeDatabaseAITransformer:
@@ -113,7 +104,6 @@ class NativeDatabaseAITransformer:
         
         return transformer(**kwargs)
 
-# Example usage in ModelCompiler
 def _has_native_ai_functions(self, source_name: str) -> bool:
     """Enhanced method to check native AI function support"""
     ai_enabled = {
@@ -134,12 +124,9 @@ def _execute_ai_model(self, sql: str, model: SQLModel) -> pd.DataFrame:
         source_name, table_name = matches[0]
         engine = self._get_engine(source_name)
         
-        # Check for native AI function support
         if self._has_native_ai_functions(source_name):
-            # Use native transformer
             transformer = NativeDatabaseAITransformer(source_name)
             
-            # Modify SQL to use native AI functions
             for func_name, params in model.ai_functions.items():
                 try:
                     native_func_call = transformer.transform_ai_function(
@@ -148,16 +135,13 @@ def _execute_ai_model(self, sql: str, model: SQLModel) -> pd.DataFrame:
                         **{k: v for k, v in params.items() if k != 'column'}
                     )
                     
-                    # Replace the NQL function with native function
                     sql = sql.replace(
                         f"nql.{func_name}({params.get('column', '')})", 
                         native_func_call
                     )
                 except ValueError as e:
-                    # Fallback to original method if transformation fails
                     print(f"Warning: {e}. Falling back to default AI function.")
             
             return pd.read_sql(sql.replace(f"{source_name}.", ""), engine)
     
-    # Fallback to existing AI model execution
     return super()._execute_ai_model(sql, model)

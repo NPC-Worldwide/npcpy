@@ -12,13 +12,9 @@ from typing import Dict, List
 import textwrap
 import json
 
-
 import requests
 ON_WINDOWS = platform.system() == "Windows"
 ON_MACOS = platform.system() == "Darwin"
-
-
-# ==================== XDG/Platform-Specific Paths ====================
 
 def get_data_dir() -> str:
     """
@@ -38,17 +34,14 @@ def get_data_dir() -> str:
     elif ON_MACOS:
         new_path = os.path.expanduser('~/Library/Application Support/npcsh')
     else:
-        # Linux/Unix - use XDG Base Directory Specification
         xdg_data = os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))
         new_path = os.path.join(xdg_data, 'npcsh')
 
-    # Backwards compatibility: if old path exists but new doesn't, use old
     old_path = os.path.expanduser('~/.npcsh')
     if os.path.exists(old_path) and not os.path.exists(new_path):
         return old_path
 
     return new_path
-
 
 def get_config_dir() -> str:
     """
@@ -68,17 +61,14 @@ def get_config_dir() -> str:
     elif ON_MACOS:
         new_path = os.path.expanduser('~/Library/Application Support/npcsh')
     else:
-        # Linux/Unix - use XDG Base Directory Specification
         xdg_config = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
         new_path = os.path.join(xdg_config, 'npcsh')
 
-    # Backwards compatibility: if old path exists but new doesn't, use old
     old_path = os.path.expanduser('~/.npcsh')
     if os.path.exists(old_path) and not os.path.exists(new_path):
         return old_path
 
     return new_path
-
 
 def get_cache_dir() -> str:
     """
@@ -98,7 +88,6 @@ def get_cache_dir() -> str:
         xdg_cache = os.environ.get('XDG_CACHE_HOME', os.path.expanduser('~/.cache'))
         return os.path.join(xdg_cache, 'npcsh')
 
-
 def get_npcshrc_path() -> str:
     """
     Get the path to the npcshrc config file.
@@ -112,7 +101,6 @@ def get_npcshrc_path() -> str:
 
     config_dir = get_config_dir()
     return os.path.join(config_dir, 'npcshrc')
-
 
 def get_history_db_path() -> str:
     """
@@ -128,11 +116,9 @@ def get_history_db_path() -> str:
     data_dir = get_data_dir()
     return os.path.join(data_dir, 'history.db')
 
-
 def get_models_dir() -> str:
     """Get the directory for storing models."""
     return os.path.join(get_data_dir(), 'models')
-
 
 def ensure_npcsh_dirs() -> None:
     """Ensure all npcsh directories exist."""
@@ -153,13 +139,11 @@ except ImportError:
     select = None
     signal = None
 
-
 try:
     import readline
 except ImportError:
     readline = None
     logging.warning('no readline support, some features may not work as desired.')
-
 
 try:
     from rich.console import Console
@@ -172,7 +156,6 @@ except ImportError:
 
 import warnings
 import time
-
 
 running = True
 is_recording = False
@@ -195,7 +178,6 @@ def check_internet_connection(timeout=5):
         return True
     except OSError:
         return False
-
 
 def get_locally_available_models(project_directory, airplane_mode=False):
     available_models = {}
@@ -431,14 +413,13 @@ def get_locally_available_models(project_directory, airplane_mode=False):
     except (ImportError, concurrent.futures.TimeoutError, Exception) as e:
         logging.info(f"Error loading Ollama models or timed out: {e}")
 
-    # Scan for local GGUF/GGML models
     models_dir = get_models_dir()
     gguf_dirs = [
         os.path.join(models_dir, 'gguf'),
         models_dir,
         os.path.expanduser('~/models'),
         os.path.join(get_cache_dir(), 'huggingface/hub'),
-        os.path.expanduser('~/.cache/huggingface/hub'),  # Fallback for existing installs
+        os.path.expanduser('~/.cache/huggingface/hub'),
     ]
     env_gguf_dir = os.environ.get('NPCSH_GGUF_DIR')
     if env_gguf_dir:
@@ -459,7 +440,6 @@ def get_locally_available_models(project_directory, airplane_mode=False):
         except Exception as e:
             logging.info(f"Error scanning GGUF directory {scan_dir}: {e}")
 
-    # Check for LM Studio server (OpenAI-compatible API on port 1234)
     try:
         import requests
         response = requests.get('http://127.0.0.1:1234/v1/models', timeout=1)
@@ -471,7 +451,6 @@ def get_locally_available_models(project_directory, airplane_mode=False):
     except Exception as e:
         logging.debug(f"LM Studio not available: {e}")
 
-    # Check for llama.cpp server (OpenAI-compatible API on port 8080)
     try:
         import requests
         response = requests.get('http://127.0.0.1:8080/v1/models', timeout=1)
@@ -483,7 +462,6 @@ def get_locally_available_models(project_directory, airplane_mode=False):
     except Exception as e:
         logging.debug(f"llama.cpp server not available: {e}")
 
-    # Check for MLX server (OpenAI-compatible API on port 8000)
     try:
         import requests
         response = requests.get('http://127.0.0.1:8000/v1/models', timeout=1)
@@ -495,7 +473,6 @@ def get_locally_available_models(project_directory, airplane_mode=False):
     except Exception as e:
         logging.debug(f"MLX server not available: {e}")
 
-    # Also check common alternative MLX port 5000
     try:
         import requests
         response = requests.get('http://127.0.0.1:5000/v1/models', timeout=1)
@@ -503,12 +480,11 @@ def get_locally_available_models(project_directory, airplane_mode=False):
             data = response.json()
             for model in data.get('data', []):
                 model_id = model.get('id', model.get('name', 'unknown'))
-                if model_id not in available_models:  # Avoid duplicates
+                if model_id not in available_models:
                     available_models[model_id] = "mlx"
     except Exception as e:
         logging.debug(f"MLX server (port 5000) not available: {e}")
 
-    # Scan for LoRA adapters (fine-tuned models with adapter_config.json)
     lora_dirs = [
         os.path.expanduser('~/.npcsh/models'),
     ]
@@ -521,15 +497,12 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                 if os.path.isdir(item_path):
                     adapter_config = os.path.join(item_path, 'adapter_config.json')
                     if os.path.exists(adapter_config):
-                        # This is a LoRA adapter
                         available_models[item_path] = "lora"
                         logging.debug(f"Found LoRA adapter: {item_path}")
         except Exception as e:
             logging.debug(f"Error scanning LoRA directory {scan_dir}: {e}")
 
     return available_models
-
-
 
 def log_action(action: str, detail: str = "") -> None:
     """
@@ -545,15 +518,12 @@ def log_action(action: str, detail: str = "") -> None:
     """
     logging.info(f"{action}: {detail}")
 
-
-
 def preprocess_code_block(code_text):
     """
     Preprocess code block text to remove leading spaces.
     """
     lines = code_text.split("\n")
     return "\n".join(line.lstrip() for line in lines)
-
 
 def preprocess_markdown(md_text):
     """
@@ -583,8 +553,6 @@ def preprocess_markdown(md_text):
 
     return "\n".join(processed_lines)
 
-
-
 def request_user_input(input_request: Dict[str, str]) -> str:
     """
     Request and get input from user.
@@ -597,7 +565,6 @@ def request_user_input(input_request: Dict[str, str]) -> str:
     """
     print(f"\nAdditional input needed: {input_request['reason']}")
     return input(f"{input_request['prompt']}: ")
-
 
 def render_markdown(text: str) -> None:
     """
@@ -650,7 +617,6 @@ def get_directory_npcs(directory: str = None) -> List[str]:
             npcs.append(filename[:-4])
     return npcs
 
-
 def get_db_npcs(db_path: str) -> List[str]:
     """
     Function Description:
@@ -688,7 +654,6 @@ def guess_mime_type(filename):
         ".md": "text/markdown",
     }
     return mime_types.get(extension, "application/octet-stream")
-
 
 def ensure_dirs_exist(*dirs):
     """Ensure all specified directories exist"""
@@ -735,9 +700,6 @@ def init_db_tables(db_path="~/npcsh_history.db"):
         
         conn.commit()
 
-
-
-
 def get_model_and_provider(command: str, available_models: list) -> tuple:
     """
     Function Description:
@@ -751,7 +713,6 @@ def get_model_and_provider(command: str, available_models: list) -> tuple:
         model_name : str : Model name
         provider : str : Provider
         cleaned_command : str : Clean
-
 
     """
 
@@ -904,7 +865,6 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
     
     return str_output
 
-
 def print_and_process_stream(response, model, provider):
     
     str_output = ""
@@ -981,7 +941,6 @@ def print_and_process_stream(response, model, provider):
                         thinking_str+='</think>'
                         print('</think>')
                     print(chunk_content, end="", flush=True)
-
 
             if not chunk_content:
                 continue
@@ -1062,25 +1021,21 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
     if team is not None:
         team_context = team.context if hasattr(team, "context") and team.context else ""
-        # preferences now comes from shared_context like other generic context keys
         team_preferences = team.shared_context.get('preferences', '') if hasattr(team, "shared_context") else ""
         system_message += f"\nTeam context: {team_context}\n"
         if team_preferences:
             system_message += f"Team preferences: {team_preferences}\n"
 
-        # Add team members with their directives
         if hasattr(team, 'npcs') and team.npcs:
             members = []
             for name, member in team.npcs.items():
-                if name != npc.name:  # Don't list self
+                if name != npc.name:
                     directive = getattr(member, 'primary_directive', '')
-                    # Include full directive (up to 500 chars) for better delegation decisions
                     desc = directive[:500].strip() if directive else ''
                     members.append(f"  - @{name}: {desc}")
             if members:
                 system_message += "\nTeam members available for delegation:\n" + "\n".join(members) + "\n"
 
-    # Add tool descriptions from NPC's jinxs
     if hasattr(npc, 'jinxs_dict') and npc.jinxs_dict:
         tool_lines = []
         for jname, jinx in npc.jinxs_dict.items():
@@ -1118,9 +1073,6 @@ You only need to answer the user's request based on the attached image(s).
 
     return system_message
 
-
-
-
 def load_env_from_execution_dir() -> None:
     """
     Function Description:
@@ -1133,7 +1085,6 @@ def load_env_from_execution_dir() -> None:
         None
     """
 
-
     execution_dir = os.path.abspath(os.getcwd())
     env_path = os.path.join(execution_dir, ".env")
     if os.path.exists(env_path):
@@ -1141,10 +1092,6 @@ def load_env_from_execution_dir() -> None:
         logging.info(f"Loaded .env file from {execution_dir}")
     else:
         logging.warning(f"Warning: No .env file found in {execution_dir}")
-
-
-
-
 
 def lookup_provider(model: str) -> str:
     """
@@ -1157,7 +1104,6 @@ def lookup_provider(model: str) -> str:
     Returns:
         The provider name or None if not found
     """
-    # Check if model is a LoRA adapter path
     if model and os.path.isdir(os.path.expanduser(model)):
         adapter_config = os.path.join(os.path.expanduser(model), 'adapter_config.json')
         if os.path.exists(adapter_config):
@@ -1226,7 +1172,6 @@ def lookup_provider(model: str) -> str:
         return "diffusers"
         
     return None
-
 
 def load_custom_providers():
     """

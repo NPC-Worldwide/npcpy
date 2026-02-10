@@ -9,7 +9,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
-# Professional plot styling (from kg-research matplotlibrc)
 mpl.rcParams.update({
     'font.family': 'serif',
     'axes.labelsize': 20,
@@ -102,7 +101,6 @@ class PreserveUndefined(ChainableUndefined):
     def __str__(self):
         return f"{{{{ {self._undefined_name} }}}}"
 
-
 def agent_pass_handler(command, extracted_data, **kwargs):
     """Handler for agent pass action"""
     npc = kwargs.get('npc')
@@ -156,7 +154,6 @@ def agent_pass_handler(command, extracted_data, **kwargs):
     
     return result
 
-
 def create_or_replace_table(db_path, table_name, data):
     """Creates or replaces a table in the SQLite database"""
     conn = sqlite3.connect(os.path.expanduser(db_path))
@@ -181,8 +178,6 @@ def find_file_path(filename, search_dirs, suffix=None):
             return file_path
             
     return None
-
-
 
 def get_log_entries(entity_id, entry_type=None, limit=10, db_path="~/npcsh_history.db"):
     """Get log entries for an NPC or team"""
@@ -210,7 +205,6 @@ def get_log_entries(entity_id, entry_type=None, limit=10, db_path="~/npcsh_histo
             for r in results
         ]
 
-
 def _json_dumps_with_undefined(obj, **kwargs):
     """Custom JSON dumps that handles SilentUndefined objects"""
     def default_handler(o):
@@ -219,23 +213,16 @@ def _json_dumps_with_undefined(obj, **kwargs):
         raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
     return json.dumps(obj, default=default_handler, **kwargs)
 
-
 def load_yaml_file(file_path):
     """Load a YAML file with error handling, rendering Jinja2 first"""
     try:
         with open(os.path.expanduser(file_path), 'r') as f:
             content = f.read()
 
-        # Check if file has Jinja2 control structures that need pre-rendering
-        # Only render if there are {% %} blocks, otherwise parse directly
         if '{%' not in content:
             return yaml.safe_load(content)
 
-        # First pass: render Jinja2 templates to produce valid YAML
-        # This allows {% if %} and other control structures to work
-        # Use SandboxedEnvironment to prevent template injection attacks
         jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
-        # Configure tojson filter to handle SilentUndefined
         jinja_env.policies['json.dumps_function'] = _json_dumps_with_undefined
         template = jinja_env.from_string(content)
         rendered_content = template.render({})
@@ -255,8 +242,6 @@ def log_entry(entity_id, entry_type, content, metadata=None, db_path="~/npcsh_hi
         )
         conn.commit()
 
-
-
 def initialize_npc_project(
     directory=None,
     templates=None,
@@ -269,7 +254,6 @@ def initialize_npc_project(
         directory = os.getcwd()
     directory = os.path.expanduser(os.fspath(directory))
 
-    # Create top-level directories for assets
     for subdir in ["images", "models", "attachments", "mcp_servers"]:
         os.makedirs(os.path.join(directory, subdir), exist_ok=True)
 
@@ -365,7 +349,6 @@ primary_directive: You oversee the sales pipeline, track progress, and optimize 
                     if ext == ".npc" and stem == template_name:
                         return os.path.join(root, fname)
 
-        # If no on-disk template found, fall back to embedded definitions
         if template_name in embedded_templates:
             embedded_dir = os.path.join(npc_team_dir, "_embedded_templates", template_name)
             os.makedirs(embedded_dir, exist_ok=True)
@@ -459,10 +442,6 @@ primary_directive: You oversee the sales pipeline, track progress, and optimize 
         )
     return f"NPC project initialized in {npc_team_dir}"
 
-
-
-
-
 def write_yaml_file(file_path, data):
     """Write data to a YAML file"""
     try:
@@ -498,14 +477,11 @@ class Jinx:
         else:
             raise ValueError("Either jinx_data or jinx_path must be provided")
         
-        # _raw_steps will now hold the original, potentially templated, steps definition
         self._raw_steps = list(self.steps)
-        # If steps are already valid dicts (not needing Jinja templating), keep them
-        # Otherwise clear for first-pass rendering to populate
         if self.steps and all(isinstance(s, dict) for s in self.steps):
-            pass  # Keep steps as-is for simple jinxes
+            pass
         else:
-            self.steps = []  # Will be populated after first-pass rendering
+            self.steps = []
         self.parsed_files = {}
         if self.file_context:
             self.parsed_files = self._parse_file_patterns(self.file_context)
@@ -514,7 +490,6 @@ class Jinx:
         jinx_data = load_yaml_file(path)
         if not jinx_data:
             raise ValueError(f"Failed to load jinx from {path}")
-        # Set _source_path in the data so it's preserved after _load_from_data
         jinx_data['_source_path'] = path
         self._load_from_data(jinx_data)
             
@@ -530,7 +505,7 @@ class Jinx:
         self.inputs = jinx_data.get("inputs", [])
         self.description = jinx_data.get("description", "")
         self.npc = jinx_data.get("npc")
-        self.steps = jinx_data.get("steps", []) # This can now be a Jinja templated list
+        self.steps = jinx_data.get("steps", [])
         self.file_context = jinx_data.get("file_context", [])
         self._source_path = jinx_data.get("_source_path", None)
 
@@ -573,48 +548,29 @@ class Jinx:
         then expands nested Jinx calls (e.g., {{ sh(...) }} or engine: jinx_name)
         and inline macros.
         """
-        # Check if steps are already parsed dicts (common case when loaded from YAML)
-        # If so, skip the YAML string join/parse cycle and use them directly
         if self._raw_steps and isinstance(self._raw_steps[0], dict):
             structurally_expanded_steps = list(self._raw_steps)
         else:
-            # 1. Join the list of raw steps (which are individual YAML lines) into a single string.
-            #    This single string is the complete Jinja template for the 'steps' section.
             raw_steps_template_string = "\n".join(self._raw_steps)
 
-            # 2. Render this single string as a Jinja template.
-            #    Jinja will now process the {% for %} and {% if %} directives,
-            #    dynamically generating the YAML structure.
             try:
                 steps_template = jinja_env_for_macros.from_string(raw_steps_template_string)
-                # Pass globals (like num_tasks, include_greeting from Jinx inputs)
-                # to the Jinja rendering context for structural templating.
                 rendered_steps_yaml_string = steps_template.render(**jinja_env_for_macros.globals)
             except Exception as e:
-                # In a real Jinx, this would go to a proper logger.
-                # For this context, we handle the error gracefully.
-                # self._log_debug(f"Warning: Error during first-pass templating of Jinx '{self.jinx_name}' steps YAML: {e}")
-                self.steps = list(self._raw_steps) # Fallback to original raw steps
+                self.steps = list(self._raw_steps)
                 return
 
-            # 3. Parse the rendered YAML string back into a list of step dictionaries.
-            #    This step will now correctly interpret the YAML structure generated by Jinja.
             try:
                 structurally_expanded_steps = yaml.safe_load(rendered_steps_yaml_string)
                 if not isinstance(structurally_expanded_steps, list):
-                    # Handle cases where the rendered YAML might be empty or not a list
                     if structurally_expanded_steps is None:
                         structurally_expanded_steps = []
                     else:
                         raise ValueError(f"Rendered steps YAML did not result in a list: {type(structurally_expanded_steps)}")
             except Exception as e:
-                # self._log_debug(f"Warning: Error re-parsing structurally expanded steps YAML for Jinx '{self.jinx_name}': {e}")
-                self.steps = list(self._raw_steps) # Fallback
+                self.steps = list(self._raw_steps)
                 return
 
-        # 4. Now, iterate through these `structurally_expanded_steps` to expand
-        # declarative Jinx calls (engine: jinx_name) and inline macros.
-        # This is the second phase of the first-pass rendering.
         final_rendered_steps = []
         for raw_step in structurally_expanded_steps:
             if not isinstance(raw_step, dict):
@@ -623,7 +579,6 @@ class Jinx:
 
             engine_name = raw_step.get('engine')
             
-            # If this step references another jinx via engine, expand it
             if engine_name and engine_name in all_jinx_callables:
                 step_name = raw_step.get('name', f'call_{engine_name}')
                 jinx_args = {
@@ -641,22 +596,13 @@ class Jinx:
                     elif expanded_steps is not None:
                         final_rendered_steps.append(expanded_steps)
                 except Exception as e:
-                    # self._log_debug(
-                    #     f"Warning: Error expanding Jinx '{engine_name}' "
-                    #     f"within Jinx '{self.jinx_name}' "
-                    #     f"(declarative): {e}"
-                    # )
                     final_rendered_steps.append(raw_step)
-            # For python/bash engine steps, preserve fields with runtime template
-            # placeholders ({{var}}) for second-pass rendering. Only expand inline
-            # macros on fields that don't contain runtime variables.
             elif raw_step.get('engine') in ['python', 'bash']:
                 processed_step = {}
                 for key, value in raw_step.items():
                     if isinstance(value, str):
                         has_template_var = '{{' in value and '}}' in value
                         if has_template_var:
-                            # Preserve for second-pass runtime rendering
                             processed_step[key] = value
                         else:
                             try:
@@ -673,7 +619,6 @@ class Jinx:
                         processed_step[key] = value
                 final_rendered_steps.append(processed_step)
             else:
-                # For other steps (e.g., custom engines, or just data), perform inline macro expansion
                 processed_step = {}
                 for key, value in raw_step.items():
                     if isinstance(value, str):
@@ -686,7 +631,6 @@ class Jinx:
                             except yaml.YAMLError:
                                 processed_step[key] = rendered_value
                         except Exception as e:
-                            # self._log_debug(f"Warning: Error during first-pass rendering of Jinx '{self.jinx_name}' step field '{key}' (inline macro): {e}")
                             processed_step[key] = value
                     else:
                         processed_step[key] = value
@@ -702,7 +646,6 @@ class Jinx:
                 jinja_env: Optional[Environment] = None):
         
         if jinja_env is None:
-            # Use SandboxedEnvironment to prevent template injection attacks
             jinja_env = SandboxedEnvironment(
                 loader=DictLoader({}),
                 undefined=SilentUndefined,
@@ -723,10 +666,9 @@ class Jinx:
             "npc": active_npc
         })
         
-        # Add parsed file content to the context
         if self.parsed_files:
             context['file_context'] = self._format_parsed_files_context(self.parsed_files)
-            context['files'] = self.parsed_files # Also make raw dict available
+            context['files'] = self.parsed_files
 
         for i, step in enumerate(self.steps):
             context = self._execute_step(
@@ -737,7 +679,6 @@ class Jinx:
                 messages=messages,
                 extra_globals=extra_globals
             )
-            # If an error occurred in a step, propagate it and stop execution
             output_str = str(context.get("output", ""))
             if "error" in output_str.lower():
                 self._log_debug(f"DEBUG: Jinx '{self.jinx_name}' execution stopped due to error in step '{step.get('name', 'unnamed_step')}': {context['output']}")
@@ -765,7 +706,6 @@ class Jinx:
         
         active_npc = step_npc if step_npc else npc
         
-        # Second pass Jinja rendering: render the step's code with the current runtime context
         try:
             template = jinja_env.from_string(code_content)
             rendered_code = template.render(**context)
@@ -780,13 +720,12 @@ class Jinx:
         
         self._log_debug(f"DEBUG: Executing step '{step_name}' with rendered code: {rendered_code}")
 
-        # Import NPCArray for array operations in jinx
         from npcpy.npc_array import NPCArray, infer_matrix, ensemble_vote
 
         exec_globals = {
             "__builtins__": __builtins__,
             "npc": active_npc,
-            "context": context, # Pass context by reference
+            "context": context,
             "math": math,
             "random": random,
             "datetime": datetime,
@@ -805,7 +744,6 @@ class Jinx:
             "subprocess": subprocess,
             "get_llm_response": npy.llm_funcs.get_llm_response,
             "CommandHistory": CommandHistory,
-            # NPCArray support for compute graph operations in jinx
             "NPCArray": NPCArray,
             "infer_matrix": infer_matrix,
             "ensemble_vote": ensemble_vote,
@@ -814,13 +752,9 @@ class Jinx:
         if extra_globals:
             exec_globals.update(extra_globals)
 
-        # Add context values directly as variables so jinx code can use them without Jinja
         exec_globals.update(context)
 
-        # NOTE: Using same dict for globals and locals because when they're
-        # separate, imports end up in locals but nested functions can only see globals.
-        # This caused "name 'X' is not defined" errors when functions used imported names.
-        exec_locals = exec_globals  # Use same namespace so imports are visible in functions
+        exec_locals = exec_globals
 
         try:
             exec(rendered_code, exec_globals, exec_locals)
@@ -834,23 +768,18 @@ class Jinx:
             self._log_debug(error_msg)
             return context
 
-        # Update the main context with any variables set in exec_locals
-        # But preserve context['output'] if jinx set it via context['output'] = ...
         context_output = context.get("output")
         context.update(exec_locals)
 
-        # If jinx set context['output'] directly, preserve it
         if context_output is not None:
             context["output"] = context_output
             context[step_name] = context_output
 
-        # Only use exec_locals output if it was explicitly set (not still None from init)
         if "output" in exec_locals and exec_locals["output"] is not None:
             outp = exec_locals["output"]
             context["output"] = outp
             context[step_name] = outp
 
-        # Append to messages if we have output
         final_output = context.get("output")
         if final_output is not None and messages is not None:
             messages.append({
@@ -882,7 +811,6 @@ class Jinx:
             if not pattern:
                 continue
                 
-            # Resolve base_path relative to jinx's source path or current working directory
             if self._source_path:
                 base_path = os.path.join(os.path.dirname(self._source_path), base_path)
             base_path = os.path.expanduser(base_path)
@@ -951,7 +879,7 @@ class Jinx:
             "jinx_name": self.jinx_name,
             "description": self.description,
             "inputs": self.inputs,
-            "steps": self._raw_steps, # Save the original raw steps, which might be templated
+            "steps": self._raw_steps,
             "file_context": self.file_context
         }
         
@@ -1020,8 +948,6 @@ output = {mcp_tool.__module__}.{name}(
         except: 
             pass
 
-
-
 def _parse_skill_md(path):
     """Parse a skill markdown file with YAML frontmatter and ## sections.
 
@@ -1056,7 +982,6 @@ def _parse_skill_md(path):
 
     body = parts[2].strip()
 
-    # Parse ## sections from markdown body
     sections = {}
     current_section = None
     current_content = []
@@ -1073,11 +998,8 @@ def _parse_skill_md(path):
     if current_section:
         sections[current_section] = '\n'.join(current_content).strip()
 
-    # For SKILL.md files the skill name should come from frontmatter or the
-    # parent folder name, not from the filename "SKILL".
     basename = os.path.splitext(os.path.basename(path))[0]
     if basename.upper() == 'SKILL':
-        # Folder-based skill: use parent directory name as fallback
         default_name = os.path.basename(os.path.dirname(path))
     else:
         default_name = basename
@@ -1088,7 +1010,6 @@ def _parse_skill_md(path):
         'sections': sections,
         'frontmatter': frontmatter
     }
-
 
 def _compile_skill_to_jinx(skill_data, source_path=None):
     """Compile skill data into a Jinx whose step is ``engine: skill``.
@@ -1106,26 +1027,22 @@ def _compile_skill_to_jinx(skill_data, source_path=None):
     description = skill_data.get('description', '')
     sections = skill_data.get('sections', {})
 
-    # Encode sections as b64 to protect from Jinja rendering
     sections_json = json.dumps(sections, ensure_ascii=False)
     content_b64 = base64.b64encode(sections_json.encode('utf-8')).decode('ascii')
 
     section_names = list(sections.keys())
     desc_suffix = f" [Sections: {', '.join(section_names)}]" if section_names else ""
 
-    # Collect scripts/references/assets lists for the structured representation
     scripts_list = []
     references_list = []
     assets_list = []
 
-    # Build file_context entries so the Jinx runtime can load files
     file_context = list(skill_data.get('file_context', []))
     for subdir, collector in (('scripts', scripts_list),
                                ('references', references_list),
                                ('assets', assets_list)):
         entries = skill_data.get(subdir)
         if isinstance(entries, list):
-            # Explicit file list from .jinx YAML
             collector.extend(entries)
             for entry in entries:
                 if isinstance(entry, str):
@@ -1136,11 +1053,9 @@ def _compile_skill_to_jinx(skill_data, source_path=None):
                 elif isinstance(entry, dict):
                     file_context.append(entry)
         elif entries is None and source_path:
-            # Folder-based skill: auto-discover if the subdir exists
             skill_dir = os.path.dirname(source_path)
             subdir_path = os.path.join(skill_dir, subdir)
             if os.path.isdir(subdir_path):
-                # Collect actual filenames for the structured representation
                 for r, _d, fnames in os.walk(subdir_path):
                     for fn in fnames:
                         rel = os.path.relpath(os.path.join(r, fn), skill_dir)
@@ -1171,7 +1086,6 @@ def _compile_skill_to_jinx(skill_data, source_path=None):
 
     return Jinx(jinx_data=jinx_data)
 
-
 def _load_skill_from_md(path):
     """Load a skill from a SKILL.md file with YAML frontmatter and ## sections.
 
@@ -1185,7 +1099,6 @@ def _load_skill_from_md(path):
     if not parsed or not parsed.get('sections'):
         return None
 
-    # Skill name: prefer frontmatter 'name', fall back to parent directory name
     parent_dir = os.path.basename(os.path.dirname(path))
     name = parsed['name'] or parent_dir
 
@@ -1195,14 +1108,12 @@ def _load_skill_from_md(path):
         'sections': parsed['sections'],
     }
 
-    # Forward any extra frontmatter keys the author set (scripts, references, etc.)
     fm = parsed.get('frontmatter', {})
     for key in ('scripts', 'references', 'assets', 'file_context'):
         if key in fm:
             skill_data[key] = fm[key]
 
     return _compile_skill_to_jinx(skill_data, source_path=path)
-
 
 def load_jinxs_from_directory(directory):
     """Load all jinxs from a directory recursively.
@@ -1238,7 +1149,6 @@ def load_jinxs_from_directory(directory):
                 except Exception as e:
                     print(f"Error loading jinx {filename}: {e}")
             elif filename == "SKILL.md":
-                # Anthropic-style skill folder: skills/my-skill/SKILL.md
                 try:
                     md_path = os.path.join(root, filename)
                     jinx = _load_skill_from_md(md_path)
@@ -1272,32 +1182,25 @@ def match_jinx_spec_to_names(jinx_spec: str, team_jinxs_dict: Dict[str, 'Jinx'],
     """
     matched_names = []
 
-    # First, check if it's a direct jinx name match
     if jinx_spec in team_jinxs_dict:
         return [jinx_spec]
 
-    # Normalize the spec (add .jinx extension if not present, for path matching)
     spec_pattern = jinx_spec
     if not spec_pattern.endswith('.jinx') and not spec_pattern.endswith('*'):
         spec_pattern += '.jinx'
 
-    # Handle glob patterns
     for jinx_name, jinx_obj in team_jinxs_dict.items():
         source_path = getattr(jinx_obj, '_source_path', None)
         if not source_path:
             continue
 
-        # Get relative path from jinxs base directory
         try:
             rel_path = os.path.relpath(source_path, jinxs_base_dir)
         except ValueError:
-            # Can happen on Windows with different drives
             continue
 
-        # Match using fnmatch for glob support
         if fnmatch.fnmatch(rel_path, spec_pattern):
             matched_names.append(jinx_name)
-        # Also try matching without .jinx for patterns like lib/core/python
         elif fnmatch.fnmatch(rel_path, spec_pattern.replace('.jinx', '') + '.jinx'):
             matched_names.append(jinx_name)
 
@@ -1350,7 +1253,6 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
     
     print(f"DEBUG unused_args: {unused_args}")
     
-    # Find first required input (no default value)
     first_required = None
     for input_ in jinx.inputs:
         if isinstance(input_, str):
@@ -1359,12 +1261,10 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
     
     print(f"DEBUG first_required: {first_required}")
     
-    # Give all unused args to first required input
     if first_required and unused_args:
         inputs[first_required] = ' '.join(unused_args).strip()
         print(f"DEBUG assigned to first_required: {inputs[first_required]}")
     else:
-        # Fallback to original behavior
         jinx_input_names = []
         for input_ in jinx.inputs:
             if isinstance(input_, str):
@@ -1407,8 +1307,8 @@ class NPC:
         name: str = None,
         primary_directive: str = None,
         plain_system_message: bool = False,
-        team = None, # Can be None initially
-        jinxs: list = None, # Explicit jinxs for this NPC
+        team = None,
+        jinxs: list = None,
         tools: list = None,
         model: str = None,
         provider: str = None,
@@ -1435,7 +1335,6 @@ class NPC:
         if not file and not name and not primary_directive:
             raise ValueError("Either 'file' or 'name' and 'primary_directive' must be provided")
 
-        # Set team reference early so _load_from_file can use it for inheritance
         self.team = team
 
         if file:
@@ -1458,9 +1357,8 @@ class NPC:
                 self.jinxs_directory = None
             self.npc_directory = None
 
-        # Only set jinxs_spec from parameter if it wasn't already set by _load_from_file
         if not hasattr(self, 'jinxs_spec') or jinxs is not None:
-            self.jinxs_spec = jinxs or "*" # Store the jinx specification for later loading
+            self.jinxs_spec = jinxs or "*"
 
         if tools is not None:
             tools_schema, tool_map = auto_tools(tools)
@@ -1484,8 +1382,6 @@ class NPC:
         if self.jinxs_directory:
             dirs.append(self.jinxs_directory)
             
-        # This jinja_env is for the *second pass* (runtime variable resolution in Jinx.execute)
-        # Use SandboxedEnvironment to prevent template injection attacks
         self.jinja_env = SandboxedEnvironment(
             loader=FileSystemLoader([
                 os.path.expanduser(d) for d in dirs
@@ -1507,9 +1403,7 @@ class NPC:
                 self.kg_data = self._load_npc_kg()  
                 self.memory = self.get_memory_context()
 
-        self.jinxs_dict = {} # Initialize empty, will be populated by initialize_jinxs
-        # If jinxs are explicitly provided *to the NPC* during its standalone creation, load them.
-        # This is for NPCs created *outside* a team context initially.
+        self.jinxs_dict = {}
         if jinxs and jinxs != "*": 
             for jinx_item in jinxs:
                 if isinstance(jinx_item, Jinx):
@@ -1518,7 +1412,6 @@ class NPC:
                     jinx_obj = Jinx(jinx_data=jinx_item)
                     self.jinxs_dict[jinx_obj.jinx_name] = jinx_obj
                 elif isinstance(jinx_item, str):
-                    # Try to load from NPC's own directory first
                     jinx_path = find_file_path(jinx_item, [self.npc_jinxs_directory], suffix=".jinx")
                     if jinx_path:
                         jinx_obj = Jinx(jinx_path=jinx_path)
@@ -1527,27 +1420,22 @@ class NPC:
                         print(f"Warning: Jinx '{jinx_item}' not found for NPC '{self.name}' during initial load.")
         
         self.shared_context = {
-            # Data analysis (guac)
             "dataframes": {},
             "current_data": None,
             "computation_results": [],
-            "locals": {},  # Python exec locals for guac mode
+            "locals": {},
 
-            # Memory
             "memories": {},
 
-            # MCP tools (corca)
             "mcp_client": None,
             "mcp_tools": [],
             "mcp_tool_map": {},
 
-            # Session tracking
             "session_input_tokens": 0,
             "session_output_tokens": 0,
             "session_cost_usd": 0.0,
             "turn_count": 0,
 
-            # Mode state
             "current_mode": "agent",
             "attachments": [],
         }
@@ -1565,23 +1453,19 @@ class NPC:
         """
         npc_jinxs_raw_list = []
         
-        # If jinxs_spec is "*", inherit all from team
         if self.jinxs_spec == "*":
             if self.team and hasattr(self.team, 'jinxs_dict') and self.team.jinxs_dict:
                 self.jinxs_dict.update(self.team.jinxs_dict)
-        else: # If specific jinxs are requested, try to get them from team
+        else:
             if self.team and hasattr(self.team, 'jinxs_dict') and self.team.jinxs_dict:
-                # Determine the jinxs base directory for path matching
                 jinxs_base_dir = None
                 if hasattr(self.team, 'team_path') and self.team.team_path:
                     jinxs_base_dir = os.path.join(self.team.team_path, 'jinxs')
 
                 for jinx_spec in self.jinxs_spec:
-                    # Use the helper to match spec patterns (paths, globs) to jinx names
                     if jinxs_base_dir:
                         matched_names = match_jinx_spec_to_names(jinx_spec, self.team.jinxs_dict, jinxs_base_dir)
                     else:
-                        # Fallback to direct name match if no base dir
                         matched_names = [jinx_spec] if jinx_spec in self.team.jinxs_dict else []
 
                     if not matched_names:
@@ -1594,26 +1478,20 @@ class NPC:
                         if jinx_name in self.team.jinxs_dict:
                             self.jinxs_dict[jinx_name] = self.team.jinxs_dict[jinx_name]
 
-        # Load NPC's own jinxs ONLY if:
-        # 1. The NPC has no team (standalone NPC), OR
-        # 2. The NPC's jinxs directory is different from the team's jinxs directory
-        # This prevents team NPCs with specific jinxs_spec from loading all team jinxs
         should_load_from_directory = False
         if hasattr(self, 'npc_jinxs_directory') and self.npc_jinxs_directory and os.path.exists(self.npc_jinxs_directory):
             if not self.team:
                 should_load_from_directory = True
             elif hasattr(self.team, 'team_path') and self.team.team_path:
                 team_jinxs_dir = os.path.join(self.team.team_path, 'jinxs')
-                # Only load if NPC has its own separate jinxs directory
                 if os.path.normpath(self.npc_jinxs_directory) != os.path.normpath(team_jinxs_dir):
                     should_load_from_directory = True
 
         if should_load_from_directory:
             for jinx_obj in load_jinxs_from_directory(self.npc_jinxs_directory):
-                if jinx_obj.jinx_name not in self.jinxs_dict: # Only add if not already added from team
+                if jinx_obj.jinx_name not in self.jinxs_dict:
                     npc_jinxs_raw_list.append(jinx_obj)
         
-        # If there are raw NPC jinxs to render or team_raw_jinxs available
         if npc_jinxs_raw_list or team_raw_jinxs:
             all_available_raw_jinxs = list(team_raw_jinxs or [])
             all_available_raw_jinxs.extend(npc_jinxs_raw_list)
@@ -1914,13 +1792,11 @@ class NPC:
         else:
             self.jinxs_spec = jinxs_spec
 
-        # Get model/provider from NPC file, or inherit from team
         self.model = npc_data.get("model")
         self.provider = npc_data.get("provider")
         self.api_url = npc_data.get("api_url")
         self.api_key = npc_data.get("api_key")
 
-        # Inherit from team if not set on NPC
         if self.team:
             if not self.model and hasattr(self.team, 'model'):
                 self.model = self.team.model
@@ -2045,7 +1921,6 @@ class NPC:
         return response
     
 
-
     def search_my_conversations(self, query: str, limit: int = 5) -> str:
         """Search through this NPC's conversation history for relevant information"""
         if not self.command_history:
@@ -2161,14 +2036,12 @@ Requirements:
         response = self.get_llm_response(code_prompt, tool_choice=False)
         code = response.get('response', '')
 
-        # Clean up the response - extract code if wrapped in markdown
         if f'```{language}' in code:
             code = code.split(f'```{language}')[-1]
         if '```' in code:
             code = code.split('```')[0]
 
         return code.strip()
-
 
     def create_planning_state(self, goal: str) -> Dict[str, Any]:
         """Create initial planning state for a goal"""
@@ -2183,7 +2056,6 @@ Requirements:
             "current_subtodo_index": 0,
             "context_summary": ""
         }
-
 
     def generate_todos(self, user_goal: str, planning_state: Dict[str, Any], additional_context: str = "") -> List[Dict[str, Any]]:
         """Generate high-level todos for a goal"""
@@ -2289,7 +2161,6 @@ Requirements:
         if successes:
             context.append(f"Recent successes: {'; '.join(successes[-3:])}")
         return "\n".join(context)
-
 
     def compress_planning_state(self, messages):
         if isinstance(messages, list):
@@ -2417,7 +2288,6 @@ Requirements:
 
         _duration_ms = int((_time.monotonic() - _start) * 1000)
 
-        # Log jinx execution
         if self.command_history is not None and hasattr(self.command_history, 'save_jinx_execution'):
             try:
                 self.command_history.save_jinx_execution(
@@ -2433,7 +2303,7 @@ Requirements:
                     team_name=team_name,
                 )
             except Exception:
-                pass  # Don't fail jinx execution due to logging error
+                pass
         return result
     def check_llm_command(self,
                             command,
@@ -2508,7 +2378,7 @@ Requirements:
     def to_dict(self):
         """Convert NPC to dictionary representation"""
         jinx_rep = [] 
-        if self.jinxs_dict: # Use jinxs_dict which stores the rendered Jinx objects
+        if self.jinxs_dict:
             jinx_rep = [ jinx.to_dict() for jinx in self.jinxs_dict.values()]
         return {
             "name": self.name,
@@ -2517,7 +2387,7 @@ Requirements:
             "provider": self.provider,
             "api_url": self.api_url,
             "api_key": self.api_key,
-            "jinxs": self.jinxs_spec, # Save the original spec, not the rendered objects
+            "jinxs": self.jinxs_spec,
             "use_global_jinxs": self.use_global_jinxs
         }
         
@@ -2542,8 +2412,6 @@ Requirements:
             str_rep += "No jinxs available.\n"
         return str_rep
 
-
-
     def execute_jinx_command(self, 
         jinx: Jinx,
         args: List[str],
@@ -2558,8 +2426,8 @@ Requirements:
         jinx_output = jinx.execute(
             input_values,
             npc=self,
-            messages=messages, # Pass messages to Jinx.execute
-            jinja_env=self.jinja_env # Pass the NPC's second-pass Jinja env
+            messages=messages,
+            jinja_env=self.jinja_env
         )
 
         return {"messages": messages, "output": jinx_output}
@@ -2680,7 +2548,6 @@ Requirements:
         
         return self.command_history._fetch_all(stmt, params)
 
-
     def archive_old_memories(self, days_old: int = 30) -> int:
         """Archive memories older than specified days"""
         if not self.command_history:
@@ -2717,13 +2584,12 @@ Requirements:
         results = self.command_history._fetch_all(stmt, {"npc": self.name})
         return {row['status']: row['count'] for row in results}
 
-
 class Team:
     def __init__(self, 
                     team_path=None, 
-                    npcs: Optional[List['NPC']] = None, # Explicitly type hint as list of NPC
-                    forenpc: Optional[Union[str, 'NPC']] = None, # Can be name (str) or NPC object
-                    jinxs: Optional[List[Union['Jinx', Dict[str, Any]]]] = None, # List of raw Jinx objects or dicts
+                    npcs: Optional[List['NPC']] = None,
+                    forenpc: Optional[Union[str, 'NPC']] = None,
+                    jinxs: Optional[List[Union['Jinx', Dict[str, Any]]]] = None,
                     db_conn=None, 
                     model = None, 
                     provider = None, 
@@ -2742,44 +2608,42 @@ class Team:
         self.api_url = api_url
         self.api_key = api_key
         
-        self.npcs: Dict[str, 'NPC'] = {} # Store NPC objects by name
+        self.npcs: Dict[str, 'NPC'] = {}
         self.sub_teams: Dict[str, 'Team'] = {}
-        self.jinxs_dict: Dict[str, 'Jinx'] = {} # This will store first-pass rendered Jinx objects
-        self._raw_jinxs_list: List['Jinx'] = [] # Temporary storage for raw Team-level Jinx objects
-        self.jinx_tool_catalog: Dict[str, Dict[str, Any]] = {}  # Jinx-derived tool defs ready for MCP/LLM
+        self.jinxs_dict: Dict[str, 'Jinx'] = {}
+        self._raw_jinxs_list: List['Jinx'] = []
+        self.jinx_tool_catalog: Dict[str, Dict[str, Any]] = {}
         
-        self.jinja_env_for_first_pass = SandboxedEnvironment(undefined=SilentUndefined) # Env for macro expansion
+        self.jinja_env_for_first_pass = SandboxedEnvironment(undefined=SilentUndefined)
 
         self.db_conn = db_conn
         self.team_path = os.path.expanduser(team_path) if team_path else None
         self.databases = []
         self.mcp_servers = []
         
-        self.forenpc: Optional['NPC'] = None # Will be set to an NPC object by end of __init__
-        self.forenpc_name: Optional[str] = None # Temporary storage for name from context (if loaded from .ctx)
-        self.skills_directory: Optional[str] = None # External skills directory from .ctx SKILLS_DIRECTORY
+        self.forenpc: Optional['NPC'] = None
+        self.forenpc_name: Optional[str] = None
+        self.skills_directory: Optional[str] = None
 
         if team_path:
             self.name = os.path.basename(os.path.abspath(team_path))
             self._load_from_directory_and_initialize_forenpc() 
         elif npcs:
             self.name = "custom_team"
-            # Add provided NPCs and set their team attribute
             for npc_obj in npcs:
                 self.npcs[npc_obj.name] = npc_obj
-                npc_obj.team = self # Crucial: set the team for pre-existing NPCs
+                npc_obj.team = self
             
-            if jinxs: # Load raw team-level jinxs if provided
+            if jinxs:
                 for jinx_item in jinxs:
                     if isinstance(jinx_item, Jinx):
                         self._raw_jinxs_list.append(jinx_item)
                     elif isinstance(jinx_item, dict):
                         self._raw_jinxs_list.append(Jinx(jinx_data=jinx_item))
-                    # Assuming string jinxs are paths or names to be loaded later if needed.
         
             self._determine_forenpc_from_provided_npcs(npcs, forenpc)
 
-        else: # No team_path and no npcs list, create a default forenpc
+        else:
             self.name = "custom_team"
             self._create_default_forenpc()
 
@@ -2792,23 +2656,18 @@ class Team:
             "context":''       
             }
         
-        # Load team context into shared_context after forenpc is determined
-        # This is for teams loaded from directory. For custom/default teams, context is set below.
         if team_path:
             self._load_team_context_into_shared_context()
-        elif self.forenpc: # For custom teams or default, set basic context if not already set
-            if not self.context: # Only set if context is still empty
+        elif self.forenpc:
+            if not self.context:
                 self.context = f"Team '{self.name}' with forenpc '{self.forenpc.name}'"
                 self.shared_context['context'] = self.context
 
-        # Perform first-pass rendering for team-level jinxs
         self._perform_first_pass_jinx_rendering()
         self.jinx_tool_catalog = build_jinx_tool_catalog(self.jinxs_dict)
         print(f"[TEAM] Built Jinx tool catalog with {len(self.jinx_tool_catalog)} entries for team {self.name}")
 
-        # Now, initialize jinxs for all NPCs, as team-level jinxs are ready
         for npc_obj in self.npcs.values():
-            # Pass the team's raw jinxs to the NPC for its own first-pass rendering
             npc_obj.initialize_jinxs(team_raw_jinxs=self._raw_jinxs_list) 
         
         if db_conn is not None:
@@ -2822,34 +2681,27 @@ class Team:
         if not os.path.exists(self.team_path):
             raise ValueError(f"Team directory not found: {self.team_path}")
         
-        # 1. Load team context first (model, provider, forenpc name, etc.)
         self._load_team_context_file()
 
-        # 2. Load all NPCs (they can now inherit team's model/provider)
         for filename in os.listdir(self.team_path):
             if filename.endswith(".npc"):
                 npc_path = os.path.join(self.team_path, filename)
-                # Pass 'self' to NPC constructor for team reference
-                # Do NOT pass jinxs=... here, as it will be initialized later
                 npc = NPC(npc_path, db_conn=self.db_conn, team=self)
                 self.npcs[npc.name] = npc
 
-        # 3. Resolve and set self.forenpc (NPC object)
         if self.forenpc_name and self.forenpc_name in self.npcs:
             self.forenpc = self.npcs[self.forenpc_name]
-        elif self.npcs: # Fallback to first NPC if name not found or not specified
+        elif self.npcs:
             self.forenpc = list(self.npcs.values())[0]
-            self.forenpc_name = self.forenpc.name # Update forenpc_name for consistency
-        else: # No NPCs loaded, create a default forenpc
+            self.forenpc_name = self.forenpc.name
+        else:
             self._create_default_forenpc()
         
-        # 4. Load raw Jinxs from team directory
         jinxs_dir = os.path.join(self.team_path, "jinxs")
         if os.path.exists(jinxs_dir):
             for jinx_obj in load_jinxs_from_directory(jinxs_dir):
                 self._raw_jinxs_list.append(jinx_obj)
         
-        # 4.5. Load skills from external SKILLS_DIRECTORY if specified in .ctx
         if hasattr(self, 'skills_directory') and self.skills_directory:
             skills_path = os.path.expanduser(self.skills_directory)
             if not os.path.isabs(skills_path):
@@ -2861,7 +2713,6 @@ class Team:
             else:
                 print(f"[TEAM] Warning: SKILLS_DIRECTORY not found: {skills_path}")
 
-        # 5. Load sub-teams
         self._load_sub_teams()
 
     def _load_team_context_file(self) -> Dict[str, Any]:
@@ -2877,7 +2728,7 @@ class Team:
                     self.env = ctx_data.get('env', self.env if hasattr(self, 'env') else None)
                     self.mcp_servers = ctx_data.get('mcp_servers', [])
                     self.databases = ctx_data.get('databases', [])
-                    self.forenpc_name = ctx_data.get('forenpc', self.forenpc_name) # Set forenpc_name (string)
+                    self.forenpc_name = ctx_data.get('forenpc', self.forenpc_name)
                     self.skills_directory = ctx_data.get('SKILLS_DIRECTORY', None)
                 return ctx_data
         return {}
@@ -2894,11 +2745,10 @@ class Team:
                     if 'file_patterns' in ctx_data:
                         file_cache = self._parse_file_patterns(ctx_data['file_patterns'])
                         self.shared_context['files'] = file_cache
-                    # All other keys (including preferences) are treated as generic context
                     for key, item in ctx_data.items():
                         if key not in ['name', 'mcp_servers', 'databases', 'context', 'file_patterns', 'forenpc', 'model', 'provider', 'api_url', 'env', 'SKILLS_DIRECTORY']:
                             self.shared_context[key] = item
-                return # Only load the first .ctx file found
+                return
         
     def _determine_forenpc_from_provided_npcs(self, npcs_list: List['NPC'], forenpc_arg: Optional[Union[str, 'NPC']]):
         """Determines self.forenpc when NPCs are provided directly to Team.__init__."""
@@ -2916,10 +2766,10 @@ class Team:
                     self.forenpc_name = npcs_list[0].name
                 else:
                     self._create_default_forenpc()
-        elif npcs_list: # Default to first NPC if no forenpc_arg
+        elif npcs_list:
             self.forenpc = npcs_list[0]
             self.forenpc_name = npcs_list[0].name
-        else: # No NPCs provided, create a default forenpc
+        else:
             self._create_default_forenpc()
 
     def _create_default_forenpc(self):
@@ -2938,24 +2788,21 @@ class Team:
                                 provider=forenpc_provider,
                                 api_key=forenpc_api_key,
                                 api_url=forenpc_api_url,                            
-                                team=self # Pass the team to the forenpc
+                                team=self
                                                     )
         self.forenpc = default_forenpc
         self.forenpc_name = default_forenpc.name
-        self.npcs[default_forenpc.name] = default_forenpc # Add to team's NPC list
+        self.npcs[default_forenpc.name] = default_forenpc
 
     def _perform_first_pass_jinx_rendering(self):
         """
         Performs the first-pass Jinja rendering on all loaded raw Jinxs.
         This expands nested Jinx calls but preserves runtime variables.
         """
-        # Create Jinja globals for calling other Jinxs as macros
         jinx_macro_globals = {}
         for raw_jinx in self._raw_jinxs_list:
             def create_jinx_callable(jinx_obj_in_closure):
                 def callable_jinx(**kwargs):
-                    # This callable will be invoked by the Jinja renderer during the first pass.
-                    # It needs to render the target Jinx's *raw* steps with the provided kwargs.
                     temp_jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
                     
                     rendered_target_steps = []
@@ -2964,8 +2811,6 @@ class Team:
                         for k, v in target_step.items():
                             if isinstance(v, str):
                                 try:
-                                    # Render the string, using kwargs as context.
-                                    # SilentUndefined will ensure {{ var }} that are not in kwargs remain as is.
                                     temp_rendered_step[k] = temp_jinja_env.from_string(v).render(**kwargs)
                                 except Exception as e:
                                     print(f"Warning: Error in Jinx macro '{jinx_obj_in_closure.jinx_name}' rendering step field '{k}' (Team first pass): {e}")
@@ -2974,24 +2819,20 @@ class Team:
                                 temp_rendered_step[k] = v
                         rendered_target_steps.append(temp_rendered_step)
                     
-                    # Return the YAML string representation of the rendered steps
                     return yaml.dump(rendered_target_steps, default_flow_style=False)
                 return callable_jinx
             
             jinx_macro_globals[raw_jinx.jinx_name] = create_jinx_callable(raw_jinx)
         
-        self.jinja_env_for_first_pass.globals['jinxs'] = jinx_macro_globals # Make 'jinxs.jinx_name' callable
-        self.jinja_env_for_first_pass.globals.update(jinx_macro_globals) # Also make 'jinx_name' callable directly
+        self.jinja_env_for_first_pass.globals['jinxs'] = jinx_macro_globals
+        self.jinja_env_for_first_pass.globals.update(jinx_macro_globals)
 
-        # Now, iterate through the raw Jinxs and perform the first-pass rendering
         for raw_jinx in self._raw_jinxs_list:
             try:
-                # Pass the jinx_macro_globals to render_first_pass so it can resolve declarative calls
                 raw_jinx.render_first_pass(self.jinja_env_for_first_pass, jinx_macro_globals)
-                self.jinxs_dict[raw_jinx.jinx_name] = raw_jinx # Store the first-pass rendered Jinx
+                self.jinxs_dict[raw_jinx.jinx_name] = raw_jinx
             except Exception as e:
                 print(f"Error performing first-pass rendering for Jinx '{raw_jinx.jinx_name}': {e}")
-
 
     def update_context(self, messages: list):
         """Update team context based on recent conversation patterns"""
@@ -3088,7 +2929,6 @@ class Team:
         print(colored(f"[orchestrate] Starting with forenpc={forenpc.name}, team={self.name}", "cyan"))
         print(colored(f"[orchestrate] Request: {request[:100]}...", "cyan"))
 
-        # Filter out 'orchestrate' jinx to prevent infinite recursion
         jinxs_for_orchestration = {k: v for k, v in forenpc.jinxs_dict.items() if k != 'orchestrate'}
 
         try:
@@ -3108,7 +2948,6 @@ class Team:
             print(colored(f"[orchestrate] Exception in check_llm_command: {e}", "red"))
             return {"error": str(e), "output": f"Orchestration failed: {e}"}
 
-        # Check if forenpc mentioned other team members - if so, delegate to them
         output = ""
         if isinstance(result, dict):
             output = result.get('output') or result.get('response') or ""
@@ -3116,11 +2955,9 @@ class Team:
         print(colored(f"[orchestrate] Output preview: {output[:200] if output else 'EMPTY'}...", "cyan"))
 
         if output and self.npcs:
-            # Look for @npc_name mentions OR just npc names
             at_pattern = r'@(\w+)'
             mentions = re.findall(at_pattern, output)
 
-            # Also check for NPC names mentioned without @ (case insensitive)
             if not mentions:
                 for npc_name in self.npcs.keys():
                     if npc_name.lower() != forenpc.name.lower():
@@ -3137,7 +2974,6 @@ class Team:
                     print(colored(f"[orchestrate] Delegating to @{mentioned_lower}", "yellow"))
 
                     try:
-                        # Execute the request with the target NPC (exclude orchestrate to prevent loops)
                         target_jinxs = {k: v for k, v in target_npc.jinxs_dict.items() if k != 'orchestrate'}
                         delegate_result = target_npc.check_llm_command(
                             request,
@@ -3155,7 +2991,7 @@ class Team:
                     except Exception as e:
                         print(colored(f"[orchestrate] Delegation to {mentioned_lower} failed: {e}", "red"))
 
-                    break  # Only delegate to first mentioned NPC
+                    break
 
         if isinstance(result, dict):
             final_output = output if output else str(result)
@@ -3175,7 +3011,7 @@ class Team:
             "name": self.name,
             "npcs": {name: npc.to_dict() for name, npc in self.npcs.items()},
             "sub_teams": {name: team.to_dict() for name, team in self.sub_teams.items()},
-            "jinxs": {name: jinx.to_dict() for name, jinx in self.jinxs_dict.items()}, # Use jinxs_dict
+            "jinxs": {name: jinx.to_dict() for name, jinx in self.jinxs_dict.items()},
             "context": getattr(self, 'context', {})
         }
     
@@ -3199,7 +3035,7 @@ class Team:
         jinxs_dir = os.path.join(directory, "jinxs")
         ensure_dirs_exist(jinxs_dir)
         
-        for jinx in self.jinxs_dict.values(): # Use jinxs_dict
+        for jinx in self.jinxs_dict.values():
             jinx.save(jinxs_dir)
             
         for team_name, team in self.sub_teams.items():
@@ -3270,7 +3106,6 @@ class Team:
         except Exception as e:
             print(f"Error reading {file_path}: {e}")
             return None
-
 
     def _format_parsed_files_context(self, parsed_files):
         """Format parsed files into context string"""

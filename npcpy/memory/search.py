@@ -174,7 +174,6 @@ def execute_search_command(
     }
     
 
-
 def get_facts_for_rag(
     kuzu_db_path: str,
     chroma_db_path: str,

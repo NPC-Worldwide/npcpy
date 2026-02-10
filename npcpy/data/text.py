@@ -103,9 +103,6 @@ def rag_search(
         
     return results
 
-
-
-
 def load_all_files(
     directory: str, extensions: List[str] = None, depth: int = 1
 ) -> Dict[str, str]:

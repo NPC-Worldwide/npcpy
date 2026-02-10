@@ -6,7 +6,6 @@ import glob
 import json
 import os
 import pandas as pd
-# Core imports that should always work
 try:
     import torch
 except ImportError:
@@ -46,7 +45,6 @@ from typing import List, Dict, Any, Optional, Callable
 from npcpy.npc_compiler import NPC
 from npcpy.llm_funcs import get_llm_response
 
-
 @dataclass
 class RLConfig:
     base_model_name: str = "Qwen/Qwen3-0.6B"
@@ -60,25 +58,20 @@ class RLConfig:
     beta: float = 0.5
     max_length: int = 512
     max_prompt_length: int = 256
-    # Quantization options
     use_4bit: bool = False
     use_8bit: bool = False
-    # Precision options
     fp16: bool = False
     bf16: bool = False
-    # LoRA configuration
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.1
     lora_target_modules: List[str] = field(
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"]
     )
-    # Training options
     max_pairs: int = 200
     warmup_steps: int = 5
     logging_steps: int = 5
     save_steps: int = 20
-
 
 class TaskExecutor:
 
@@ -151,7 +144,6 @@ class TaskExecutor:
             for marker in completion_markers
         )
 
-
 def collect_traces(
     tasks: List[Dict[str, Any]],
     agents: List[NPC],
@@ -194,7 +186,6 @@ def collect_traces(
             )
     
     return traces
-
 
 def create_preference_pairs(
     traces: List[Dict[str, Any]],
@@ -244,7 +235,6 @@ def create_preference_pairs(
 
     return Dataset.from_list(pairs)
 
-
 def train_with_dpo(
     traces: List[Dict[str, Any]],
     config: Optional[RLConfig] = None
@@ -262,20 +252,17 @@ def train_with_dpo(
         print("No valid preference pairs. Cannot train.")
         return None
 
-    # Limit pairs if specified
     if config.max_pairs and len(preference_dataset) > config.max_pairs:
         preference_dataset = preference_dataset.select(range(config.max_pairs))
 
     print(f"Training with {len(preference_dataset)} preference pairs")
 
-    # Build model loading kwargs
     model_kwargs = {
         "device_map": "auto",
         "trust_remote_code": True,
         "low_cpu_mem_usage": True
     }
 
-    # Handle quantization
     if config.use_4bit:
         if BitsAndBytesConfig is None:
             raise ImportError("bitsandbytes required for 4-bit. pip install bitsandbytes")
@@ -294,7 +281,6 @@ def train_with_dpo(
         )
         print("Using 8-bit quantization")
     else:
-        # Set dtype based on precision config
         if config.bf16:
             model_kwargs["torch_dtype"] = torch.bfloat16
         elif config.fp16:
@@ -324,7 +310,6 @@ def train_with_dpo(
         target_modules=config.lora_target_modules
     )
 
-    # Select optimizer based on quantization
     if config.use_4bit or config.use_8bit:
         optim = "paged_adamw_8bit"
     else:
@@ -369,7 +354,6 @@ def train_with_dpo(
 
     return config.adapter_path
 
-
 def run_rl_training(
     tasks: List[Dict[str, Any]],
     agents: List[NPC],
@@ -400,7 +384,6 @@ def run_rl_training(
     adapter_path = train_with_dpo(traces, config)
     
     return adapter_path
-
 
 def load_rl_model(
     base_model_id: str,

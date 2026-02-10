@@ -29,9 +29,7 @@ except NameError as e:
     print('name error importing chromadb:', e)
     chromadb = None
 
-
 import logging
-
 
 def normalize_path_for_db(path_str):
     """
@@ -40,12 +38,9 @@ def normalize_path_for_db(path_str):
     """
     if not path_str:
         return path_str
-    # Convert backslashes to forward slashes
     normalized = path_str.replace('\\', '/')
-    # Remove trailing slashes for consistency
     normalized = normalized.rstrip('/')
     return normalized
-
 
 def flush_messages(n: int, messages: list) -> dict:
     if n <= 0:
@@ -212,15 +207,14 @@ def init_kg_schema(engine: Engine):
         schema=None
     )
 
-    # NPC version history for rollback support
     npc_versions = Table('npc_versions', metadata,
         Column('id', Integer, primary_key=True, autoincrement=True),
         Column('npc_name', String(255), nullable=False),
-        Column('team_path', Text, nullable=False),  # path to npc_team directory
+        Column('team_path', Text, nullable=False),
         Column('version', Integer, nullable=False),
-        Column('content', Text, nullable=False),  # full YAML content
+        Column('content', Text, nullable=False),
         Column('created_at', DateTime, default=datetime.utcnow),
-        Column('commit_message', Text),  # optional description of change
+        Column('commit_message', Text),
         schema=None
     )
 
@@ -428,15 +422,11 @@ def save_kg_to_db(engine: Engine, kg_data: Dict[str, Any], team_name: str, npc_n
     except Exception as e:
         print(f"Failed to save KG for scope '({team_name}, {npc_name}, {directory_path})': {e}")
 
-
-# ============== NPC Version History Functions ==============
-
 def save_npc_version(engine: Engine, npc_name: str, team_path: str, content: str, commit_message: str = None) -> int:
     """Save a new version of an NPC config. Returns the new version number."""
-    init_kg_schema(engine)  # Ensure table exists
+    init_kg_schema(engine)
 
     with engine.begin() as conn:
-        # Get current max version
         result = conn.execute(text("""
             SELECT COALESCE(MAX(version), 0) as max_version
             FROM npc_versions
@@ -445,7 +435,6 @@ def save_npc_version(engine: Engine, npc_name: str, team_path: str, content: str
         row = result.fetchone()
         new_version = (row[0] if row else 0) + 1
 
-        # Insert new version
         conn.execute(text("""
             INSERT INTO npc_versions (npc_name, team_path, version, content, created_at, commit_message)
             VALUES (:npc_name, :team_path, :version, :content, :created_at, :commit_message)
@@ -459,7 +448,6 @@ def save_npc_version(engine: Engine, npc_name: str, team_path: str, content: str
         })
 
     return new_version
-
 
 def get_npc_versions(engine: Engine, npc_name: str, team_path: str) -> List[Dict[str, Any]]:
     """Get all versions of an NPC config."""
@@ -483,7 +471,6 @@ def get_npc_versions(engine: Engine, npc_name: str, team_path: str) -> List[Dict
             for row in result
         ]
 
-
 def get_npc_version_content(engine: Engine, npc_name: str, team_path: str, version: int = None) -> Optional[str]:
     """Get the content of a specific NPC version. If version is None, get latest."""
     init_kg_schema(engine)
@@ -504,28 +491,22 @@ def get_npc_version_content(engine: Engine, npc_name: str, team_path: str, versi
         row = result.fetchone()
         return row[0] if row else None
 
-
 def rollback_npc_to_version(engine: Engine, npc_name: str, team_path: str, version: int) -> Optional[str]:
     """Rollback an NPC to a specific version. Returns the content if successful."""
     content = get_npc_version_content(engine, npc_name, team_path, version)
     if content is None:
         return None
 
-    # Save as a new version with rollback message
     save_npc_version(engine, npc_name, team_path, content, f"Rollback to version {version}")
 
-    # Write to file
     file_path = os.path.join(team_path, f"{npc_name}.npc")
     with open(file_path, 'w') as f:
         f.write(content)
 
     return content
 
-
 def generate_message_id() -> str:
     return str(uuid.uuid4())
-
-
 
 from sqlalchemy import event, Table, Column, Integer, String, Text
 from sqlalchemy.orm import mapper
@@ -608,16 +589,16 @@ class CommandHistory:
             Column('provider', String(100)),
             Column('npc', String(100)),
             Column('team', String(100)),
-            Column('reasoning_content', Text),  # For thinking tokens / chain of thought
-            Column('tool_calls', Text),  # JSON array of tool calls made by assistant
-            Column('tool_results', Text),  # JSON array of tool call results
-            Column('parent_message_id', String(50)),  # Links assistant response to parent user message for broadcast grouping
-            Column('device_id', String(255)),  # UUID of the device that created this message
-            Column('device_name', String(255)),  # Human-readable device name
-            Column('params', Text),  # JSON object for LLM params: temperature, top_p, top_k, max_tokens, etc.
-            Column('input_tokens', Integer),  # Input/prompt token count
-            Column('output_tokens', Integer),  # Output/completion token count
-            Column('cost', String(50))  # Cost in USD (stored as string for precision)
+            Column('reasoning_content', Text),
+            Column('tool_calls', Text),
+            Column('tool_results', Text),
+            Column('parent_message_id', String(50)),
+            Column('device_id', String(255)),
+            Column('device_name', String(255)),
+            Column('params', Text),
+            Column('input_tokens', Integer),
+            Column('output_tokens', Integer),
+            Column('cost', String(50))
         )
         
         Table('message_attachments', metadata,
@@ -687,30 +668,28 @@ class CommandHistory:
         metadata.create_all(self.engine, checkfirst=True)
         init_kg_schema(self.engine)
 
-        # Add columns if they don't exist (migrations for existing databases)
         if 'sqlite' in str(self.engine.url):
             with self.engine.begin() as conn:
                 try:
                     conn.execute(text("ALTER TABLE conversation_history ADD COLUMN parent_message_id VARCHAR(50)"))
                 except Exception:
-                    pass  # Column already exists
+                    pass
                 try:
                     conn.execute(text("ALTER TABLE conversation_history ADD COLUMN params TEXT"))
                 except Exception:
-                    pass  # Column already exists
+                    pass
                 try:
                     conn.execute(text("ALTER TABLE conversation_history ADD COLUMN input_tokens INTEGER"))
                 except Exception:
-                    pass  # Column already exists
+                    pass
                 try:
                     conn.execute(text("ALTER TABLE conversation_history ADD COLUMN output_tokens INTEGER"))
                 except Exception:
-                    pass  # Column already exists
+                    pass
                 try:
                     conn.execute(text("ALTER TABLE conversation_history ADD COLUMN cost VARCHAR(50)"))
                 except Exception:
-                    pass  # Column already exists
-                # jinx_executions new columns
+                    pass
                 for col in [
                     "ALTER TABLE jinx_executions ADD COLUMN output TEXT",
                     "ALTER TABLE jinx_executions ADD COLUMN status VARCHAR(50)",
@@ -721,7 +700,6 @@ class CommandHistory:
                         conn.execute(text(col))
                     except Exception:
                         pass
-                # drop the redundant jinx_execution_log if it exists
                 try:
                     conn.execute(text("DROP TABLE IF EXISTS jinx_execution_log"))
                 except Exception:
@@ -873,7 +851,6 @@ class CommandHistory:
             result = conn.execute(text(stmt), params or {})
             return [dict(row._mapping) for row in result]
 
-
     def add_command(self, command, subcommands, output, location):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         stmt = """
@@ -890,7 +867,6 @@ class CommandHistory:
         
         with self.engine.begin() as conn:
             conn.execute(text(stmt), params)
-
 
     def add_conversation(
         self,
@@ -919,22 +895,18 @@ class CommandHistory:
         if isinstance(content, (dict, list)):
             content = json.dumps(content, cls=CustomJSONEncoder)
 
-        # Serialize tool_calls and tool_results as JSON
         if tool_calls is not None and not isinstance(tool_calls, str):
             tool_calls = json.dumps(tool_calls, cls=CustomJSONEncoder)
         if tool_results is not None and not isinstance(tool_results, str):
             tool_results = json.dumps(tool_results, cls=CustomJSONEncoder)
-        # Serialize gen_params as JSON
         gen_params_json = None
         if gen_params is not None and not isinstance(gen_params, str):
             gen_params_json = json.dumps(gen_params, cls=CustomJSONEncoder)
         elif isinstance(gen_params, str):
             gen_params_json = gen_params
 
-        # Normalize directory path for cross-platform compatibility
         normalized_directory_path = normalize_path_for_db(directory_path)
 
-        # Convert cost to string for precision
         cost_str = str(cost) if cost is not None else None
 
         stmt = """
@@ -972,7 +944,6 @@ class CommandHistory:
         """Store a memory entry in the database"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Normalize directory path for cross-platform compatibility
         normalized_directory_path = normalize_path_for_db(directory_path)
 
         stmt = """
@@ -1188,7 +1159,6 @@ class CommandHistory:
 
         msg_id = triggering_message_id or f"jinx-{jinx_name}-{timestamp.replace(' ', '-')}"
 
-        # If trigger already created a row, update it; otherwise insert
         stmt = """
             INSERT OR REPLACE INTO jinx_executions
             (message_id, jinx_name, input, timestamp, npc, team,
@@ -1241,7 +1211,6 @@ class CommandHistory:
         cursor = conn.cursor()
         
         try:
-            # Delete from the messages table
             cursor.execute("""
                 DELETE FROM messages 
                 WHERE conversation_id = ? AND message_id = ?
@@ -1340,7 +1309,6 @@ class CommandHistory:
             attachments = self.get_message_attachments(message_dict["message_id"])
             if attachments:
                 message_dict["attachments"] = attachments
-            # Parse JSON fields
             if message_dict.get("tool_calls"):
                 try:
                     message_dict["tool_calls"] = json.loads(message_dict["tool_calls"])
@@ -1519,7 +1487,6 @@ def start_new_conversation(prepend: str = None) -> str:
         prepend = 'npcsh'
     return f"{prepend}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-
 def format_memory_context(memory_examples):
     if not memory_examples:
         return ""
@@ -1600,7 +1567,6 @@ def save_conversation_message(
     if message_id is None:
         message_id = generate_message_id()
 
-    # Check if message already exists to prevent duplicates
     if skip_if_exists and message_id:
         existing = command_history.get_message_by_id(message_id)
         if existing:

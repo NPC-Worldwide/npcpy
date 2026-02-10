@@ -2,7 +2,6 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 
-
 class NPCModelRunner:
     def __init__(self):
         self.compiler = npc_compiler
@@ -157,8 +156,6 @@ class NPCModelRunner:
 
         return re.sub(r'{{\s*ref\([\'"](.+?)[\'"]\)\s*}}', replace_ref, model_sql)
 
-
-
 def main():
     
 
@@ -183,7 +180,6 @@ def main():
         )
         print("\nModel run history:")
         print(history)
-
 
 if __name__ == "__main__":
     main()

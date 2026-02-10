@@ -24,7 +24,6 @@ import os
 from tqdm import tqdm
 import gc
 
-
 @dataclass
 class DiffusionConfig:
     image_size: int = 128
@@ -40,7 +39,6 @@ class DiffusionConfig:
     output_model_path: str = "diffusion_model"
     use_clip: bool = False
     num_channels: int = 3
-
 
 if TORCH_AVAILABLE:
     class SinusoidalPositionEmbeddings(nn.Module):
@@ -228,7 +226,6 @@ if TORCH_AVAILABLE:
 
                     pbar.set_postfix({'loss': loss.item()})
 
-                    # Report progress via callback
                     if progress_callback:
                         progress_callback({
                             'epoch': epoch + 1,
@@ -237,7 +234,7 @@ if TORCH_AVAILABLE:
                             'total_batches': total_batches,
                             'step': global_step,
                             'loss': loss.item(),
-                            'loss_history': loss_history[-100:],  # Last 100 losses
+                            'loss_history': loss_history[-100:],
                         })
 
                     if global_step % self.config.checkpoint_frequency == 0:
@@ -314,7 +311,6 @@ else:
     ImageDataset = None
     DiffusionTrainer = None
 
-
 def train_diffusion(image_paths, captions=None, config=None,
                     resume_from=None, progress_callback=None):
     if not TORCH_AVAILABLE:
@@ -351,7 +347,6 @@ def train_diffusion(image_paths, captions=None, config=None,
     
     return output_path
 
-
 def generate_image(model_path, prompt=None, num_samples=1, image_size=128):
     if not TORCH_AVAILABLE:
         raise ImportError(
@@ -360,7 +355,6 @@ def generate_image(model_path, prompt=None, num_samples=1, image_size=128):
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Fix: Load with weights_only=False for your custom checkpoint
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
     if 'config' in checkpoint:

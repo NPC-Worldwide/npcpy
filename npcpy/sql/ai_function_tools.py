@@ -194,7 +194,6 @@ class SQLToolCallOrchestrator:
         else:
             raise ValueError(f"Unsupported engine type: {engine_type}")
 
-# Example integration with ModelCompiler
 def _execute_ai_agent_sql(
     self, 
     prompt: str, 
@@ -214,10 +213,8 @@ def _execute_ai_agent_sql(
             engine_type, prompt, tools
         )
         
-        # Execute the SQL and process results
         df = pd.read_sql(tool_call_sql, self.engine)
         
-        # Process tool calls and generate final response
         tool_calls = self._process_sql_tool_calls(df)
         
         return {
@@ -245,7 +242,6 @@ def _process_sql_tool_calls(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         parameters = row.get('parameters')
         
         if tool_name and parameters:
-            # Execute the tool using existing tool calling mechanism
             tool_result = self._execute_tool(tool_name, parameters)
             
             processed_calls.append({

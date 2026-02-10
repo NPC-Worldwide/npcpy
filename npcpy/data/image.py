@@ -7,7 +7,6 @@ import os
 import io
 from PIL import Image
 
-
 def _windows_snip_to_file(file_path: str) -> bool:
     """Helper function to trigger Windows snipping and save to file."""
     try:
@@ -48,7 +47,6 @@ def _windows_snip_to_file(file_path: str) -> bool:
         print("Required packages not found. Please install: pip install pywin32 Pillow")
         return False
 
-
 def capture_screenshot( full=False) -> Dict[str, str]:
     """
     Function Description:
@@ -69,14 +67,11 @@ def capture_screenshot( full=False) -> Dict[str, str]:
     file_path = os.path.join(directory, filename)
     os.makedirs(directory, exist_ok=True)
 
-
-
     
 
     system = platform.system()
 
     model_kwargs = {}
-
 
     if full:
         
@@ -86,12 +81,11 @@ def capture_screenshot( full=False) -> Dict[str, str]:
             
         elif system == "Linux":
             _took = False
-            # Try non-interactive tools first
             for _cmd, _args in [
-                ("grim", [file_path]),                    # Wayland
-                ("scrot", [file_path]),                   # X11, non-interactive full
-                ("import", ["-window", "root", file_path]),  # ImageMagick X11
-                ("gnome-screenshot", ["-f", file_path]),  # GNOME (may show dialog on newer versions)
+                ("grim", [file_path]),
+                ("scrot", [file_path]),
+                ("import", ["-window", "root", file_path]),
+                ("gnome-screenshot", ["-f", file_path]),
             ]:
                 if subprocess.run(["which", _cmd], capture_output=True).returncode == 0:
                     subprocess.run([_cmd] + _args, capture_output=True, timeout=10)
