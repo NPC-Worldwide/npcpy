@@ -4722,8 +4722,6 @@ def stream():
             team=team_object,
             stream=True,
             attachments=attachment_paths_for_llm,
-            auto_process_tool_calls=True,
-            **tool_args
         )
         messages = stream_response.get('messages', messages)
     elif exe_mode == 'tool_agent':
