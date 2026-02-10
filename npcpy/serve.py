@@ -4640,7 +4640,6 @@ def stream():
 
     def clean_messages_for_llm(msgs):
         cleaned = []
-        # Collect all tool_call_ids that have corresponding tool results
         tool_call_ids_with_results = set()
         all_tool_call_ids = set()
         for msg in msgs:
@@ -4651,7 +4650,6 @@ def stream():
             if msg.get('role') == 'tool' and msg.get('tool_call_id'):
                 tool_call_ids_with_results.add(msg['tool_call_id'])
 
-        # Only consider tool_calls valid if they have matching results
         valid_tool_call_ids = all_tool_call_ids & tool_call_ids_with_results
 
         for msg in msgs:
@@ -4662,7 +4660,6 @@ def stream():
             if msg.get('role') == 'assistant':
                 clean_msg = dict(msg)
                 if 'tool_calls' in msg and msg['tool_calls']:
-                    # Keep only tool_calls that have matching results
                     valid_tcs = [tc for tc in msg['tool_calls'] if isinstance(tc, dict) and tc.get('id') in valid_tool_call_ids]
                     if valid_tcs:
                         clean_msg['tool_calls'] = valid_tcs
@@ -4777,7 +4774,6 @@ def stream():
         mcp_client = app.mcp_clients[state_key]["client"]
         messages = app.mcp_clients[state_key].get("messages", messages)
 
-        # Sanitize MCP cached messages: remove orphaned tool_calls without results
         def sanitize_mcp_messages(msgs):
             ids_with_results = {m.get('tool_call_id') for m in msgs if m.get('role') == 'tool' and m.get('tool_call_id')}
             sanitized = []

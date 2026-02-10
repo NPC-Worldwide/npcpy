@@ -1315,7 +1315,6 @@ def get_litellm_response(
 
     
 
-    # Sanitize messages to remove orphaned tool messages that crash Gemini
     result["messages"] = sanitize_messages(result["messages"])
     api_params = {"messages": result["messages"]}
 
