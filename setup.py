@@ -63,7 +63,6 @@ local_requirements = [
     "sentence_transformers",
     "opencv-python",
     "ollama",
-    "kuzu",
     "chromadb",
     "diffusers",
     "torch",

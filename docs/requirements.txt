@@ -12,7 +12,6 @@ google-genai
 google-generativeai
 gtts
 jinja2
-kuzu
 markdown
 matplotlib
 mkdocs

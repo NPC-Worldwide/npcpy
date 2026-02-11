@@ -8,7 +8,7 @@ import numpy as np
 
 try:
     import sqlalchemy
-    from sqlalchemy import create_engine, text, MetaData, Table, Column, Integer, String, Text, DateTime, LargeBinary, ForeignKey, Boolean, func
+    from sqlalchemy import create_engine, text, MetaData, Table, Column, Integer, String, Text, DateTime, LargeBinary, ForeignKey, Boolean, func, UniqueConstraint
     from sqlalchemy.engine import Engine, Connection as SQLAlchemyConnection
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.sql import select, insert, update, delete
@@ -174,10 +174,10 @@ def init_kg_schema(engine: Engine):
         Column('type', String(100)),
         Column('generation', Integer),
         Column('origin', String(100)),
-        
+        UniqueConstraint('statement', 'team_name', 'npc_name', 'directory_path'),
         schema=None
     )
-    
+
     kg_concepts = Table('kg_concepts', metadata,
         Column('name', Text, nullable=False),
         Column('team_name', String(255), nullable=False),
@@ -185,6 +185,7 @@ def init_kg_schema(engine: Engine):
         Column('directory_path', Text, nullable=False),
         Column('generation', Integer),
         Column('origin', String(100)),
+        UniqueConstraint('name', 'team_name', 'npc_name', 'directory_path'),
         schema=None
     )
     
@@ -307,25 +308,27 @@ def save_kg_to_db(engine: Engine, kg_data: Dict[str, Any], team_name: str, npc_n
                     "team_name": team_name,
                     "npc_name": npc_name,
                     "directory_path": directory_path,
+                    "source_text": fact.get('source_text', ''),
+                    "type": fact.get('type', ''),
                     "generation": fact.get('generation', 0),
                     "origin": fact.get('origin', 'organic')
                 }
                 for fact in kg_data.get("facts", [])
             ]
-            
+
             if facts_to_save:
-                
+
                 if 'sqlite' in str(engine.url):
                     stmt = text("""
-                        INSERT OR IGNORE INTO kg_facts 
-                        (statement, team_name, npc_name, directory_path, generation, origin)
-                        VALUES (:statement, :team_name, :npc_name, :directory_path, :generation, :origin)
+                        INSERT OR IGNORE INTO kg_facts
+                        (statement, team_name, npc_name, directory_path, source_text, type, generation, origin)
+                        VALUES (:statement, :team_name, :npc_name, :directory_path, :source_text, :type, :generation, :origin)
                     """)
                 else:
                     stmt = text("""
-                        INSERT INTO kg_facts 
-                        (statement, team_name, npc_name, directory_path, generation, origin)
-                        VALUES (:statement, :team_name, :npc_name, :directory_path, :generation, :origin)
+                        INSERT INTO kg_facts
+                        (statement, team_name, npc_name, directory_path, source_text, type, generation, origin)
+                        VALUES (:statement, :team_name, :npc_name, :directory_path, :source_text, :type, :generation, :origin)
                         ON CONFLICT (statement, team_name, npc_name, directory_path) DO NOTHING
                     """)
                 

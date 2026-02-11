@@ -1,1026 +1,140 @@
 from collections import defaultdict
 import datetime
+import hashlib
 import json
-try:
-    import kuzu
-except ModuleNotFoundError:
-    print("kuzu not installed")
+import logging
 import os
-import random 
-import pandas as pd 
+import random
+import numpy as np
+import pandas as pd
 from typing import Optional, Dict, List, Union, Tuple, Any, Set
 
-from npcpy.llm_funcs import ( 
+from npcpy.llm_funcs import (
     abstract,
     consolidate_facts_llm,
-    generate_groups, 
-    get_facts, 
-    get_llm_response, 
+    generate_groups,
+    get_facts,
+    get_llm_response,
     get_related_concepts_multi,
     get_related_facts_llm,
     prune_fact_subset_llm,
     remove_idempotent_groups,
-    zoom_in, 
+    zoom_in,
     )
 
 from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
 
-def safe_kuzu_execute(conn, query, error_message="Kuzu query failed"):
-    """Execute a Kuzu query with proper error handling"""
-    try:
-        result = conn.execute(query)
-        return result, None
-    except Exception as e:
-        error = f"{error_message}: {str(e)}"
-        print(error)
-        return None, error
+logger = logging.getLogger(__name__)
 
-def create_group(conn, name: str, metadata: str = ""):
-    """Create a new group in the database with robust error handling"""
-    if conn is None:
-        print("Cannot create group: database connection is None")
-        return False
+# ---------------------------------------------------------------------------
+# Embedding helpers
+# ---------------------------------------------------------------------------
 
-    try:
-        
-        escaped_name = name.replace('"', '\\"')
-        escaped_metadata = metadata.replace('"', '\\"')
+def _get_similar_by_embedding(query, candidates, model='nomic-embed-text',
+                              provider='ollama', top_k=20):
+    """Pre-filter candidates by embedding cosine similarity.
 
-        query = f"""
-        CREATE (g:Groups {{
-            name: "{escaped_name}",
-            metadata: "{escaped_metadata}"
-        }});
-        """
-
-        result, error = safe_kuzu_execute(
-            conn, query, f"Failed to create group: {name}"
-        )
-        if error:
-            return False
-
-        print(f"Created group: {name}")
-        return True
-    except Exception as e:
-        print(f"Error creating group {name}: {str(e)}")
-        traceback.print_exc()
-        return False
-
-import traceback
-def init_db(db_path: str, drop=False):
-    """Initialize Kùzu database and create schema with generational tracking."""
-    try:
-        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-        db = kuzu.Database(db_path)
-        conn = kuzu.Connection(db)
-        print("Database connection established successfully")
-        
-        if drop:
-            
-            safe_kuzu_execute(conn, "DROP TABLE IF EXISTS Contains")
-            safe_kuzu_execute(conn, "DROP TABLE IF EXISTS EvolvedFrom") 
-            safe_kuzu_execute(conn, "DROP TABLE IF EXISTS Fact")
-            safe_kuzu_execute(conn, "DROP TABLE IF EXISTS Groups")
-
-        
-        safe_kuzu_execute(
-            conn,
-            """
-            CREATE NODE TABLE IF NOT EXISTS Fact(
-              content STRING,
-              path STRING,
-              recorded_at STRING,
-              PRIMARY KEY (content)
-            );
-            """,
-            "Failed to create Fact table",
-        )
-
-        
-        safe_kuzu_execute(
-            conn,
-            """
-            CREATE NODE TABLE IF NOT EXISTS Groups(
-              name STRING,
-              metadata STRING,
-              generation_created INT64,
-              is_active BOOLEAN,
-              PRIMARY KEY (name)
-            );
-            """,
-            "Failed to create Groups table",
-        )
-        print("Groups table (with generation tracking) created or already exists.")
-        
-        
-        safe_kuzu_execute(
-            conn,
-            "CREATE REL TABLE IF NOT EXISTS Contains(FROM Groups TO Fact);",
-            "Failed to create Contains relationship table",
-        )
-        
-        
-        safe_kuzu_execute(
-            conn,
-            """
-            CREATE REL TABLE IF NOT EXISTS EvolvedFrom(
-                FROM Groups TO Groups,
-                event_type STRING,
-                generation INT64,
-                reason STRING
-            );
-            """,
-            "Failed to create EvolvedFrom relationship table",
-        )
-        print("EvolvedFrom relationship table created or already exists.")
-
-        return conn
-    except Exception as e:
-        print(f"Fatal error initializing database: {str(e)}")
-        traceback.print_exc()
-        return None
-
-def find_similar_groups(
-    conn,
-    fact: str,  
-    model,  
-    provider,
-    npc =  None,
-    context: str = None,
-    **kwargs: Any
-) -> List[str]:
-    """Find existing groups that might contain this fact"""
-    response = conn.execute(f"MATCH (g:Groups) RETURN g.name;")  
-    
-    
-    
-    groups = response.fetch_as_df()
-    
-    if not groups:
-        return []
-
-    prompt = """Given a fact and a list of groups, determine which groups this fact belongs to.
-        A fact should belong to a group if it is semantically related to the group's theme or purpose.
-        For example, if a fact is "The user loves programming" and there's a group called "Technical_Interests",
-        that would be a match.
-
-    Return a JSON object with the following structure:
-        {
-            "group_list": "a list containing the names of matching groups"
-        }
-
-    Return only the JSON object.
-    Do not include any additional markdown formatting.
+    Returns top-K candidate strings most similar to query.
+    Falls back to returning all candidates if embedding fails.
     """
-
-    response = get_llm_response(
-        prompt + f"\n\nFact: {fact}\nGroups: {json.dumps(groups)}",
-        model=model,
-        provider=provider,
-        format="json",
-        npc=npc,
-        context=context,
-        **kwargs
-    )
-    response = response["response"]
-    return response["group_list"]
-
-def kg_initial(content,  
-               model=None,
-               provider=None,
-               npc=None, 
-               context='', 
-               facts=None, 
-               generation=None, 
-               verbose=True,):
-
-    if generation is None:
-        CURRENT_GENERATION = 0
-    else:
-        CURRENT_GENERATION = generation
-    
-    print(f"--- Running KG Structuring Process (Generation: {CURRENT_GENERATION}) ---")
-
-    if facts is None:
-        if not content:
-            raise ValueError("kg_initial requires either content_text or a list of facts.")
-        print("  - Mode: Deriving new facts from text content...")
-        all_facts = []
-        print(len(content))
-        if len(content)>10000:
-            starting_point = random.randint(0, len(content)-10000)
-        
-            content_to_sample = content[starting_point:starting_point+10000]
-
-            for n in range(len(content)//10000):
-                print(n)
-                print(starting_point)
-                print(content_to_sample[0:1000])
-                facts = get_facts(content_to_sample,
-                                model=model, 
-                                provider=provider, 
-                                npc=npc, 
-                                context=context)
-                if verbose:
-                    print(f"    - Extracted {len(facts)} facts from segment {n+1}")
-                    print(facts)
-                all_facts.extend(facts)
-        else:
-            print(content[0:1000]   )
-            all_facts = get_facts(content, 
-                                  model=model, 
-                                  provider=provider, 
-                                  npc=npc, 
-                                  context=context)
-            if verbose:
-                print(f"    - Extracted {len(all_facts)} facts from content")
-                print(all_facts)            
-        for fact in all_facts:
-            
-            fact['generation'] = CURRENT_GENERATION
-    else:
-        print(f"  - Mode: Building structure from {len(facts)} pre-existing facts...")
-
-    print("  - Inferring implied facts (zooming in)...")
-    all_implied_facts = []
-    if len(all_facts) > 20:
-        sampled_facts = random.sample(all_facts, k=20)
-        for n in range(len(all_facts) // 20):
-            implied_facts = zoom_in(sampled_facts, 
-                                    model=model, 
-                                    provider=provider,
-                                npc=npc, 
-                                context=context)
-            all_implied_facts.extend(implied_facts)
-            if verbose:
-                print(f"    - Inferred {len(implied_facts)} implied facts from sample {n+1}")
-                print(implied_facts)
-    else:
-        implied_facts = zoom_in(all_facts, 
-                                model=model, 
-                                provider=provider,
-                                npc=npc, 
-                                context=context)
-        print(implied_facts)
-
-        all_implied_facts.extend(implied_facts)
-
-        if verbose:
-            print(f"    - Inferred {len(implied_facts)} implied facts from all facts")
-            print(implied_facts)
-    for fact in all_implied_facts:
-        fact['generation'] = CURRENT_GENERATION
-
-    all_facts = all_facts + all_implied_facts
-
-    print("  - Generating concepts from all facts...")
-    concepts = generate_groups(all_facts, 
-                               model=model, 
-                               provider=provider, 
-                               npc=npc, 
-                               context=context)
-    for concept in concepts:
-        concept['generation'] = CURRENT_GENERATION
-    
-    if verbose:
-        print(f"    - Generated {len(concepts)} concepts")
-        print(concepts)
-    print("  - Linking facts to concepts...")
-    fact_to_concept_links = defaultdict(list)
-    concept_names = [c['name'] for c in concepts if c and 'name' in c]
-    for fact in all_facts:
-
-        fact_to_concept_links[fact['statement']] = get_related_concepts_multi(fact['statement'], "fact", concept_names, model, provider, npc, context)
-        if verbose:
-            print(fact_to_concept_links[fact['statement']])
-    print("  - Linking facts to other facts...")
-    fact_to_fact_links = []
-    fact_statements = [f['statement'] for f in all_facts]
-    for i, fact in enumerate(all_facts):
-        other_fact_statements = fact_statements[all_facts != fact]
-        print('checking fact: ', fact)
-        if other_fact_statements:
-            related_fact_stmts = get_related_facts_llm(fact['statement'], 
-                                                       other_fact_statements, 
-                                                       model=model, 
-                                                       provider=provider, 
-                                                       npc=npc, 
-                                                       context=context)
-            for related_stmt in related_fact_stmts:
-
-                fact_to_fact_links.append((fact['statement'], related_stmt))
-                if verbose:
-                    print(fact['statement'], related_stmt)
-
-    return {
-        "generation": CURRENT_GENERATION, 
-        "facts": all_facts, 
-        "concepts": concepts,
-        "concept_links": [], 
-        "fact_to_concept_links": dict(fact_to_concept_links),
-        "fact_to_fact_links": fact_to_fact_links
-    }
-
-def kg_evolve_incremental(existing_kg, 
-                          new_content_text=None,
-                          new_facts=None, 
-                          model = None, 
-                          provider=None, 
-                          npc=None, 
-                          context='', 
-                          get_concepts=False,
-                          link_concepts_facts = False, 
-                          link_concepts_concepts=False, 
-                          link_facts_facts = False, 
-                          ):
-
-    current_gen = existing_kg.get('generation', 0)
-    next_gen = current_gen + 1
-
-    newly_added_concepts = []
-    concept_links = list(existing_kg.get('concept_links', []))
-    fact_to_concept_links = defaultdict(list, 
-                                        existing_kg.get('fact_to_concept_links', {}))
-    fact_to_fact_links = list(existing_kg.get('fact_to_fact_links', []))
-
-    existing_facts = existing_kg.get('facts', [])
-    existing_concepts = existing_kg.get('concepts', [])
-    existing_concept_names = {c['name'] for c in existing_concepts}
-    existing_fact_statements = [f['statement'] for f in existing_facts]
-    all_concept_names = list(existing_concept_names)
-    
-    all_new_facts = []
-
-    if new_facts:
-        all_new_facts = new_facts
-        print(f'using pre-approved facts: {len(all_new_facts)}')
-    elif new_content_text:
-        print('extracting facts from content...')
-        if len(new_content_text) > 10000:
-            starting_point = random.randint(0, len(new_content_text)-10000)
-            for n in range(len(new_content_text)//10000):
-                content_to_sample = new_content_text[n*10000:(n+1)*10000]
-                facts = get_facts(content_to_sample, 
-                                model=model,
-                                provider=provider,
-                                npc = npc, 
-                                context=context)
-                all_new_facts.extend(facts)
-                print(facts)
-        else:
-            all_new_facts = get_facts(new_content_text, 
-                                model=model,
-                                provider=provider,
-                                npc = npc, 
-                                context=context)
-            print(all_new_facts)
-    else:
-        print("No new content or facts provided")
-        return existing_kg, {}
-
-    for fact in all_new_facts: 
-        fact['generation'] = next_gen
-
-    final_facts = existing_facts + all_new_facts
-
-    if get_concepts:
-        print('generating groups...')
-
-        candidate_concepts = generate_groups(all_new_facts, 
-                                            model = model, 
-                                            provider = provider, 
-                                            npc=npc, 
-                                            context=context)
-        print(candidate_concepts)
-        print('checking group uniqueness')
-        for cand_concept in candidate_concepts:
-            cand_name = cand_concept['name']
-            if cand_name in existing_concept_names: 
-                continue
-            cand_concept['generation'] = next_gen
-            newly_added_concepts.append(cand_concept)
-            if link_concepts_concepts:
-                print('linking concepts and concepts...')
-
-                related_concepts = get_related_concepts_multi(cand_name,
-                                                            "concept", 
-                                                            all_concept_names, 
-                                                            model, 
-                                                            provider,
-                                                            npc, 
-                                                            context)
-                for related_name in related_concepts:
-                    if related_name != cand_name: 
-                        concept_links.append((cand_name, related_name))
-            all_concept_names.append(cand_name)
-
-        final_concepts = existing_concepts + newly_added_concepts
-
-        if link_concepts_facts:
-            print('linking facts and concepts...')
-            for fact in all_new_facts:
-                fact_to_concept_links[fact['statement']] = get_related_concepts_multi(fact['statement'], 
-                                                                                    "fact", 
-                                                                                    all_concept_names, 
-                                                                                    model = model,
-                                                                                    provider=provider,
-                                                                                    npc = npc, 
-                                                                                    context= context)
-    else:
-        final_concepts = existing_concepts
-    if link_facts_facts:
-        print('linking facts and facts...')
-
-        for new_fact in all_new_facts:
-            related_fact_stmts = get_related_facts_llm(new_fact['statement'], 
-                                                       existing_fact_statements, 
-                                                       model = model,
-                                                       provider = provider,
-                                                       npc = npc, 
-                                                       context=context)
-            for related_stmt in related_fact_stmts:
-                fact_to_fact_links.append((new_fact['statement'], related_stmt))
-                
-    final_kg = {
-        "generation": next_gen, 
-        "facts": final_facts, 
-        "concepts": final_concepts,
-        "concept_links": concept_links, 
-        "fact_to_concept_links": dict(fact_to_concept_links),
-        "fact_to_fact_links": fact_to_fact_links
-        
-    }
-    return final_kg, {}
-
-def kg_sleep_process(existing_kg, 
-                     model=None, 
-                     provider=None, 
-                     npc=None, 
-                     context='', 
-                     operations_config=None):
-    current_gen = existing_kg.get('generation', 0)
-    next_gen = current_gen + 1
-    print(f"\n--- SLEEPING (Evolving Knowledge): Gen {current_gen} -> Gen {next_gen} ---")
-
-    
-    facts_map = {f['statement']: f for f in existing_kg.get('facts', [])}
-    concepts_map = {c['name']: c for c in existing_kg.get('concepts', [])}
-    fact_links = defaultdict(list, {k: list(v) for k, v in existing_kg.get('fact_to_concept_links', {}).items()})
-    concept_links = set(tuple(sorted(link)) for link in existing_kg.get('concept_links', []))
-    fact_to_fact_links = set(tuple(sorted(link)) for link in existing_kg.get('fact_to_fact_links', []))
-
-    
-    print("  - Phase 1: Checking for unstructured facts...")
-    facts_with_concepts = set(fact_links.keys())
-    orphaned_fact_statements = list(set(facts_map.keys()) - facts_with_concepts)
-
-    if len(orphaned_fact_statements) > 20:
-        print(f"    - Found {len(orphaned_fact_statements)} orphaned facts. Applying full KG structuring process...")
-        orphaned_facts_as_dicts = [facts_map[s] for s in orphaned_fact_statements]
-        
-        
-        new_structure = kg_initial(
-            facts=orphaned_facts_as_dicts,
-            model=model,
-            provider=provider,
-            npc=npc,
-            context=context,
-            generation=next_gen
-        )
-
-        
-        print("    - Merging new structure into main KG...")
-        for concept in new_structure.get("concepts", []):
-            if concept['name'] not in concepts_map:
-                concepts_map[concept['name']] = concept
-        
-        for fact_stmt, new_links in new_structure.get("fact_to_concept_links", {}).items():
-            existing_links = set(fact_links.get(fact_stmt, []))
-            existing_links.update(new_links)
-            fact_links[fact_stmt] = list(existing_links)
-
-        for f1, f2 in new_structure.get("fact_to_fact_links", []):
-            fact_to_fact_links.add(tuple(sorted((f1, f2))))
-    else:
-        print("    - Knowledge graph is sufficiently structured. Proceeding to refinement.")
-
-    
-    if operations_config is None:
-        possible_ops = ['prune', 'deepen', 'abstract_link']
-        ops_to_run = random.sample(possible_ops, k=random.randint(1, 2))
-    else:
-        ops_to_run = operations_config
-    
-    print(f"  - Phase 2: Executing refinement operations: {ops_to_run}")
-
-    for op in ops_to_run:
-        
-        if op == 'prune' and (len(facts_map) > 10 or len(concepts_map) > 5):
-            print("    - Running 'prune' operation using consolidate_facts_llm...")
-            fact_to_check = random.choice(list(facts_map.values()))
-            other_facts = [f for f in facts_map.values() if f['statement'] != fact_to_check['statement']]
-            consolidation_result = consolidate_facts_llm(fact_to_check, other_facts, model, provider, npc, context)
-            if consolidation_result.get('decision') == 'redundant':
-                print(f"      - Pruning redundant fact: '{fact_to_check['statement'][:80]}...'")
-                del facts_map[fact_to_check['statement']]
-
-        
-        elif op == 'deepen' and facts_map:
-            print("    - Running 'deepen' operation using zoom_in...")
-            fact_to_deepen = random.choice(list(facts_map.values()))
-            implied_facts = zoom_in([fact_to_deepen], model, provider, npc, context)
-            new_fact_count = 0
-            for fact in implied_facts:
-                if fact['statement'] not in facts_map:
-                    fact.update({'generation': next_gen, 'origin': 'deepen'})
-                    facts_map[fact['statement']] = fact
-                    new_fact_count += 1
-            if new_fact_count > 0: print(f"      - Inferred {new_fact_count} new fact(s).")
-        
-        else:
-            print(f"    - SKIPPED: Operation '{op}' did not run (conditions not met).")
-        
-    
-    new_kg = {
-        "generation": next_gen, 
-        "facts": list(facts_map.values()), 
-        "concepts": list(concepts_map.values()),
-        "concept_links": [list(link) for link in concept_links], 
-        "fact_to_concept_links": dict(fact_links),
-        "fact_to_fact_links": [list(link) for link in fact_to_fact_links] 
-    }
-    return new_kg, {}
-def kg_dream_process(existing_kg, 
-                     model = None,
-                     provider = None,
-                     npc=None,
-                     context='', 
-                     num_seeds=3):
-    current_gen = existing_kg.get('generation', 0)
-    next_gen = current_gen + 1
-    print(f"\n--- DREAMING (Creative Synthesis): Gen {current_gen} -> Gen {next_gen} ---")
-    concepts = existing_kg.get('concepts', [])
-    if len(concepts) < num_seeds:
-        print(f"  - Not enough concepts ({len(concepts)}) for dream. Skipping.")
-        return existing_kg, {}
-    seed_concepts = random.sample(concepts, k=num_seeds)
-    seed_names = [c['name'] for c in seed_concepts]
-    print(f"  - Dream seeded with: {seed_names}")
-    prompt = f"""
-    Write a short, speculative paragraph (a 'dream') that plausibly connects the concepts of {json.dumps(seed_names)}.
-    Invent a brief narrative or a hypothetical situation.
-    Respond with JSON: {{"dream_text": "A short paragraph..."}}
-    """
-    response = get_llm_response(prompt, 
-                                model=model, 
-                                provider=provider, npc = npc,  
-                                format="json", context=context)
-    dream_text = response['response'].get('dream_text')
-    if not dream_text:
-        print("  - Failed to generate a dream narrative. Skipping.")
-        return existing_kg, {}
-    print(f"  - Generated Dream: '{dream_text[:150]}...'")
-    
-    dream_kg, _ = kg_evolve_incremental(existing_kg, new_content_text=dream_text, model=model, provider=provider, npc=npc, context=context)
-    
-    original_fact_stmts = {f['statement'] for f in existing_kg['facts']}
-    for fact in dream_kg['facts']:
-        if fact['statement'] not in original_fact_stmts: fact['origin'] = 'dream'
-    original_concept_names = {c['name'] for c in existing_kg['concepts']}
-    for concept in dream_kg['concepts']:
-        if concept['name'] not in original_concept_names: concept['origin'] = 'dream'
-    print("  - Dream analysis complete. New knowledge integrated.")
-    return dream_kg, {}
-
-def save_kg_with_pandas(kg, path_prefix="kg_state"):
-
-    generation = kg.get("generation", 0)
-
-    nodes_data = []
-    for fact in kg.get('facts', []): nodes_data.append({'id': fact['statement'], 'type': 'fact', 'generation': fact.get('generation')})
-    for concept in kg.get('concepts', []): nodes_data.append({'id': concept['name'], 'type': 'concept', 'generation': concept.get('generation')})
-    pd.DataFrame(nodes_data).to_csv(f'{path_prefix}_gen{generation}_nodes.csv', index=False)
-    
-    links_data = []
-    for fact_stmt, concepts in kg.get("fact_to_concept_links", {}).items():
-        for concept_name in concepts: links_data.append({'source': fact_stmt, 'target': concept_name, 'type': 'fact_to_concept'})
-    for c1, c2 in kg.get("concept_links", []): 
-        links_data.append({'source': c1, 'target': c2, 'type': 'concept_to_concept'})
-
-    for f1, f2 in kg.get("fact_to_fact_links", []): 
-        links_data.append({'source': f1, 'target': f2, 'type': 'fact_to_fact'})
-    pd.DataFrame(links_data).to_csv(f'{path_prefix}_gen{generation}_links.csv', index=False)
-    print(f"Saved KG Generation {generation} to CSV files.")
-
-def save_changelog_to_json(changelog, from_gen, to_gen, path_prefix="changelog"):
-    if not changelog: return
-    with open(f"{path_prefix}_gen{from_gen}_to_{to_gen}.json", 'w', encoding='utf-8') as f:
-        json.dump(changelog, f, indent=4)
-    print(f"Saved changelog for Gen {from_gen}->{to_gen}.")
-
-def store_fact_and_group(conn, fact: str,
-                        groups: List[str], path: str) -> bool:
-    """Insert a fact into the database along with its groups"""
-    if not conn:
-        print("store_fact_and_group: Database connection is None")
-        return False
-    
-    print(f"store_fact_and_group: Storing fact: {fact}, with groups:"
-          f" {groups}") 
-    try:
-        
-        insert_success = insert_fact(conn, fact, path) 
-        if not insert_success:
-            print(f"store_fact_and_group: Failed to insert fact: {fact}")
-            return False
-        
-        
-        for group in groups:
-            assign_success = assign_fact_to_group_graph(conn, fact, group)
-            if not assign_success:
-                print(f"store_fact_and_group: Failed to assign fact"
-                      f" {fact} to group {group}")
-                return False
-        
-        return True
-    except Exception as e:
-        print(f"store_fact_and_group: Error storing fact and group: {e}")
-        traceback.print_exc()
-        return False
-def insert_fact(conn, fact: str, path: str) -> bool:
-    """Insert a fact into the database with robust error handling"""
-    if conn is None:
-        print("insert_fact: Cannot insert fact:"
-              " database connection is None")
-        return False
-    try:
-        
-        escaped_fact = fact.replace('"', '\\"')
-        escaped_path = os.path.expanduser(path).replace('"', '\\"')
-
-        
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        print(f"insert_fact: Attempting to insert fact: {fact}") 
-
-        
-        safe_kuzu_execute(conn, "BEGIN TRANSACTION")
-
-        
-        check_query = f"""
-        MATCH (f:Fact {{content: "{escaped_fact}"}})
-        RETURN f
-        """
-
-        result, error = safe_kuzu_execute(
-            conn, check_query, "insert_fact: Failed to check if fact exists"
-        )
-        if error:
-            safe_kuzu_execute(conn, "ROLLBACK")
-            print(f"insert_fact: Error checking if fact exists: {error}")
-            return False
-
-        
-        if not result.has_next():
-            insert_query = f"""
-            CREATE (f:Fact {{
-                content: "{escaped_fact}",
-                path: "{escaped_path}",
-                recorded_at: "{timestamp}"
-            }})
-            """
-
-            result, error = safe_kuzu_execute(
-                conn, insert_query, "insert_fact: Failed to insert fact"
-            )
-            if error:
-                safe_kuzu_execute(conn, "ROLLBACK")
-                print(f"insert_fact: Error inserting fact: {error}")
-                return False
-
-        
-        safe_kuzu_execute(conn, "COMMIT")
-        print(f"insert_fact: Successfully inserted/found fact: {fact}")
-        return True
-    except Exception as e:
-        print(f"insert_fact: Error inserting fact: {str(e)}")
-        traceback.print_exc()
-        safe_kuzu_execute(conn, "ROLLBACK")
-        return False
-
-def assign_fact_to_group_graph(conn, fact: str, group: str) -> bool:
-    """Create a relationship between a fact and a group with robust
-       error handling"""
-    if conn is None:
-        print("assign_fact_to_group_graph: Cannot assign fact to group:"
-              " database connection is None")
-        return False
+    if not candidates or len(candidates) <= top_k:
+        return list(candidates)
 
     try:
-        
-        escaped_fact = fact.replace('"', '\\"')
-        escaped_group = group.replace('"', '\\"')
+        from npcpy.gen.embeddings import get_embeddings
 
-        print(f"assign_fact_to_group_graph: Assigning fact: {fact} to group:"
-              f" {group}") 
+        query_emb = np.array(get_embeddings([query], model, provider)[0])
+        cand_embs = get_embeddings(list(candidates), model, provider)
 
-        
-        check_query = f"""
-        MATCH (f:Fact {{content: "{escaped_fact}"}})
-        RETURN f
-        """
-
-        result, error = safe_kuzu_execute(
-            conn, check_query, "assign_fact_to_group_graph: Failed to check"
-                               " if fact exists"
-        )
-        if error or not result.has_next():
-            print(f"assign_fact_to_group_graph: Fact not found: {fact}")
-            return False
-
-        check_query = f"""
-        MATCH (g:Groups {{name: "{escaped_group}"}})
-        RETURN g
-        """
-
-        result, error = safe_kuzu_execute(
-            conn, check_query, "assign_fact_to_group_graph: Failed to check"
-                               " if group exists"
-        )
-        if error or not result.has_next():
-            print(f"assign_fact_to_group_graph: Group not found: {group}")
-            return False
-
-        
-        query = f"""
-        MATCH (f:Fact), (g:Groups)
-        WHERE f.content = "{escaped_fact}" AND g.name = "{escaped_group}"
-        CREATE (g)-[:Contains]->(f)
-        """
-
-        result, error = safe_kuzu_execute(
-            conn, query, "assign_fact_to_group_graph: Failed to create"
-                         " relationship: {error}"
-        )
-        if error:
-            print(f"assign_fact_to_group_graph: Failed to create"
-                  f" relationship: {error}")
-            return False
-
-        print(f"assign_fact_to_group_graph: Assigned fact to group:"
-              f" {group}")
-        return True
-    except Exception as e:
-        print(f"assign_fact_to_group_graph: Error assigning fact to group:"
-              f" {str(e)}")
-        traceback.print_exc()
-        return False
-
-def store_fact_and_group(conn, fact: str, groups: List[str], path: str) -> bool:
-    """Insert a fact into the database along with its groups"""
-    if not conn:
-        print("store_fact_and_group: Database connection is None")
-        return False
-    
-    print(f"store_fact_and_group: Storing fact: {fact}, with groups: {groups}") 
-    try:
-        
-        insert_success = insert_fact(conn, fact, path) 
-        if not insert_success:
-            print(f"store_fact_and_group: Failed to insert fact: {fact}") 
-            return False
-        
-        
-        for group in groups:
-            assign_success = assign_fact_to_group_graph(conn, fact, group)
-            if not assign_success:
-                print(f"store_fact_and_group: Failed to assign fact {fact} to group {group}") 
-                return False
-        
-        return True
-    except Exception as e:
-        print(f"store_fact_and_group: Error storing fact and group: {e}")
-        traceback.print_exc()
-        return False
-    
-        
-
-def safe_kuzu_execute(conn, query, error_message="Kuzu query failed"):
-    """Execute a Kuzu query with proper error handling"""
-    try:
-        result = conn.execute(query)
-        return result, None
-    except Exception as e:
-        error = f"{error_message}: {str(e)}"
-        print(error)
-        return None, error
-
-def process_text_with_chroma(
-    kuzu_db_path: str,
-    chroma_db_path: str,
-    text: str,
-    path: str,
-    model: str ,
-    provider: str ,
-    embedding_model: str ,
-    embedding_provider: str ,
-    npc = None,
-    batch_size: int = 5,
-):
-    """Process text and store facts in both Kuzu and Chroma DB
-
-    Args:
-        kuzu_db_path: Path to Kuzu graph database
-        chroma_db_path: Path to Chroma vector database
-        text: Input text to process
-        path: Source path or identifier
-        model: LLM model to use
-        provider: LLM provider
-        embedding_model: Model to use for embeddings
-        npc: Optional NPC instance
-        batch_size: Batch size for processing
-
-    Returns:
-        List of extracted facts
-    """
-    
-    kuzu_conn = init_db(kuzu_db_path, drop=False)
-    chroma_client, chroma_collection = setup_chroma_db( 
-        "knowledge_graph",
-        "Facts extracted from various sources",
-        chroma_db_path
-    )
-
-    
-    facts = get_facts(text, model=model, provider=provider, npc=npc)
-
-    
-    for i in range(0, len(facts), batch_size):
-        batch = facts[i : i + batch_size]
-        print(f"\nProcessing batch {i//batch_size + 1} ({len(batch)} facts)")
-
-        
-        from npcpy.llm_funcs import get_embeddings
-
-        batch_embeddings = get_embeddings(
-            batch,
-        )
-
-        for j, fact in enumerate(batch):
-            print(f"Processing fact: {fact}")
-            embedding = batch_embeddings[j]
-
-            
-            similar_facts = find_similar_facts_chroma(
-                chroma_collection, fact, query_embedding=embedding, n_results=3
-            )
-
-            if similar_facts:
-                print(f"Similar facts found:")
-                for result in similar_facts:
-                    print(f"  - {result['fact']} (distance: {result['distance']})")
-                
-
-            
-            metadata = {
-                "path": path,
-                "timestamp": datetime.now().isoformat(),
-                "source_model": model,
-                "source_provider": provider,
-            }
-
-            
-            kuzu_success = insert_fact(kuzu_conn, fact, path)
-
-            
-            if kuzu_success:
-                chroma_id = store_fact_with_embedding(
-                    chroma_collection, fact, metadata, embedding
-                )
-                if chroma_id:
-                    print(f"Successfully saved fact with ID: {chroma_id}")
-                else:
-                    print(f"Failed to save fact to Chroma")
+        similarities = []
+        for i, emb in enumerate(cand_embs):
+            emb_arr = np.array(emb)
+            norm_product = np.linalg.norm(query_emb) * np.linalg.norm(emb_arr)
+            if norm_product > 0:
+                sim = float(np.dot(query_emb, emb_arr) / norm_product)
             else:
-                print(f"Failed to save fact to Kuzu graph")
+                sim = 0.0
+            similarities.append((sim, i))
 
-    
-    kuzu_conn.close()
+        similarities.sort(key=lambda x: -x[0])
+        return [candidates[idx] for _, idx in similarities[:top_k]]
+    except Exception as e:
+        logger.warning(f"Embedding pre-filter failed, using all candidates: {e}")
+        return list(candidates)
 
-    return facts
 
-def hybrid_search_with_chroma(
-    kuzu_conn,
-    chroma_collection,
-    query: str,
-    group_filter: Optional[List[str]] = None,
-    top_k: int = 5,
-    metadata_filter: Optional[Dict] = None,
-) -> List[Dict]:
-    """Perform hybrid search using both Chroma vector search and Kuzu graph relationships
+def _sync_kg_facts_to_chroma(engine, chroma_path, embedding_model='nomic-embed-text',
+                              embedding_provider='ollama', team_name=None,
+                              npc_name=None, directory_path=None):
+    """Sync KG facts from SQLAlchemy into a ChromaDB collection for fast ANN search.
 
-    Args:
-        kuzu_conn: Connection to Kuzu graph database
-        chroma_collection: Chroma collection for vector search
-        query: Search query text
-        group_filter: Optional list of groups to filter by in graph
-        top_k: Number of results to return
-        metadata_filter: Optional metadata filter for Chroma search
-        embedding_model: Model to use for embeddings
-        provider: Provider for embeddings
-
-    Returns:
-        List of dictionaries with combined results
+    Returns (chroma_client, collection) or (None, None) on failure.
     """
-    
-    from npcpy.llm_funcs import get_embeddings
+    try:
+        from npcpy.memory.command_history import setup_chroma_db
+        from npcpy.gen.embeddings import get_embeddings
+        from sqlalchemy import text
+    except ImportError as e:
+        logger.warning(f"Cannot sync to ChromaDB: {e}")
+        return None, None
 
-    query_embedding = get_embeddings([query])[0]
+    scope_key = f"{team_name or 'all'}_{npc_name or 'all'}"
+    collection_name = f"kg_facts_{scope_key}"
 
-    
-    vector_results = find_similar_facts_chroma(
-        chroma_collection,
-        query,
-        query_embedding=query_embedding,
-        n_results=top_k,
-        metadata_filter=metadata_filter,
+    chroma_client, collection = setup_chroma_db(
+        collection_name,
+        "KG facts for embedding search",
+        chroma_path
     )
 
-    
-    vector_facts = [result["fact"] for result in vector_results]
+    with engine.connect() as conn:
+        if team_name and npc_name:
+            rows = conn.execute(text("""
+                SELECT DISTINCT statement FROM kg_facts
+                WHERE team_name = :team AND npc_name = :npc
+            """), {"team": team_name, "npc": npc_name}).fetchall()
+        else:
+            rows = conn.execute(text(
+                "SELECT DISTINCT statement FROM kg_facts"
+            )).fetchall()
 
-    
-    expanded_results = []
+    if not rows:
+        return chroma_client, collection
 
-    
-    for result in vector_results:
-        expanded_results.append(
-            {
-                "fact": result["fact"],
-                "source": "vector_search",
-                "relevance": "direct_match",
-                "distance": result["distance"],
-                "metadata": result["metadata"],
-            }
-        )
+    statements = [r.statement for r in rows]
 
-    
-    for fact in vector_facts:
+    # Check what's already in the collection
+    existing = collection.get()
+    existing_docs = set(existing.get('documents', []))
+
+    new_statements = [s for s in statements if s not in existing_docs]
+
+    if not new_statements:
+        return chroma_client, collection
+
+    # Batch embed and upsert
+    batch_size = 50
+    for i in range(0, len(new_statements), batch_size):
+        batch = new_statements[i:i + batch_size]
         try:
-            
-            escaped_fact = fact.replace('"', '\\"')
-
-            
-            group_result = kuzu_conn.execute(
-                f"""
-                MATCH (g:Groups)-[:Contains]->(f:Fact)
-                WHERE f.content = "{escaped_fact}"
-                RETURN g.name
-                """
-            ).get_as_df()
-
-            
-            fact_groups = [row["g.name"] for _, row in group_result.iterrows()]
-
-            
-            if group_filter:
-                fact_groups = [g for g in fact_groups if g in group_filter]
-
-            
-            for group in fact_groups:
-                escaped_group = group.replace('"', '\\"')
-
-                
-                related_facts_result = kuzu_conn.execute(
-                    f"""
-                    MATCH (g:Groups)-[:Contains]->(f:Fact)
-                    WHERE g.name = "{escaped_group}" AND f.content <> "{escaped_fact}"
-                    RETURN f.content, f.path, f.recorded_at
-                    LIMIT 5
-                    """
-                ).get_as_df()
-
-                
-                for _, row in related_facts_result.iterrows():
-                    related_fact = {
-                        "fact": row["f.content"],
-                        "source": f"graph_relation_via_{group}",
-                        "relevance": "group_related",
-                        "path": row["f.path"],
-                        "recorded_at": row["f.recorded_at"],
-                    }
-
-                    
-                    if not any(
-                        r.get("fact") == related_fact["fact"] for r in expanded_results
-                    ):
-                        expanded_results.append(related_fact)
-
+            embeddings = get_embeddings(batch, embedding_model, embedding_provider)
+            ids = [hashlib.md5(s.encode()).hexdigest() for s in batch]
+            metadatas = [{"team": team_name or "all", "npc": npc_name or "all"} for _ in batch]
+            collection.add(
+                documents=batch,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                ids=ids
+            )
         except Exception as e:
-            print(f"Error expanding results via graph: {e}")
+            logger.warning(f"Failed to embed batch {i}: {e}")
 
-    
-    return expanded_results[:top_k]
+    return chroma_client, collection
+
+
+# ---------------------------------------------------------------------------
+# Chroma helpers (no Kuzu dependency)
+# ---------------------------------------------------------------------------
 
 def find_similar_facts_chroma(
     collection,
@@ -1029,27 +143,14 @@ def find_similar_facts_chroma(
     n_results: int = 5,
     metadata_filter: Optional[Dict] = None,
 ) -> List[Dict]:
-    """Find facts similar to the query using pre-generated embedding
-
-    Args:
-        collection: Chroma collection
-        query: Query text (for reference only)
-        query_embedding: Pre-generated embedding from get_embeddings
-        n_results: Number of results to return
-        metadata_filter: Optional filter for metadata fields
-
-    Returns:
-        List of dictionaries with results
-    """
+    """Find facts similar to the query using pre-generated embedding."""
     try:
-        
         results = collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
             where=metadata_filter,
         )
 
-        
         formatted_results = []
         for i, doc in enumerate(results["documents"][0]):
             formatted_results.append(
@@ -1065,30 +166,17 @@ def find_similar_facts_chroma(
 
         return formatted_results
     except Exception as e:
-        print(f"Error searching in Chroma: {e}")
+        logger.warning(f"Error searching in Chroma: {e}")
         return []
+
 
 def store_fact_with_embedding(
     collection, fact: str, metadata: dict, embedding: List[float]
 ) -> str:
-    """Store a fact with its pre-generated embedding in Chroma DB
-
-    Args:
-        collection: Chroma collection
-        fact: The fact text
-        metadata: Dictionary with metadata (path, source, timestamp, etc.)
-        embedding: Pre-generated embedding vector from get_embeddings
-
-    Returns:
-        ID of the stored fact
-    """
+    """Store a fact with its pre-generated embedding in Chroma DB."""
     try:
-        
-        import hashlib
-
         fact_id = hashlib.md5(fact.encode()).hexdigest()
 
-        
         collection.add(
             documents=[fact],
             embeddings=[embedding],
@@ -1098,38 +186,457 @@ def store_fact_with_embedding(
 
         return fact_id
     except Exception as e:
-        print(f"Error storing fact in Chroma: {e}")
+        logger.warning(f"Error storing fact in Chroma: {e}")
         return None
 
-def save_facts_to_graph_db(
-    conn, facts: List[str], path: str, batch_size: int
-):
-    """Save a list of facts to the database in batches"""
-    for i in range(0, len(facts), batch_size):
-        batch = facts[i : i + batch_size]
-        print(f"\nProcessing batch {i//batch_size + 1} ({len(batch)} facts)")
 
-        
-        for fact in batch:
-            try:
-                print(f"Inserting fact: {fact}")
-                print(f"With path: {path}")
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                print(f"With recorded_at: {timestamp}")
+# ---------------------------------------------------------------------------
+# Core KG lifecycle: initial, evolve, sleep, dream
+# ---------------------------------------------------------------------------
 
-                insert_fact(conn, fact, path)
-                print("Success!")
-            except Exception as e:
-                print(f"Failed to insert fact: {fact}")
-                print(f"Error: {e}")
+def kg_initial(content,
+               model=None,
+               provider=None,
+               npc=None,
+               context='',
+               facts=None,
+               generation=None,
+               verbose=True,
+               embedding_model=None,
+               embedding_provider=None):
+
+    if generation is None:
+        CURRENT_GENERATION = 0
+    else:
+        CURRENT_GENERATION = generation
+
+    logger.info(f"Running KG Structuring Process (Generation: {CURRENT_GENERATION})")
+
+    if facts is None:
+        if not content:
+            raise ValueError("kg_initial requires either content_text or a list of facts.")
+        logger.info("Mode: Deriving new facts from text content...")
+        all_facts = []
+        if len(content) > 10000:
+            for n in range(len(content) // 10000):
+                content_to_sample = content[n * 10000:(n + 1) * 10000]
+                extracted = get_facts(content_to_sample,
+                                model=model,
+                                provider=provider,
+                                npc=npc,
+                                context=context)
+                if verbose:
+                    logger.debug(f"Extracted {len(extracted)} facts from segment {n+1}")
+                all_facts.extend(extracted)
+        else:
+            all_facts = get_facts(content,
+                                  model=model,
+                                  provider=provider,
+                                  npc=npc,
+                                  context=context)
+            if verbose:
+                logger.debug(f"Extracted {len(all_facts)} facts from content")
+        for fact in all_facts:
+            fact['generation'] = CURRENT_GENERATION
+    else:
+        logger.info(f"Mode: Building structure from {len(facts)} pre-existing facts...")
+        all_facts = list(facts)
+
+    logger.info("Inferring implied facts (zooming in)...")
+    all_implied_facts = []
+    if len(all_facts) > 20:
+        sampled_facts = random.sample(all_facts, k=20)
+        for n in range(len(all_facts) // 20):
+            implied_facts = zoom_in(sampled_facts,
+                                    model=model,
+                                    provider=provider,
+                                    npc=npc,
+                                    context=context)
+            all_implied_facts.extend(implied_facts)
+            if verbose:
+                logger.debug(f"Inferred {len(implied_facts)} implied facts from sample {n+1}")
+    else:
+        implied_facts = zoom_in(all_facts,
+                                model=model,
+                                provider=provider,
+                                npc=npc,
+                                context=context)
+        all_implied_facts.extend(implied_facts)
+        if verbose:
+            logger.debug(f"Inferred {len(implied_facts)} implied facts from all facts")
+
+    for fact in all_implied_facts:
+        fact['generation'] = CURRENT_GENERATION
+
+    all_facts = all_facts + all_implied_facts
+
+    logger.info("Generating concepts from all facts...")
+    concepts = generate_groups(all_facts,
+                               model=model,
+                               provider=provider,
+                               npc=npc,
+                               context=context)
+    for concept in concepts:
+        concept['generation'] = CURRENT_GENERATION
+
+    if verbose:
+        logger.debug(f"Generated {len(concepts)} concepts")
+
+    logger.info("Linking facts to concepts...")
+    fact_to_concept_links = defaultdict(list)
+    concept_names = [c['name'] for c in concepts if c and 'name' in c]
+    for fact in all_facts:
+        fact_to_concept_links[fact['statement']] = get_related_concepts_multi(
+            fact['statement'], "fact", concept_names, model, provider, npc, context)
+
+    logger.info("Linking facts to other facts...")
+    fact_to_fact_links = []
+    fact_statements = [f['statement'] for f in all_facts]
+
+    e_model = embedding_model or 'nomic-embed-text'
+    e_provider = embedding_provider or 'ollama'
+
+    for i, fact in enumerate(all_facts):
+        other_fact_statements = [s for s in fact_statements if s != fact['statement']]
+        if not other_fact_statements:
+            continue
+        # Pre-filter by embedding similarity to avoid passing too many to LLM
+        candidates = _get_similar_by_embedding(
+            fact['statement'], other_fact_statements, e_model, e_provider, top_k=20)
+        if candidates:
+            related_fact_stmts = get_related_facts_llm(fact['statement'],
+                                                       candidates,
+                                                       model=model,
+                                                       provider=provider,
+                                                       npc=npc,
+                                                       context=context)
+            for related_stmt in related_fact_stmts:
+                fact_to_fact_links.append((fact['statement'], related_stmt))
+
+    return {
+        "generation": CURRENT_GENERATION,
+        "facts": all_facts,
+        "concepts": concepts,
+        "concept_links": [],
+        "fact_to_concept_links": dict(fact_to_concept_links),
+        "fact_to_fact_links": fact_to_fact_links
+    }
+
+
+def kg_evolve_incremental(existing_kg,
+                          new_content_text=None,
+                          new_facts=None,
+                          model=None,
+                          provider=None,
+                          npc=None,
+                          context='',
+                          get_concepts=False,
+                          link_concepts_facts=False,
+                          link_concepts_concepts=False,
+                          link_facts_facts=False,
+                          embedding_model=None,
+                          embedding_provider=None):
+
+    current_gen = existing_kg.get('generation', 0)
+    next_gen = current_gen + 1
+
+    newly_added_concepts = []
+    concept_links = list(existing_kg.get('concept_links', []))
+    fact_to_concept_links = defaultdict(list,
+                                        existing_kg.get('fact_to_concept_links', {}))
+    fact_to_fact_links = list(existing_kg.get('fact_to_fact_links', []))
+
+    existing_facts = existing_kg.get('facts', [])
+    existing_concepts = existing_kg.get('concepts', [])
+    existing_concept_names = {c['name'] for c in existing_concepts}
+    existing_fact_statements = [f['statement'] for f in existing_facts]
+    all_concept_names = list(existing_concept_names)
+
+    all_new_facts = []
+
+    if new_facts:
+        all_new_facts = new_facts
+        logger.info(f'Using pre-approved facts: {len(all_new_facts)}')
+    elif new_content_text:
+        logger.info('Extracting facts from content...')
+        if len(new_content_text) > 10000:
+            for n in range(len(new_content_text) // 10000):
+                content_to_sample = new_content_text[n * 10000:(n + 1) * 10000]
+                facts = get_facts(content_to_sample,
+                                model=model,
+                                provider=provider,
+                                npc=npc,
+                                context=context)
+                all_new_facts.extend(facts)
+        else:
+            all_new_facts = get_facts(new_content_text,
+                                model=model,
+                                provider=provider,
+                                npc=npc,
+                                context=context)
+    else:
+        logger.info("No new content or facts provided")
+        return existing_kg, {}
+
+    for fact in all_new_facts:
+        fact['generation'] = next_gen
+
+    final_facts = existing_facts + all_new_facts
+
+    if get_concepts:
+        logger.info('Generating groups...')
+        candidate_concepts = generate_groups(all_new_facts,
+                                            model=model,
+                                            provider=provider,
+                                            npc=npc,
+                                            context=context)
+        for cand_concept in candidate_concepts:
+            cand_name = cand_concept['name']
+            if cand_name in existing_concept_names:
                 continue
+            cand_concept['generation'] = next_gen
+            newly_added_concepts.append(cand_concept)
+            if link_concepts_concepts:
+                related_concepts = get_related_concepts_multi(cand_name,
+                                                            "concept",
+                                                            all_concept_names,
+                                                            model,
+                                                            provider,
+                                                            npc,
+                                                            context)
+                for related_name in related_concepts:
+                    if related_name != cand_name:
+                        concept_links.append((cand_name, related_name))
+            all_concept_names.append(cand_name)
 
-        print(f"Completed batch {i//batch_size + 1}")
+        final_concepts = existing_concepts + newly_added_concepts
+
+        if link_concepts_facts:
+            for fact in all_new_facts:
+                fact_to_concept_links[fact['statement']] = get_related_concepts_multi(
+                    fact['statement'], "fact", all_concept_names,
+                    model=model, provider=provider, npc=npc, context=context)
+    else:
+        final_concepts = existing_concepts
+
+    if link_facts_facts and existing_fact_statements:
+        e_model = embedding_model or 'nomic-embed-text'
+        e_provider = embedding_provider or 'ollama'
+
+        for new_fact in all_new_facts:
+            # Pre-filter existing facts by embedding similarity
+            candidates = _get_similar_by_embedding(
+                new_fact['statement'], existing_fact_statements,
+                e_model, e_provider, top_k=20)
+            if candidates:
+                related_fact_stmts = get_related_facts_llm(new_fact['statement'],
+                                                           candidates,
+                                                           model=model,
+                                                           provider=provider,
+                                                           npc=npc,
+                                                           context=context)
+                for related_stmt in related_fact_stmts:
+                    fact_to_fact_links.append((new_fact['statement'], related_stmt))
+
+    final_kg = {
+        "generation": next_gen,
+        "facts": final_facts,
+        "concepts": final_concepts,
+        "concept_links": concept_links,
+        "fact_to_concept_links": dict(fact_to_concept_links),
+        "fact_to_fact_links": fact_to_fact_links
+    }
+    return final_kg, {}
+
+
+def kg_sleep_process(existing_kg,
+                     model=None,
+                     provider=None,
+                     npc=None,
+                     context='',
+                     operations_config=None,
+                     embedding_model=None,
+                     embedding_provider=None):
+    current_gen = existing_kg.get('generation', 0)
+    next_gen = current_gen + 1
+    logger.info(f"SLEEPING (Evolving Knowledge): Gen {current_gen} -> Gen {next_gen}")
+
+    facts_map = {f['statement']: f for f in existing_kg.get('facts', [])}
+    concepts_map = {c['name']: c for c in existing_kg.get('concepts', [])}
+    fact_links = defaultdict(list, {k: list(v) for k, v in existing_kg.get('fact_to_concept_links', {}).items()})
+    concept_links = set(tuple(sorted(link)) for link in existing_kg.get('concept_links', []))
+    fact_to_fact_links = set(tuple(sorted(link)) for link in existing_kg.get('fact_to_fact_links', []))
+
+    # Phase 1: Check for unstructured facts
+    logger.info("Phase 1: Checking for unstructured facts...")
+    facts_with_concepts = set(fact_links.keys())
+    orphaned_fact_statements = list(set(facts_map.keys()) - facts_with_concepts)
+
+    if len(orphaned_fact_statements) > 20:
+        logger.info(f"Found {len(orphaned_fact_statements)} orphaned facts. Applying full KG structuring process...")
+        orphaned_facts_as_dicts = [facts_map[s] for s in orphaned_fact_statements]
+
+        new_structure = kg_initial(
+            content=None,
+            facts=orphaned_facts_as_dicts,
+            model=model,
+            provider=provider,
+            npc=npc,
+            context=context,
+            generation=next_gen,
+            embedding_model=embedding_model,
+            embedding_provider=embedding_provider
+        )
+
+        logger.info("Merging new structure into main KG...")
+        for concept in new_structure.get("concepts", []):
+            if concept['name'] not in concepts_map:
+                concepts_map[concept['name']] = concept
+
+        for fact_stmt, new_links in new_structure.get("fact_to_concept_links", {}).items():
+            existing_links = set(fact_links.get(fact_stmt, []))
+            existing_links.update(new_links)
+            fact_links[fact_stmt] = list(existing_links)
+
+        for f1, f2 in new_structure.get("fact_to_fact_links", []):
+            fact_to_fact_links.add(tuple(sorted((f1, f2))))
+    else:
+        logger.info("Knowledge graph is sufficiently structured. Proceeding to refinement.")
+
+    # Phase 2: Refinement operations
+    if operations_config is None:
+        possible_ops = ['prune', 'deepen']
+        ops_to_run = random.sample(possible_ops, k=random.randint(1, 2))
+    else:
+        ops_to_run = operations_config
+
+    logger.info(f"Phase 2: Executing refinement operations: {ops_to_run}")
+
+    for op in ops_to_run:
+        if op == 'prune' and (len(facts_map) > 10 or len(concepts_map) > 5):
+            logger.info("Running 'prune' operation...")
+            fact_to_check = random.choice(list(facts_map.values()))
+            other_facts = [f for f in facts_map.values() if f['statement'] != fact_to_check['statement']]
+            consolidation_result = consolidate_facts_llm(fact_to_check, other_facts, model, provider, npc, context)
+            if consolidation_result.get('decision') == 'redundant':
+                logger.info(f"Pruning redundant fact: '{fact_to_check['statement'][:80]}...'")
+                del facts_map[fact_to_check['statement']]
+
+        elif op == 'deepen' and facts_map:
+            logger.info("Running 'deepen' operation...")
+            fact_to_deepen = random.choice(list(facts_map.values()))
+            implied_facts = zoom_in([fact_to_deepen], model, provider, npc, context)
+            new_fact_count = 0
+            for fact in implied_facts:
+                if fact['statement'] not in facts_map:
+                    fact.update({'generation': next_gen, 'origin': 'deepen'})
+                    facts_map[fact['statement']] = fact
+                    new_fact_count += 1
+            if new_fact_count > 0:
+                logger.info(f"Inferred {new_fact_count} new fact(s).")
+
+        else:
+            logger.debug(f"SKIPPED: Operation '{op}' did not run (conditions not met).")
+
+    new_kg = {
+        "generation": next_gen,
+        "facts": list(facts_map.values()),
+        "concepts": list(concepts_map.values()),
+        "concept_links": [list(link) for link in concept_links],
+        "fact_to_concept_links": dict(fact_links),
+        "fact_to_fact_links": [list(link) for link in fact_to_fact_links]
+    }
+    return new_kg, {}
+
+
+def kg_dream_process(existing_kg,
+                     model=None,
+                     provider=None,
+                     npc=None,
+                     context='',
+                     num_seeds=3):
+    current_gen = existing_kg.get('generation', 0)
+    next_gen = current_gen + 1
+    logger.info(f"DREAMING (Creative Synthesis): Gen {current_gen} -> Gen {next_gen}")
+    concepts = existing_kg.get('concepts', [])
+    if len(concepts) < num_seeds:
+        logger.info(f"Not enough concepts ({len(concepts)}) for dream. Skipping.")
+        return existing_kg, {}
+    seed_concepts = random.sample(concepts, k=num_seeds)
+    seed_names = [c['name'] for c in seed_concepts]
+    logger.info(f"Dream seeded with: {seed_names}")
+    prompt = f"""
+    Write a short, speculative paragraph (a 'dream') that plausibly connects the concepts of {json.dumps(seed_names)}.
+    Invent a brief narrative or a hypothetical situation.
+    Respond with JSON: {{"dream_text": "A short paragraph..."}}
+    """
+    response = get_llm_response(prompt,
+                                model=model,
+                                provider=provider, npc=npc,
+                                format="json", context=context)
+    dream_text = response['response'].get('dream_text')
+    if not dream_text:
+        logger.info("Failed to generate a dream narrative. Skipping.")
+        return existing_kg, {}
+    logger.info(f"Generated Dream: '{dream_text[:150]}...'")
+
+    dream_kg, _ = kg_evolve_incremental(existing_kg, new_content_text=dream_text,
+                                         model=model, provider=provider, npc=npc, context=context)
+
+    original_fact_stmts = {f['statement'] for f in existing_kg['facts']}
+    for fact in dream_kg['facts']:
+        if fact['statement'] not in original_fact_stmts:
+            fact['origin'] = 'dream'
+    original_concept_names = {c['name'] for c in existing_kg['concepts']}
+    for concept in dream_kg['concepts']:
+        if concept['name'] not in original_concept_names:
+            concept['origin'] = 'dream'
+    logger.info("Dream analysis complete. New knowledge integrated.")
+    return dream_kg, {}
+
+
+# ---------------------------------------------------------------------------
+# Export helpers
+# ---------------------------------------------------------------------------
+
+def save_kg_with_pandas(kg, path_prefix="kg_state"):
+    generation = kg.get("generation", 0)
+
+    nodes_data = []
+    for fact in kg.get('facts', []):
+        nodes_data.append({'id': fact['statement'], 'type': 'fact', 'generation': fact.get('generation')})
+    for concept in kg.get('concepts', []):
+        nodes_data.append({'id': concept['name'], 'type': 'concept', 'generation': concept.get('generation')})
+    pd.DataFrame(nodes_data).to_csv(f'{path_prefix}_gen{generation}_nodes.csv', index=False)
+
+    links_data = []
+    for fact_stmt, concepts in kg.get("fact_to_concept_links", {}).items():
+        for concept_name in concepts:
+            links_data.append({'source': fact_stmt, 'target': concept_name, 'type': 'fact_to_concept'})
+    for c1, c2 in kg.get("concept_links", []):
+        links_data.append({'source': c1, 'target': c2, 'type': 'concept_to_concept'})
+    for f1, f2 in kg.get("fact_to_fact_links", []):
+        links_data.append({'source': f1, 'target': f2, 'type': 'fact_to_fact'})
+    pd.DataFrame(links_data).to_csv(f'{path_prefix}_gen{generation}_links.csv', index=False)
+    logger.info(f"Saved KG Generation {generation} to CSV files.")
+
+
+def save_changelog_to_json(changelog, from_gen, to_gen, path_prefix="changelog"):
+    if not changelog:
+        return
+    with open(f"{path_prefix}_gen{from_gen}_to_{to_gen}.json", 'w', encoding='utf-8') as f:
+        json.dump(changelog, f, indent=4)
+    logger.info(f"Saved changelog for Gen {from_gen}->{to_gen}.")
+
+
+# ---------------------------------------------------------------------------
+# SQLAlchemy-backed CRUD operations
+# ---------------------------------------------------------------------------
 
 def kg_add_fact(
-   engine, 
-   fact_text: str, 
-   npc=None, 
+   engine,
+   fact_text: str,
+   npc=None,
    team=None,
    model=None,
    provider=None
@@ -1138,9 +645,9 @@ def kg_add_fact(
    directory_path = os.getcwd()
    team_name = getattr(team, 'name', 'default_team') if team else 'default_team'
    npc_name = npc.name if npc else 'default_npc'
-   
+
    kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
-   
+
    new_fact = {
        "statement": fact_text,
        "source_text": fact_text,
@@ -1148,11 +655,12 @@ def kg_add_fact(
        "generation": kg_data.get('generation', 0),
        "origin": "manual_add"
    }
-   
+
    kg_data['facts'].append(new_fact)
    save_kg_to_db(engine, kg_data, team_name, npc_name, directory_path)
-   
+
    return f"Added fact: {fact_text}"
+
 
 def kg_search_facts(
    engine,
@@ -1163,11 +671,7 @@ def kg_search_facts(
    provider=None,
    search_all_scopes=True
 ):
-   """Search facts in the knowledge graph.
-
-   If search_all_scopes is True and no npc/team is provided,
-   searches across all scopes in the database.
-   """
+   """Search facts in the knowledge graph by keyword."""
    from sqlalchemy import text
 
    directory_path = os.getcwd()
@@ -1195,30 +699,53 @@ def kg_search_facts(
 
    return matching_facts
 
+
 def kg_remove_fact(
    engine,
-   fact_text: str, 
-   npc=None, 
+   fact_text: str,
+   npc=None,
    team=None,
    model=None,
    provider=None
 ):
    """Remove a fact from the knowledge graph"""
+   from sqlalchemy import text as sa_text
+
    directory_path = os.getcwd()
    team_name = getattr(team, 'name', 'default_team') if team else 'default_team'
    npc_name = npc.name if npc else 'default_npc'
-   
-   kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
-   
-   original_count = len(kg_data.get('facts', []))
-   kg_data['facts'] = [f for f in kg_data.get('facts', []) if f['statement'] != fact_text]
-   removed_count = original_count - len(kg_data['facts'])
-   
+
+   with engine.begin() as conn:
+       result = conn.execute(sa_text("""
+           DELETE FROM kg_facts
+           WHERE statement = :statement AND team_name = :team_name
+           AND npc_name = :npc_name AND directory_path = :directory_path
+       """), {
+           "statement": fact_text,
+           "team_name": team_name,
+           "npc_name": npc_name,
+           "directory_path": directory_path
+       })
+       removed_count = result.rowcount
+
    if removed_count > 0:
-       save_kg_to_db(engine, kg_data, team_name, npc_name, directory_path)
+       # Also remove any links referencing this fact
+       with engine.begin() as conn:
+           conn.execute(sa_text("""
+               DELETE FROM kg_links
+               WHERE (source = :fact OR target = :fact)
+               AND team_name = :team_name AND npc_name = :npc_name
+               AND directory_path = :directory_path
+           """), {
+               "fact": fact_text,
+               "team_name": team_name,
+               "npc_name": npc_name,
+               "directory_path": directory_path
+           })
        return f"Removed {removed_count} matching fact(s)"
-   
+
    return "No matching facts found"
+
 
 def kg_list_concepts(
    engine,
@@ -1247,10 +774,11 @@ def kg_list_concepts(
        kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
        return [c['name'] for c in kg_data.get('concepts', [])]
 
+
 def kg_get_facts_for_concept(
    engine,
-   concept_name: str, 
-   npc=None, 
+   concept_name: str,
+   npc=None,
    team=None,
    model=None,
    provider=None
@@ -1259,23 +787,24 @@ def kg_get_facts_for_concept(
    directory_path = os.getcwd()
    team_name = getattr(team, 'name', 'default_team') if team else 'default_team'
    npc_name = npc.name if npc else 'default_npc'
-   
+
    kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
-   
+
    fact_to_concept_links = kg_data.get('fact_to_concept_links', {})
    linked_facts = []
-   
+
    for fact_statement, linked_concepts in fact_to_concept_links.items():
        if concept_name in linked_concepts:
            linked_facts.append(fact_statement)
-   
+
    return linked_facts
+
 
 def kg_add_concept(
    engine,
-   concept_name: str, 
+   concept_name: str,
    concept_description: str,
-   npc=None, 
+   npc=None,
    team=None,
    model=None,
    provider=None
@@ -1284,50 +813,73 @@ def kg_add_concept(
    directory_path = os.getcwd()
    team_name = getattr(team, 'name', 'default_team') if team else 'default_team'
    npc_name = npc.name if npc else 'default_npc'
-   
+
    kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
-   
+
    new_concept = {
        "name": concept_name,
        "description": concept_description,
        "generation": kg_data.get('generation', 0)
    }
-   
+
    kg_data['concepts'].append(new_concept)
    save_kg_to_db(engine, kg_data, team_name, npc_name, directory_path)
-   
+
    return f"Added concept: {concept_name}"
+
 
 def kg_remove_concept(
    engine,
-   concept_name: str, 
-   npc=None, 
+   concept_name: str,
+   npc=None,
    team=None,
    model=None,
    provider=None
 ):
    """Remove a concept from the knowledge graph"""
+   from sqlalchemy import text as sa_text
+
    directory_path = os.getcwd()
    team_name = getattr(team, 'name', 'default_team') if team else 'default_team'
    npc_name = npc.name if npc else 'default_npc'
-   
-   kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
-   
-   original_count = len(kg_data.get('concepts', []))
-   kg_data['concepts'] = [c for c in kg_data.get('concepts', []) if c['name'] != concept_name]
-   removed_count = original_count - len(kg_data['concepts'])
-   
+
+   with engine.begin() as conn:
+       result = conn.execute(sa_text("""
+           DELETE FROM kg_concepts
+           WHERE name = :name AND team_name = :team_name
+           AND npc_name = :npc_name AND directory_path = :directory_path
+       """), {
+           "name": concept_name,
+           "team_name": team_name,
+           "npc_name": npc_name,
+           "directory_path": directory_path
+       })
+       removed_count = result.rowcount
+
    if removed_count > 0:
-       save_kg_to_db(engine, kg_data, team_name, npc_name, directory_path)
+       # Also remove any links referencing this concept
+       with engine.begin() as conn:
+           conn.execute(sa_text("""
+               DELETE FROM kg_links
+               WHERE (source = :concept OR target = :concept)
+               AND team_name = :team_name AND npc_name = :npc_name
+               AND directory_path = :directory_path
+           """), {
+               "concept": concept_name,
+               "team_name": team_name,
+               "npc_name": npc_name,
+               "directory_path": directory_path
+           })
        return f"Removed concept: {concept_name}"
-   
+
    return "Concept not found"
+
 
 def kg_link_fact_to_concept(
    engine,
    fact_text: str,
-   concept_name: str, 
-   npc=None, 
+   concept_name: str,
+   npc=None,
    team=None,
    model=None,
    provider=None
@@ -1336,21 +888,22 @@ def kg_link_fact_to_concept(
    directory_path = os.getcwd()
    team_name = getattr(team, 'name', 'default_team') if team else 'default_team'
    npc_name = npc.name if npc else 'default_npc'
-   
+
    kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
-   
+
    fact_to_concept_links = kg_data.get('fact_to_concept_links', {})
-   
+
    if fact_text not in fact_to_concept_links:
        fact_to_concept_links[fact_text] = []
-   
+
    if concept_name not in fact_to_concept_links[fact_text]:
        fact_to_concept_links[fact_text].append(concept_name)
        kg_data['fact_to_concept_links'] = fact_to_concept_links
        save_kg_to_db(engine, kg_data, team_name, npc_name, directory_path)
        return f"Linked fact '{fact_text}' to concept '{concept_name}'"
-   
+
    return "Fact already linked to concept"
+
 
 def kg_get_all_facts(
    engine,
@@ -1379,9 +932,10 @@ def kg_get_all_facts(
        kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
        return [f['statement'] for f in kg_data.get('facts', [])]
 
+
 def kg_get_stats(
    engine,
-   npc=None, 
+   npc=None,
    team=None,
    model=None,
    provider=None
@@ -1390,9 +944,9 @@ def kg_get_stats(
    directory_path = os.getcwd()
    team_name = getattr(team, 'name', 'default_team') if team else 'default_team'
    npc_name = npc.name if npc else 'default_npc'
-   
+
    kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
-   
+
    return {
        "total_facts": len(kg_data.get('facts', [])),
        "total_concepts": len(kg_data.get('concepts', [])),
@@ -1400,10 +954,11 @@ def kg_get_stats(
        "generation": kg_data.get('generation', 0)
    }
 
+
 def kg_evolve_knowledge(
    engine,
    content_text: str,
-   npc=None, 
+   npc=None,
    team=None,
    model=None,
    provider=None
@@ -1412,9 +967,9 @@ def kg_evolve_knowledge(
    directory_path = os.getcwd()
    team_name = getattr(team, 'name', 'default_team') if team else 'default_team'
    npc_name = npc.name if npc else 'default_npc'
-   
+
    kg_data = load_kg_from_db(engine, team_name, npc_name, directory_path)
-   
+
    evolved_kg, _ = kg_evolve_incremental(
        existing_kg=kg_data,
        new_content_text=content_text,
@@ -1426,10 +981,15 @@ def kg_evolve_knowledge(
        link_concepts_concepts=False,
        link_facts_facts=False
    )
-   
+
    save_kg_to_db(engine, evolved_kg, team_name, npc_name, directory_path)
 
    return "Knowledge graph evolved with new content"
+
+
+# ---------------------------------------------------------------------------
+# Search functions (SQLAlchemy-backed)
+# ---------------------------------------------------------------------------
 
 def kg_link_search(
     engine,
@@ -1442,21 +1002,7 @@ def kg_link_search(
     strategy: str = 'bfs',
     search_all_scopes: bool = True
 ):
-    """
-    Search KG by traversing links from keyword-matched seeds.
-
-    Args:
-        engine: SQLAlchemy engine
-        query: Search query to find initial seeds
-        max_depth: How many hops to traverse from seeds
-        breadth_per_step: Max items to expand per hop
-        max_results: Max total results
-        strategy: 'bfs' (breadth-first) or 'dfs' (depth-first)
-        search_all_scopes: Search across all npc/team scopes
-
-    Returns:
-        List of dicts with 'content', 'type', 'depth', 'path', 'score'
-    """
+    """Search KG by traversing links from keyword-matched seeds."""
     from sqlalchemy import text
     from collections import deque
 
@@ -1529,6 +1075,7 @@ def kg_link_search(
     results.sort(key=lambda x: (-x['score'], x['depth']))
     return results[:max_results]
 
+
 def kg_embedding_search(
     engine,
     query: str,
@@ -1539,31 +1086,20 @@ def kg_embedding_search(
     similarity_threshold: float = 0.6,
     max_results: int = 20,
     include_concepts: bool = True,
-    search_all_scopes: bool = True
+    search_all_scopes: bool = True,
+    chroma_path: str = None
 ):
-    """
-    Semantic search using embeddings.
+    """Semantic search using embeddings.
 
-    Args:
-        engine: SQLAlchemy engine
-        query: Search query
-        embedding_model: Model for embeddings (default: nomic-embed-text)
-        embedding_provider: Provider (default: ollama)
-        similarity_threshold: Min cosine similarity to include
-        max_results: Max results to return
-        include_concepts: Also search concepts, not just facts
-        search_all_scopes: Search across all npc/team scopes
-
-    Returns:
-        List of dicts with 'content', 'type', 'score'
+    Uses ChromaDB for fast ANN search when available,
+    falls back to brute-force cosine similarity.
     """
     from sqlalchemy import text
-    import numpy as np
 
     try:
         from npcpy.gen.embeddings import get_embeddings
     except ImportError:
-        print("Embeddings not available, falling back to keyword search")
+        logger.warning("Embeddings not available, falling back to keyword search")
         facts = kg_search_facts(engine, query, npc=npc, team=team,
                                search_all_scopes=search_all_scopes)
         return [{'content': f, 'type': 'fact', 'score': 0.5} for f in facts[:max_results]]
@@ -1571,9 +1107,65 @@ def kg_embedding_search(
     model = embedding_model or 'nomic-embed-text'
     provider = embedding_provider or 'ollama'
 
-    query_embedding = np.array(get_embeddings([query], model, provider)[0])
+    team_name = getattr(team, 'name', None) if team else None
+    npc_name = getattr(npc, 'name', None) if npc else None
 
     results = []
+
+    # Try ChromaDB fast path first
+    if chroma_path:
+        try:
+            _, collection = _sync_kg_facts_to_chroma(
+                engine, chroma_path, model, provider,
+                team_name if not search_all_scopes else None,
+                npc_name if not search_all_scopes else None
+            )
+            if collection:
+                query_emb = get_embeddings([query], model, provider)[0]
+                chroma_results = collection.query(
+                    query_embeddings=[query_emb],
+                    n_results=max_results
+                )
+                if chroma_results and chroma_results['documents'] and chroma_results['documents'][0]:
+                    for i, doc in enumerate(chroma_results['documents'][0]):
+                        dist = chroma_results['distances'][0][i] if 'distances' in chroma_results else 0
+                        # ChromaDB returns L2 distance by default; convert to similarity
+                        sim = max(0, 1.0 - dist / 2.0)
+                        if sim >= similarity_threshold:
+                            results.append({'content': doc, 'type': 'fact', 'score': sim})
+
+                    if include_concepts:
+                        # Concepts still need brute-force (small set)
+                        with engine.connect() as conn:
+                            if search_all_scopes:
+                                concept_rows = conn.execute(text(
+                                    "SELECT DISTINCT name FROM kg_concepts"
+                                )).fetchall()
+                            else:
+                                concept_rows = conn.execute(text("""
+                                    SELECT name FROM kg_concepts
+                                    WHERE team_name = :team AND npc_name = :npc
+                                """), {"team": team_name, "npc": npc_name}).fetchall()
+
+                            if concept_rows:
+                                names = [r.name for r in concept_rows]
+                                query_embedding = np.array(query_emb)
+                                embeddings = get_embeddings(names, model, provider)
+                                for i, name in enumerate(names):
+                                    emb = np.array(embeddings[i])
+                                    norm_p = np.linalg.norm(query_embedding) * np.linalg.norm(emb)
+                                    if norm_p > 0:
+                                        sim = float(np.dot(query_embedding, emb) / norm_p)
+                                        if sim >= similarity_threshold:
+                                            results.append({'content': name, 'type': 'concept', 'score': sim})
+
+                    results.sort(key=lambda x: -x['score'])
+                    return results[:max_results]
+        except Exception as e:
+            logger.warning(f"ChromaDB search failed, falling back to brute-force: {e}")
+
+    # Brute-force fallback
+    query_embedding = np.array(get_embeddings([query], model, provider)[0])
 
     with engine.connect() as conn:
         if search_all_scopes:
@@ -1581,12 +1173,12 @@ def kg_embedding_search(
                 "SELECT DISTINCT statement FROM kg_facts"
             )).fetchall()
         else:
-            team_name = getattr(team, 'name', 'global_team') if team else 'global_team'
-            npc_name = getattr(npc, 'name', 'default_npc') if npc else 'default_npc'
+            t_name = team_name or 'global_team'
+            n_name = npc_name or 'default_npc'
             fact_rows = conn.execute(text("""
                 SELECT statement FROM kg_facts
                 WHERE team_name = :team AND npc_name = :npc
-            """), {"team": team_name, "npc": npc_name}).fetchall()
+            """), {"team": t_name, "npc": n_name}).fetchall()
 
         if fact_rows:
             statements = [r.statement for r in fact_rows]
@@ -1594,10 +1186,11 @@ def kg_embedding_search(
 
             for i, stmt in enumerate(statements):
                 emb = np.array(embeddings[i])
-                sim = float(np.dot(query_embedding, emb) /
-                           (np.linalg.norm(query_embedding) * np.linalg.norm(emb)))
-                if sim >= similarity_threshold:
-                    results.append({'content': stmt, 'type': 'fact', 'score': sim})
+                norm_p = np.linalg.norm(query_embedding) * np.linalg.norm(emb)
+                if norm_p > 0:
+                    sim = float(np.dot(query_embedding, emb) / norm_p)
+                    if sim >= similarity_threshold:
+                        results.append({'content': stmt, 'type': 'fact', 'score': sim})
 
         if include_concepts:
             if search_all_scopes:
@@ -1608,7 +1201,7 @@ def kg_embedding_search(
                 concept_rows = conn.execute(text("""
                     SELECT name FROM kg_concepts
                     WHERE team_name = :team AND npc_name = :npc
-                """), {"team": team_name, "npc": npc_name}).fetchall()
+                """), {"team": t_name, "npc": n_name}).fetchall()
 
             if concept_rows:
                 names = [r.name for r in concept_rows]
@@ -1616,13 +1209,15 @@ def kg_embedding_search(
 
                 for i, name in enumerate(names):
                     emb = np.array(embeddings[i])
-                    sim = float(np.dot(query_embedding, emb) /
-                               (np.linalg.norm(query_embedding) * np.linalg.norm(emb)))
-                    if sim >= similarity_threshold:
-                        results.append({'content': name, 'type': 'concept', 'score': sim})
+                    norm_p = np.linalg.norm(query_embedding) * np.linalg.norm(emb)
+                    if norm_p > 0:
+                        sim = float(np.dot(query_embedding, emb) / norm_p)
+                        if sim >= similarity_threshold:
+                            results.append({'content': name, 'type': 'concept', 'score': sim})
 
     results.sort(key=lambda x: -x['score'])
     return results[:max_results]
+
 
 def kg_hybrid_search(
     engine,
@@ -1638,24 +1233,7 @@ def kg_hybrid_search(
     similarity_threshold: float = 0.6,
     search_all_scopes: bool = True
 ):
-    """
-    Hybrid search combining multiple methods.
-
-    Args:
-        engine: SQLAlchemy engine
-        query: Search query
-        mode: Search mode - 'keyword', 'embedding', 'link',
-              'keyword+link', 'keyword+embedding', 'all'
-        max_depth: Link traversal depth
-        breadth_per_step: Items per traversal hop
-        max_results: Max results
-        embedding_model/provider: For embedding search
-        similarity_threshold: For embedding search
-        search_all_scopes: Search all npc/team scopes
-
-    Returns:
-        List of dicts with 'content', 'type', 'score', 'source'
-    """
+    """Hybrid search combining multiple methods."""
     all_results = {}
 
     if 'keyword' in mode or mode == 'link' or mode == 'all':
@@ -1684,7 +1262,7 @@ def kg_hybrid_search(
                     r['source'] = 'embedding'
                     all_results[r['content']] = r
         except Exception as e:
-            print(f"Embedding search failed: {e}")
+            logger.warning(f"Embedding search failed: {e}")
 
     if 'link' in mode or mode == 'all':
         link_results = kg_link_search(
@@ -1709,6 +1287,11 @@ def kg_hybrid_search(
     final = sorted(all_results.values(), key=lambda x: -x['score'])
     return final[:max_results]
 
+
+# ---------------------------------------------------------------------------
+# Backfill & explore
+# ---------------------------------------------------------------------------
+
 def kg_backfill_from_memories(
     engine,
     model: str = None,
@@ -1720,23 +1303,7 @@ def kg_backfill_from_memories(
     link_facts_facts: bool = False,
     dry_run: bool = False
 ):
-    """
-    Backfill KG from approved memories that haven't been incorporated yet.
-
-    Args:
-        engine: SQLAlchemy engine
-        model: LLM model for concept generation
-        provider: LLM provider
-        npc: NPC object (optional)
-        get_concepts: Whether to generate concepts
-        link_concepts_facts: Whether to link facts to concepts
-        link_concepts_concepts: Whether to link concepts to concepts
-        link_facts_facts: Whether to link facts to facts
-        dry_run: If True, just report what would be done
-
-    Returns:
-        Dict with stats: scopes_processed, facts_added, concepts_added
-    """
+    """Backfill KG from approved memories that haven't been incorporated yet."""
     from sqlalchemy import text
 
     stats = {
@@ -1812,13 +1379,14 @@ def kg_backfill_from_memories(
             stats['scopes_processed'] += 1
 
         except Exception as e:
-            print(f"Error processing scope {npc_name}/{team_name}: {e}")
+            logger.warning(f"Error processing scope {npc_name}/{team_name}: {e}")
 
     with engine.connect() as conn:
         stats['facts_after'] = conn.execute(text("SELECT COUNT(*) FROM kg_facts")).scalar() or 0
         stats['concepts_after'] = conn.execute(text("SELECT COUNT(*) FROM kg_concepts")).scalar() or 0
 
     return stats
+
 
 def kg_explore_concept(
     engine,
@@ -1827,19 +1395,7 @@ def kg_explore_concept(
     breadth_per_step: int = 10,
     search_all_scopes: bool = True
 ):
-    """
-    Explore all facts and related concepts for a given concept.
-
-    Args:
-        engine: SQLAlchemy engine
-        concept_name: Concept to explore from
-        max_depth: How deep to traverse
-        breadth_per_step: Items per hop
-        search_all_scopes: Search all scopes
-
-    Returns:
-        Dict with 'direct_facts', 'related_concepts', 'extended_facts'
-    """
+    """Explore all facts and related concepts for a given concept."""
     from sqlalchemy import text
 
     result = {
