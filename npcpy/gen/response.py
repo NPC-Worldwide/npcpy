@@ -246,6 +246,11 @@ def get_ollama_response(
 
     options = {}
 
+    # Set num_ctx from environment or kwargs (default 32768).
+    # Ollama defaults to 4096 which is too small for multi-turn tool use.
+    num_ctx = int(os.environ.get("NPCSH_OLLAMA_NUM_CTX", 0)) or kwargs.pop("num_ctx", 32768)
+    options["num_ctx"] = num_ctx
+
     image_paths = []
     if images:
         image_paths.extend(images)
@@ -418,6 +423,7 @@ def get_ollama_response(
             result["response"] = res
             return result
 
+        # Extract usage if available
         if hasattr(res, 'prompt_eval_count') or 'prompt_eval_count' in res:
             input_tokens = getattr(res, 'prompt_eval_count', None) or res.get('prompt_eval_count', 0) or 0
             output_tokens = getattr(res, 'eval_count', None) or res.get('eval_count', 0) or 0
@@ -425,46 +431,45 @@ def get_ollama_response(
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
             }
-        else:
 
-            message = res.get("message", {})
-            response_content = message.get("content", "")
-            result["response"] = response_content
-            result["messages"].append({"role": "assistant", "content": response_content})
-            
-            if message.get('tool_calls'):
-                result["tool_calls"] = message['tool_calls']
-            
-            
-            if format == "json":
-                try:
-                    if isinstance(response_content, str):
-                        if response_content.startswith("```json"):
-                            response_content = (
-                                response_content.replace("```json", "")
-                                .replace("```", "")
-                                .strip()
-                            )
-                        parsed_response = json.loads(response_content)
-                        result["response"] = parsed_response
-                except json.JSONDecodeError:
-                    result["error"] = f"Invalid JSON response: {response_content}"
+        # Always extract response content
+        message = res.get("message", {})
+        response_content = message.get("content", "")
+        result["response"] = response_content
+        result["messages"].append({"role": "assistant", "content": response_content})
 
-            if format == "yaml":
-                try:
-                    if isinstance(response_content, str):
-                        if response_content.startswith("```yaml"):
-                            response_content = (
-                                response_content.replace("```yaml", "")
-                                .replace("```", "")
-                                .strip()
-                            )
-                        parsed_response = yaml.safe_load(response_content)
-                        result["response"] = parsed_response
-                except yaml.YAMLError:
-                    result["error"] = f"Invalid YAML response: {response_content}"
+        if message.get('tool_calls'):
+            result["tool_calls"] = message['tool_calls']
 
-            return result
+        if format == "json":
+            try:
+                if isinstance(response_content, str):
+                    if response_content.startswith("```json"):
+                        response_content = (
+                            response_content.replace("```json", "")
+                            .replace("```", "")
+                            .strip()
+                        )
+                    parsed_response = json.loads(response_content)
+                    result["response"] = parsed_response
+            except json.JSONDecodeError:
+                result["error"] = f"Invalid JSON response: {response_content}"
+
+        if format == "yaml":
+            try:
+                if isinstance(response_content, str):
+                    if response_content.startswith("```yaml"):
+                        response_content = (
+                            response_content.replace("```yaml", "")
+                            .replace("```", "")
+                            .strip()
+                        )
+                    parsed_response = yaml.safe_load(response_content)
+                    result["response"] = parsed_response
+            except yaml.YAMLError:
+                result["error"] = f"Invalid YAML response: {response_content}"
+
+        return result
 
     logger.debug(f"ollama api_params: {api_params}")
     res = ollama.chat(**api_params, options=options)
