@@ -300,18 +300,22 @@ def kg_initial(content,
         other_fact_statements = [s for s in fact_statements if s != fact['statement']]
         if not other_fact_statements:
             continue
-        # Pre-filter by embedding similarity to avoid passing too many to LLM
-        candidates = _get_similar_by_embedding(
-            fact['statement'], other_fact_statements, e_model, e_provider, top_k=20)
-        if candidates:
-            related_fact_stmts = get_related_facts_llm(fact['statement'],
-                                                       candidates,
-                                                       model=model,
-                                                       provider=provider,
-                                                       npc=npc,
-                                                       context=context)
-            for related_stmt in related_fact_stmts:
-                fact_to_fact_links.append((fact['statement'], related_stmt))
+        try:
+            # Pre-filter by embedding similarity to avoid passing too many to LLM
+            candidates = _get_similar_by_embedding(
+                fact['statement'], other_fact_statements, e_model, e_provider, top_k=20)
+            if candidates:
+                related_fact_stmts = get_related_facts_llm(fact['statement'],
+                                                           candidates,
+                                                           model=model,
+                                                           provider=provider,
+                                                           npc=npc,
+                                                           context=context)
+                for related_stmt in related_fact_stmts:
+                    fact_to_fact_links.append((fact['statement'], related_stmt))
+        except Exception as e:
+            logger.warning(f"Failed to link fact {i+1}/{len(all_facts)}: {e}")
+            continue
 
     return {
         "generation": CURRENT_GENERATION,
