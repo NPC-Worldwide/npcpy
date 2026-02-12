@@ -387,12 +387,13 @@ def get_ollama_response(
 
     for key, value in kwargs.items():
         if key in [
-            "stop", 
-            "temperature", 
-            "top_p", 
+            "stop",
+            "temperature",
+            "top_p",
+            "top_k",
             "max_tokens",
             "max_completion_tokens",
-            "extra_headers", 
+            "extra_headers",
             "parallel_tool_calls",
             "response_format",
             "user",
