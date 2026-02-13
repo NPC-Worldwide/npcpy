@@ -711,10 +711,7 @@ def deserialize_model(path: str, format: str = "auto") -> Any:
         elif path.endswith('.joblib'):
             format = "joblib"
         else:
-            raise ValueError(
-                f"Cannot auto-detect format for {path}. "
-                "Use .joblib or .safetensors extension, or specify format explicitly."
-            )
+            raise ValueError(f"Cannot auto-detect format for {path}. Use .joblib or .safetensors extension, or specify format explicitly.")
 
     if format == "safetensors":
         from safetensors.torch import load_file

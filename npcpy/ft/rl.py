@@ -180,10 +180,7 @@ def collect_traces(
             
             traces.append(trace)
             
-            print(
-                f"Agent {agent.name}: "
-                f"Reward={trace['reward']:.2f}"
-            )
+            print(f"Agent {agent.name}: Reward={trace['reward']:.2f}")
     
     return traces
 
@@ -228,10 +225,7 @@ def create_preference_pairs(
                 })
     
     if len(pairs) < 5:
-        print(
-            f"Warning: Only {len(pairs)} pairs found. "
-            "May overfit."
-        )
+        print(f"Warning: Only {len(pairs)} pairs found. May overfit.")
 
     return Dataset.from_list(pairs)
 

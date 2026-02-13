@@ -436,10 +436,7 @@ primary_directive: You oversee the sales pipeline, track progress, and optimize 
         ctx_destination = default_ctx_path
 
     if applied_templates:
-        return (
-            f"NPC project initialized in {npc_team_dir} "
-            f"using templates: {', '.join(applied_templates)}"
-        )
+        return f"NPC project initialized in {npc_team_dir} using templates: {', '.join(applied_templates)}"
     return f"NPC project initialized in {npc_team_dir}"
 
 def write_yaml_file(file_path, data):
@@ -710,10 +707,7 @@ class Jinx:
             template = jinja_env.from_string(code_content)
             rendered_code = template.render(**context)
         except Exception as e:
-            error_msg = (
-                f"Error rendering template for step '{step_name}' "
-                f"(second pass): {type(e).__name__}: {e}"
-            )
+            error_msg = f"Error rendering template for step '{step_name}' (second pass): {type(e).__name__}: {e}"
             context['output'] = error_msg
             self._log_debug(error_msg)
             return context
@@ -759,10 +753,7 @@ class Jinx:
         try:
             exec(rendered_code, exec_globals, exec_locals)
         except Exception as e:
-            error_msg = (
-                f"Error executing step '{step_name}' in jinx '{self.jinx_name}': "
-                f"{type(e).__name__}: {e}"
-            )
+            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': {type(e).__name__}: {e}"
             print(f"[JINX-ERROR] {error_msg}")
             context['output'] = error_msg
             self._log_debug(error_msg)
@@ -784,10 +775,7 @@ class Jinx:
         if final_output is not None and messages is not None:
             messages.append({
                 'role':'assistant',
-                'content': (
-                    f'Jinx {self.jinx_name} step {step_name} '
-                    f'executed: {final_output}'
-                )
+                'content': f'Jinx {self.jinx_name} step {step_name} executed: {final_output}'
             })
             context['messages'] = messages
         
@@ -1469,10 +1457,7 @@ class NPC:
                         matched_names = [jinx_spec] if jinx_spec in self.team.jinxs_dict else []
 
                     if not matched_names:
-                        raise FileNotFoundError(
-                            f"NPC '{self.name}' references jinx '{jinx_spec}' but no matching jinx was found. "
-                            f"Available jinxs: {list(self.team.jinxs_dict.keys())[:20]}..."
-                        )
+                        raise FileNotFoundError(f"NPC '{self.name}' references jinx '{jinx_spec}' but no matching jinx was found. Available jinxs: {list(self.team.jinxs_dict.keys())[:20]}...")
 
                     for jinx_name in matched_names:
                         if jinx_name in self.team.jinxs_dict:

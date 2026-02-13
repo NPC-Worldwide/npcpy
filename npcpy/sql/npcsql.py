@@ -950,11 +950,7 @@ class ModelCompiler:
                     print(f"Schema '{self.target_schema}' created (if it didn't exist).")
 
             if materialization == 'view':
-                print(
-                    f"Warning: Materialization '{materialization}' requested for model '{model_name}'. "
-                    f"Pandas `to_sql` does not directly create SQL VIEWS from DataFrames. "
-                    f"Materializing as TABLE instead. You may need to manually create the view."
-                )
+                print(f"Warning: Materialization '{materialization}' requested for model '{model_name}'. Pandas `to_sql` does not directly create SQL VIEWS from DataFrames. Materializing as TABLE instead. You may need to manually create the view.")
                 df.to_sql(
                     table_name,
                     self.target_engine, 
@@ -993,10 +989,7 @@ class ModelCompiler:
             for dep in model.dependencies:
                 if not self._table_exists(dep):
                     if dep not in results:
-                        raise ValueError(
-                            f"Dependency '{dep}' for model '{model_name}' not found in database or already processed models. "
-                            f"Please ensure all dependencies are resolved and run first."
-                        )
+                        raise ValueError(f"Dependency '{dep}' for model '{model_name}' not found in database or already processed models. Please ensure all dependencies are resolved and run first.")
 
             results[model_name] = self.execute_model(model_name)
 

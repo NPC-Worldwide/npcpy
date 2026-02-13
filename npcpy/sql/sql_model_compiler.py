@@ -124,10 +124,7 @@ def create_model_compiler(
     """
     if engine_type == 'snowflake':
         from sqlalchemy.dialects.snowflake import base
-        engine = sqlalchemy.create_engine(
-            f"snowflake://{connection_params['username']}:{connection_params['password']}@"
-            f"{connection_params['account']}/{connection_params['database']}/{connection_params['schema']}"
-        )
+        engine = sqlalchemy.create_engine(f"snowflake://{connection_params['username']}:{connection_params['password']}@{connection_params['account']}/{connection_params['database']}/{connection_params['schema']}")
     elif engine_type == 'bigquery':
         from google.cloud import bigquery
         from sqlalchemy.dialects.bigquery import base

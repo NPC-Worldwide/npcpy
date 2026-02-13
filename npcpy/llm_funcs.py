@@ -457,19 +457,21 @@ def handle_request_input(
     """
     Analyze text and decide what to request from the user
     """
+    json_format = """Return a JSON object with:
+    {
+        "input_needed": boolean,
+        "request_reason": string explaining why input is needed,
+        "request_prompt": string to show user if input needed
+    }
+
+    Do not include any additional markdown formatting or leading ```json tags. Your response
+    must be a valid JSON object."""
+
     prompt = f"""
     Analyze the text:
     {context}
     and determine what additional input is needed.
-    Return a JSON object with:
-    {{
-        "input_needed": boolean,
-        "request_reason": string explaining why input is needed,
-        "request_prompt": string to show user if input needed
-    }}
-
-    Do not include any additional markdown formatting or leading ```json tags. Your response
-    must be a valid JSON object.
+    {json_format}
     """
 
     response = get_llm_response(
@@ -641,92 +643,95 @@ def _react_fallback(
     """ReAct-style fallback for models without tool calling."""
     import logging
     logger = logging.getLogger("npcpy.llm_funcs")
-    logger.debug(f"[_react_fallback] Starting with {len(messages) if messages else 0} messages, jinxs: {list(jinxs.keys()) if jinxs else None}")
-
+    try:
+        from termcolor import colored
+    except ImportError:
+        colored = lambda t, *a, **k: t
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     current_messages = messages.copy() if messages else []
     jinx_executions = []
     generated_images = []
-    logger.debug(f"[_react_fallback] current_messages initialized with {len(current_messages)} messages")
 
     def _jinx_info(name, jinx):
         inputs = getattr(jinx, 'inputs', [])
-        input_names = [i if isinstance(i, str) else list(i.keys())[0] for i in inputs]
-        return f"- {name}({', '.join(input_names)}): {jinx.description}"
+        parts = []
+        for inp in inputs:
+            if isinstance(inp, str):
+                parts.append(f"{inp} (required)")
+            elif isinstance(inp, dict):
+                k = list(inp.keys())[0]
+                v = inp[k]
+                parts.append(f"{k}={repr(v)}")
+        return f"- {name}({', '.join(parts)}): {jinx.description}"
 
     jinx_list = "\n".join(_jinx_info(n, j) for n, j in jinxs.items()) if jinxs else "None"
 
     effective_max = min(max_iterations, 7)
 
-    original_command = command
-
     for iteration in range(effective_max):
+        history_text = ""
         if jinx_executions:
-            last_result = str(jinx_executions[-1].get('output', ''))[:1000]
-            prompt = f"""The user asked: {original_command}
-
-You already ran a tool and got: {last_result}
-
-Answer the user now. Respond with this JSON:
-{{"action": "answer", "response": "your answer based on the tool result"}}"""
-
-            response = get_llm_response(
-                prompt,
-                model=model,
-                provider=provider,
-                api_url=api_url,
-                api_key=api_key,
-                messages=[],
-                npc=None,
-                team=None,
-                images=generated_images or None,
-                format="json",
+            history_text = "\n\nPrevious jinx calls this session:\n" + "\n".join(
+                f"- {h['name']}({h['inputs']}) -> {h['output']}"
+                for h in jinx_executions[-5:]
             )
-        else:
-            prompt = f"""Request: {original_command}
 
-Available Tools:
-{jinx_list}
+        json_instructions = """Respond with a single JSON object only. No other text.
 
-Instructions:
-1. If you can answer directly without tools, use {{"action": "answer", "response": "your answer"}}
-2. If you need to use a tool, use {{"action": "jinx", "jinx_name": "tool_name", "inputs": {{"param": "value"}}}}
-3. Use EXACT parameter names from tool definitions"""
+To use a jinx:
+{"action": "jinx", "jinx_name": "NAME", "inputs": {"param": "value"}}
 
-            if context:
-                prompt += f"\n\nCurrent context: {context}"
+To answer directly:
+{"action": "answer", "response": "your answer"}
 
-            response = get_llm_response(
-                prompt,
-                model=model,
-                provider=provider,
-                api_url=api_url,
-                api_key=api_key,
-                messages=current_messages[-10:],
-                npc=npc,
-                team=team,
-                images=((images or []) if iteration == 0 else []) + generated_images or None,
-                format="json",
-                context=context,
-            )
+Rules:
+- Use EXACT parameter names from the jinx definitions above
+- Do NOT repeat a jinx call with the same inputs
+- Do NOT invent jinxes or parameters not listed above"""
+
+        prompt = f"Request: {command}\n\nAvailable Jinxes:\n{jinx_list}\n\n{json_instructions}{history_text}"
+
+        if context:
+            prompt += f"\n\nCurrent context: {context}"
+
+        response = get_llm_response(
+            prompt,
+            model=model,
+            provider=provider,
+            api_url=api_url,
+            api_key=api_key,
+            messages=current_messages[-10:],
+            npc=npc,
+            team=team,
+            images=((images or []) if iteration == 0 else []) + generated_images or None,
+            format="json",
+            context=context,
+        )
 
         if response.get("usage"):
             total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
             total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
 
         decision = response.get("response", {})
-        logger.debug(f"[_react_fallback] Raw decision: {str(decision)[:200]}")
+
+        action = decision.get("action", "?") if isinstance(decision, dict) else type(decision).__name__
+        if isinstance(decision, dict) and decision.get("action") == "jinx":
+            jn = decision.get("jinx_name", "?")
+            ji = decision.get("inputs", {})
+            print(colored(f"⚡ {jn}({ji})", "cyan"), flush=True)
+        elif isinstance(decision, dict) and decision.get("action") == "answer":
+            print(colored(f"[skipped jinxes, answering directly]", "yellow"), flush=True)
+        else:
+            print(colored(f"[unknown action: {action}]", "red"), flush=True)
 
         if not isinstance(decision, dict):
-            logger.debug(f"[_react_fallback] Non-dict response on iteration {iteration} - continuing")
+            print(colored("Invalid response (not JSON), retrying...", "red"))
             if jinx_executions:
                 last_output = jinx_executions[-1].get("output", "")
-                logger.debug(f"[_react_fallback] Forcing answer from last tool result")
                 return {"messages": current_messages, "output": str(last_output), "usage": total_usage, "jinx_executions": jinx_executions}
-            context = f"Your response was not valid JSON object. You must respond with a JSON object: either {{\"action\": \"answer\", \"response\": \"...\"}} or {{\"action\": \"jinx\", \"jinx_name\": \"tool_name\", \"inputs\": {{...}}}}"
+            retry_hint = '{"action": "answer", "response": "..."} or {"action": "jinx", "jinx_name": "jinx_name", "inputs": {...}}'
+            context = f"Your response was not valid JSON object. You must respond with a JSON object: either {retry_hint}"
             continue
-
-        logger.debug(f"[_react_fallback] Parsed decision action: {decision.get('action') if decision else 'None'}")
         if decision.get("action") == "answer":
             output = decision.get("response", "")
 
@@ -745,11 +750,11 @@ Instructions:
                 if final.get("usage"):
                     total_usage["input_tokens"] += final["usage"].get("input_tokens", 0)
                     total_usage["output_tokens"] += final["usage"].get("output_tokens", 0)
-                logger.debug(f"[_react_fallback] Answer (stream) - returning {len(current_messages)} messages")
+                logger.debug(f"[ReAct] Answer (stream) - returning {len(current_messages)} messages")
                 return {"messages": current_messages, "output": final.get("response", output), "usage": total_usage, "jinx_executions": jinx_executions}
             if output and isinstance(output, str):
                 current_messages.append({"role": "assistant", "content": output})
-            logger.debug(f"[_react_fallback] Answer - returning {len(current_messages)} messages")
+            logger.debug(f"[ReAct] Answer - returning {len(current_messages)} messages")
             return {"messages": current_messages, "output": output, "usage": total_usage, "jinx_executions": jinx_executions}
 
         elif decision.get("action") == "jinx" or decision.get("action") in jinxs:
@@ -758,16 +763,14 @@ Instructions:
 
             if not inputs:
                 inputs = {k: v for k, v in decision.items() if k not in ('action', 'jinx_name', 'inputs', 'response')}
-            logger.debug(f"[_react_fallback] Jinx action: {jinx_name} with inputs: {inputs}")
 
             if jinx_executions:
                 last_output = jinx_executions[-1].get("output", "")
-                logger.debug(f"[_react_fallback] Model tried to call '{jinx_name}' after already having results - forcing answer")
                 return {"messages": current_messages, "output": str(last_output), "usage": total_usage, "jinx_executions": jinx_executions}
 
             if jinx_name not in jinxs:
                 context = f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}"
-                logger.debug(f"[_react_fallback] Jinx not found: {jinx_name}")
+                print(colored(f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}", "red"))
                 continue
 
             jinx_obj = jinxs[jinx_name]
@@ -792,17 +795,28 @@ Instructions:
                 if missing:
                     all_params = required_names + optional_names
                     context = f"Error: jinx '{jinx_name}' requires parameters {required_names} but got {provided}. Missing: {missing}. Optional params with defaults: {optional_names}. Please retry with correct parameter names."
-                    logger.debug(f"[_react_fallback] Missing required params: {missing}")
+                    print(colored(f"Missing required params for '{jinx_name}': {missing} (got: {provided})", "red"))
                     continue
 
-            logger.debug(f"[_react_fallback] Executing jinx: {jinx_name}")
             output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
-            logger.debug(f"[_react_fallback] Jinx output: {str(output)[:200]}")
             jinx_executions.append({
                 "name": jinx_name,
                 "inputs": inputs,
                 "output": str(output) if output else None
             })
+
+            if output and str(output).strip():
+                content_display = str(output)
+                if isinstance(content_display, str):
+                    content_display = content_display.replace('\\n', '\n').replace('\\t', '\t')
+                print(colored(f"\n⚡ {jinx_name}:", "cyan"))
+                lines = content_display.split('\n')
+                if len(lines) > 50:
+                    render_markdown('\n'.join(lines[:25]))
+                    print(colored(f"\n... ({len(lines) - 50} lines hidden) ...\n", "white", attrs=["dark"]))
+                    render_markdown('\n'.join(lines[-25:]))
+                else:
+                    render_markdown(content_display)
 
             import re
             image_paths = re.findall(r'/uploads/[^\s,\'"]+\.(?:png|jpg|jpeg|webp|gif)', str(output), re.IGNORECASE)
@@ -818,21 +832,20 @@ Instructions:
                         generated_images.append(local_path)
 
             output_for_context = str(output)[:8000] + "..." if len(str(output)) > 8000 else str(output)
-            context = f"Tool '{jinx_name}' returned: {output_for_context}"
+            context = f"Jinx '{jinx_name}' returned: {output_for_context}"
 
         else:
             action_val = decision.get("action")
-            logger.debug(f"[_react_fallback] Unknown action '{action_val}' on iteration {iteration}")
+            print(colored(f"Unknown action '{action_val}', retrying...", "red"))
             if jinx_executions:
                 last_output = jinx_executions[-1].get("output", "")
                 return {"messages": current_messages, "output": str(last_output), "usage": total_usage, "jinx_executions": jinx_executions}
-            if jinxs:
-                context = f"Your response had action='{action_val}' which is not valid. You must respond with either {{\"action\": \"answer\", \"response\": \"...\"}} or {{\"action\": \"jinx\", \"jinx_name\": \"tool_name\", \"inputs\": {{...}}}}. Available tools: {list(jinxs.keys())}"
-            else:
-                context = f"Your response had action='{action_val}' which is not valid. Respond with {{\"action\": \"answer\", \"response\": \"your final answer\"}}"
+            available = list(jinxs.keys()) if jinxs else []
+            retry_hint = '{"action": "answer", "response": "..."} or {"action": "jinx", "jinx_name": "jinx_name", "inputs": {...}}'
+            context = f"Your response had action='{action_val}' which is not valid. You must respond with either {retry_hint}. Available jinxes: {available}"
             continue
 
-    logger.debug(f"[_react_fallback] Max iterations - returning {len(current_messages)} messages")
+    print(colored(f"Max iterations reached ({effective_max})", "red"))
     if jinx_executions and jinx_executions[-1].get("output"):
         return {"messages": current_messages, "output": jinx_executions[-1]["output"], "usage": total_usage, "jinx_executions": jinx_executions}
     return {"messages": current_messages, "output": f"Max iterations reached. Last: {context}", "usage": total_usage, "jinx_executions": jinx_executions}
@@ -893,6 +906,7 @@ def get_related_concepts_multi(node_name: str,
                                context : str = None, 
                                **kwargs):
     """Links any node (fact or concept) to ALL relevant concepts in the entire ontology."""
+    json_format = 'Respond with JSON: {"related_concepts": ["Concept A", "Concept B", ...]}'
     prompt = f"""
     Which of the following concepts from the entire ontology relate to the given {node_type}?
     Select all that apply, from the most specific to the most abstract.
@@ -902,7 +916,7 @@ def get_related_concepts_multi(node_name: str,
     Available Concepts:
     {json.dumps(all_concept_names, indent=2)}
 
-    Respond with JSON: {{"related_concepts": ["Concept A", "Concept B", ...]}}
+    {json_format}
     """
     response = get_llm_response(prompt, 
                                 model=model, 
@@ -923,6 +937,13 @@ def assign_groups_to_fact(
     **kwargs
 ) -> Dict[str, List[str]]:
     """Assign facts to the identified groups"""
+    json_format = """Return a JSON object with the following structure:
+        {
+            "groups": ["list of group names"]
+        }
+
+    Do not include any additional markdown formatting or leading json characters."""
+
     prompt = f"""Given this fact, assign it to any relevant groups.
 
     A fact can belong to multiple groups if it fits.
@@ -931,13 +952,7 @@ def assign_groups_to_fact(
 
     Here are the groups: {groups}
 
-    Return a JSON object with the following structure:
-        {{
-            "groups": ["list of group names"]
-        }}
-
-    Do not include any additional markdown formatting or leading json characters.
-
+    {json_format}
     """
 
     response = get_llm_response(
@@ -994,10 +1009,7 @@ def generate_group_candidates(
         {item_type.capitalize()}: {json.dumps(item_subset)}
         
         Return a JSON object:
-        {{
-            "groups": ["list of specific, precise, and relevant group names"]
-        }}
-        """
+        """ + '{"groups": ["list of specific, precise, and relevant group names"]}'
       
         
         response = get_llm_response(
@@ -1060,10 +1072,7 @@ def remove_idempotent_groups(
     Groups: {json.dumps(group_candidates)}
     
     Return JSON:
-    {{
-        "distinct_groups": ["list of specific, precise, and distinct group names to keep"]
-    }}
-    """
+    """ + '{"distinct_groups": ["list of specific, precise, and distinct group names to keep"]}'
     
     response = get_llm_response(
         prompt,
@@ -1170,20 +1179,14 @@ def abstract(groups,
         Generate no more than 5 new concepts and no fewer than 2. 
 
         Respond with JSON:
-        {{
-            "groups": [
-                {{
-                    "name": "abstract category name"
-                }}
-            ]
-        }}
-        """
-    response = get_llm_response(prompt, 
-                                model=model, 
-                                provider=provider, 
+        """ + '{"groups": [{"name": "abstract category name"}]}'
+
+    response = get_llm_response(prompt,
+                                model=model,
+                                provider=provider,
                                 format="json",
                                 npc=npc,
-                                context=context, 
+                                context=context,
                                 **kwargs)
 
     return response["response"].get("groups", [])
@@ -1278,16 +1281,7 @@ def get_facts(content_text,
     
     No two facts should share substantially similar claims. They should be conceptually distinct and pertain to distinct ideas, avoiding lengthy convoluted or compound facts .
     Respond with JSON:
-    {{
-        "facts": [
-            {{
-                "statement": "fact statement that builds on input text to state a specific claim that can be falsified through reference to the source material",
-                "source_text": "text snippets related to the source text",
-                "type": "explicit or inferred"
-            }} 
-        ]
-    }}
-    """
+    """ + '{"facts": [{"statement": "fact statement that builds on input text to state a specific claim that can be falsified through reference to the source material", "source_text": "text snippets related to the source text", "type": "explicit or inferred"}]}'
     
     response = get_llm_response(prompt, 
                                 model=model,
@@ -1392,19 +1386,12 @@ def generate_groups(facts,
 
     Group names should never be more than two words. They should not contain gerunds. They should never contain conjunctions like "AND" or "OR".
     Respond with JSON:
-    {{
-        "groups": [
-            {{
-                "name": "group name"
-            }}
-        ]
-    }}
-    """
-    
+    """ + '{"groups": [{"name": "group name"}]}'
+
     response = get_llm_response(prompt,
-                                model=model, 
-                                provider=provider, 
-                                format="json", 
+                                model=model,
+                                provider=provider,
+                                format="json",
                                 context=context,
                                 npc=npc,
                                 **kwargs)
@@ -1435,18 +1422,11 @@ def remove_redundant_groups(groups,
     Group names should never be more than two words. They should not contain gerunds. They should never contain conjunctions like "AND" or "OR".
 
     Respond with JSON:
-    {{
-        "groups": [
-            {{
-                "name": "final group name"
-            }}
-        ]
-    }}
-    """
-    
-    response = get_llm_response(prompt, 
-                                model=model, 
-                                provider=provider, 
+    """ + '{"groups": [{"name": "final group name"}]}'
+
+    response = get_llm_response(prompt,
+                                model=model,
+                                provider=provider,
                                 npc=npc,
                                 context=context,
                                 **kwargs)
@@ -1471,15 +1451,8 @@ def prune_fact_subset_llm(fact_subset,
 
     Fact Subset: {json.dumps(fact_subset, indent=2)}
 
-    Return a json list of groups 
-    {{
-        "refined_facts": [
-            fact1,
-            fact2,
-            fact3,... 
-        ]
-    }}
-    """
+    Return a json list of groups
+    """ + '{"refined_facts": [fact1, fact2, fact3, ...]}'
     response = get_llm_response(prompt, 
                                 model=model, 
                                 provider=provider, 
@@ -1513,11 +1486,7 @@ def consolidate_facts_llm(new_fact,
         - 'redundant': The fact repeats information already present in the existing facts.
 
         Respond with a JSON object:
-        {{
-            "decision": "novel or redundant",
-            "reason": "A brief explanation for your decision."
-        }}
-        """
+        """ + '{"decision": "novel or redundant", "reason": "A brief explanation for your decision."}'
     response = get_llm_response(prompt,
                                 model=model, 
                                 provider=provider, 
@@ -1546,8 +1515,8 @@ def get_related_facts_llm(new_fact_statement,
     Existing Facts:
     {json.dumps(existing_fact_statements, indent=2)}
 
-    Respond with JSON: {{"related_facts": ["statement of a related fact", ...]}}
-    """
+    Respond with JSON:
+    """ + '{"related_facts": ["statement of a related fact", ...]}'
     response = get_llm_response(prompt,
                                 model=model, 
                                 provider=provider, 
@@ -1590,10 +1559,7 @@ def find_best_link_concept_llm(candidate_concept_name,
     {json.dumps(existing_concept_names, indent=2)}
 
     Respond with the single best-fit concept to link to from the list, or respond with "none" if it is a genuinely new root idea.
-    {{
-      "best_link_concept": "The single best concept name OR none"
-    }}
-    """
+    """ + '{"best_link_concept": "The single best concept name OR none"}'
     response = get_llm_response(prompt, 
                                 model=model, 
                                 provider=provider, 
@@ -1622,10 +1588,8 @@ def asymptotic_freedom(parent_concept,
     These new concepts will exist as nodes that link to "{parent_concept['name']}".
 
     Supporting Facts: {json.dumps(fact_statements, indent=2)}
-    Respond with JSON: {{
-        "new_sub_concepts": ["sub_layer1", "sub_layer2"]
-    }}
-    """
+    Respond with JSON:
+    """ + '{"new_sub_concepts": ["sub_layer1", "sub_layer2"]}'
     response = get_llm_response(prompt, 
                                 model=model, 
                                 provider=provider,

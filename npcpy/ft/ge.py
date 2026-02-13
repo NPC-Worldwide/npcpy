@@ -104,10 +104,6 @@ class GeneticEvolver:
             self.history.append(gen_stats)
             
             if gen % 10 == 0:
-                print(
-                    f"Gen {gen}: "
-                    f"Best={gen_stats['best_fitness']:.3f}, "
-                    f"Avg={gen_stats['avg_fitness']:.3f}"
-                )
+                print(f"Gen {gen}: Best={gen_stats['best_fitness']:.3f}, Avg={gen_stats['avg_fitness']:.3f}")
         
         return self.history[-1]['best_individual']

@@ -489,10 +489,7 @@ def _get_qwen3_model(
     try:
         from qwen_tts import Qwen3TTSModel
     except ImportError:
-        raise ImportError(
-            "qwen_tts package not found. Install from: "
-            "https://github.com/QwenLM/Qwen3-TTS or pip install qwen-tts"
-        )
+        raise ImportError("qwen_tts package not found. Install from: https://github.com/QwenLM/Qwen3-TTS or pip install qwen-tts")
 
     model = Qwen3TTSModel.from_pretrained(
         model_dir, device_map=device, dtype=dtype

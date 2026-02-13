@@ -389,10 +389,7 @@ def ollama_image_gen(
                 err_msg = err.get('error', response.text)
             except Exception:
                 err_msg = response.text
-            raise RuntimeError(
-                f"Ollama image gen failed ({response.status_code}): {err_msg}\n"
-                f"Model: {model} — make sure it's pulled (`ollama pull {model}`)"
-            )
+            raise RuntimeError(f"Ollama image gen failed ({response.status_code}): {err_msg}\nModel: {model} — make sure it's pulled (`ollama pull {model}`)")
 
         result = response.json()
 
@@ -406,10 +403,7 @@ def ollama_image_gen(
                 image = Image.open(io.BytesIO(image_bytes))
                 collected_images.append(image)
         else:
-            raise ValueError(
-                f"No images returned from Ollama. Response keys: {list(result.keys())}. "
-                f"Make sure '{model}' is an image generation model (e.g. x/z-image-turbo, x/flux2-klein)."
-            )
+            raise ValueError(f"No images returned from Ollama. Response keys: {list(result.keys())}. Make sure '{model}' is an image generation model (e.g. x/z-image-turbo, x/flux2-klein).")
 
     return collected_images
 

@@ -44,10 +44,7 @@ class DeepSeekOCR:
         try:
             from huggingface_hub import snapshot_download
         except ImportError as exc:
-            raise ImportError(
-                "huggingface_hub is required to download DeepSeek OCR weights. "
-                "Install with `pip install huggingface_hub` or pre-download manually."
-            ) from exc
+            raise ImportError("huggingface_hub is required to download DeepSeek OCR weights. Install with `pip install huggingface_hub` or pre-download manually.") from exc
 
         snapshot_download(self.model_id, local_dir=self.local_dir)
         return self.local_dir
@@ -64,10 +61,7 @@ class DeepSeekOCR:
             from unsloth import FastVisionModel
             from transformers import AutoModel
         except ImportError as exc:
-            raise ImportError(
-                "unsloth and transformers are required to run DeepSeek OCR. "
-                "Install with `pip install unsloth transformers` (and bitsandbytes if using 4bit)."
-            ) from exc
+            raise ImportError("unsloth and transformers are required to run DeepSeek OCR. Install with `pip install unsloth transformers` (and bitsandbytes if using 4bit).") from exc
 
         self._model, self._tokenizer = FastVisionModel.from_pretrained(
             weights_dir,

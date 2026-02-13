@@ -8,9 +8,9 @@ from duckduckgo_search import DDGS
 from duckduckgo_search.exceptions import DuckDuckGoSearchException
 
 try:
-    from googlesearch import search
+    from googlesearch import search as _google_search
 except:
-    pass
+    _google_search = None
 from typing import List, Dict, Any, Optional, Union
 import numpy as np
 import json
@@ -234,7 +234,10 @@ def search_web(
         results = search_brave(query, num_results=num_results, api_key=api_key)
 
     elif provider == 'google':
-        urls = list(search(query, num_results=num_results))
+        if _google_search is None:
+            print("googlesearch-python not installed, falling back to duckduckgo")
+            return search_web(query, num_results=num_results, provider='duckduckgo')
+        urls = list(_google_search(query, num_results=num_results))
         
         
         

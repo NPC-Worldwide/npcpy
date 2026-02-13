@@ -194,16 +194,10 @@ def get_locally_available_models(project_directory, airplane_mode=False):
 
     internet_available = check_internet_connection()
     if not internet_available:
-        logging.info(
-            "No internet connection detected. "
-            "External API calls will be skipped."
-        )
+        logging.info("No internet connection detected. External API calls will be skipped.")
         airplane_mode = True
     else:
-        logging.info(
-            "Internet connection detected. "
-            "Proceeding based on 'airplane_mode' parameter."
-        )
+        logging.info("Internet connection detected. Proceeding based on 'airplane_mode' parameter.")
     
     custom_providers = load_custom_providers()
     
@@ -251,16 +245,10 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                 for model in models:
                     available_models[model] = 'openai-like'
                     
-                logging.info(
-                    f"Loaded {len(models)} models "
-                    f"from custom provider '{provider_name}'"
-                )
+                logging.info(f"Loaded {len(models)} models from custom provider '{provider_name}'")
                 
             except Exception as e:
-                logging.warning(
-                    f"Failed to load models from "
-                    f"custom provider '{provider_name}': {e}"
-                )
+                logging.warning(f"Failed to load models from custom provider '{provider_name}': {e}")
     
     
     airplane_mode = False
@@ -306,10 +294,7 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                 
                   
               except Exception as e:
-                  logging.warning(
-                      f"Failed to load models from "
-                      f"custom provider 'openai-like': {e}"
-                  )
+                  logging.warning(f"Failed to load models from custom provider 'openai-like': {e}")
   
             
             if "ANTHROPIC_API_KEY" in env_vars or os.environ.get("ANTHROPIC_API_KEY"):
@@ -1040,22 +1025,29 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         tool_lines = []
         for jname, jinx in npc.jinxs_dict.items():
             desc = getattr(jinx, 'description', '') or ''
-            tool_lines.append(f"  - {jname}: {desc.strip()}")
+            inputs = getattr(jinx, 'inputs', [])
+            parts = []
+            for inp in inputs:
+                if isinstance(inp, str):
+                    parts.append(f"{inp} (required)")
+                elif isinstance(inp, dict):
+                    k = list(inp.keys())[0]
+                    v = inp[k]
+                    parts.append(f"{k}={repr(v)}")
+            param_str = f"({', '.join(parts)})" if parts else ""
+            tool_lines.append(f"  - {jname}{param_str}: {desc.strip()}")
         if tool_lines:
-            system_message += "\nYou have access to the following tools:\n"
+            system_message += "\nYou have access to the following jinxes:\n"
             system_message += "\n".join(tool_lines) + "\n"
             if tool_capable:
-                system_message += (
-                    "\nYou MUST use function calls to invoke tools. "
-                    "Call one tool at a time. You will see its result, then you can call the next tool or respond. "
-                    "NEVER write JSON tool calls in your response text. ONLY use the provided function calling interface. "
-                    "For multi-step tasks, call the first tool, wait for the result, then call the next.\n"
-                )
+                system_message += "\nUse the provided function calling interface to invoke tools when they are relevant to the request. For multi-step tasks, call one tool at a time and use its result to inform the next step.\n"
             else:
-                system_message += (
-                    '\nTo use a tool, respond with JSON: {"action": "jinx", "jinx_name": "tool_name", "inputs": {"param": "value"}}\n'
-                    'When you have a final answer, respond with: {"action": "answer", "response": "your answer"}\n'
-                )
+                jinx_instructions = """
+To use a jinx, respond with JSON: {"action": "jinx", "jinx_name": "NAME", "inputs": {"param": "value"}}
+When you have a final answer, respond with: {"action": "answer", "response": "your answer"}
+Do NOT invent jinxes or parameters not listed above.
+"""
+                system_message += jinx_instructions
 
     system_message += """
     IMPORTANT:

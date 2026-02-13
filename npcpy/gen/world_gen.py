@@ -148,11 +148,7 @@ def _step_diamond(
         from hydra.utils import instantiate
         from omegaconf import OmegaConf
     except ImportError as e:
-        raise ImportError(
-            f"DIAMOND dependencies not found: {e}. "
-            "Clone https://github.com/eloialonso/diamond and add src/ to path, "
-            "or pass diamond_src_path kwarg."
-        )
+        raise ImportError(f"DIAMOND dependencies not found: {e}. Clone https://github.com/eloialonso/diamond and add src/ to path, or pass diamond_src_path kwarg.")
 
     ckpt_path = Path(model_path)
     if not ckpt_path.exists():
@@ -232,10 +228,7 @@ def _step_gamengen(
     Uses diffusion conditioned on actions to generate game frames.
     """
 
-    raise NotImplementedError(
-        "GameNGen support not yet implemented. "
-        "No open weights currently available."
-    )
+    raise NotImplementedError("GameNGen support not yet implemented. No open weights currently available.")
 
 def _step_dreamer(
     frames: List[np.ndarray],
@@ -252,10 +245,7 @@ def _step_dreamer(
     Operates in latent space, good for RL and planning.
     """
 
-    raise NotImplementedError(
-        "DreamerV3 support not yet implemented. "
-        "See https://github.com/danijar/dreamerv3 for setup."
-    )
+    raise NotImplementedError("DreamerV3 support not yet implemented. See https://github.com/danijar/dreamerv3 for setup.")
 
 DIAMOND_REPO = "https://github.com/eloialonso/diamond.git"
 DIAMOND_GAMES = ["Asterix", "Breakout", "Boxing", "Pong", "Seaquest", "SpaceInvaders"]
@@ -358,10 +348,7 @@ def get_diamond_checkpoint(game: str, install_path: str = None) -> str:
     ckpt_dir = os.path.join(install_path, "diamond", "checkpoints", game)
 
     if not os.path.exists(ckpt_dir):
-        raise FileNotFoundError(
-            f"Checkpoint for {game} not found at {ckpt_dir}. "
-            f"Run setup_diamond() first or download manually."
-        )
+        raise FileNotFoundError(f"Checkpoint for {game} not found at {ckpt_dir}. Run setup_diamond() first or download manually.")
 
     for f in os.listdir(ckpt_dir):
         if f.endswith(".pt"):

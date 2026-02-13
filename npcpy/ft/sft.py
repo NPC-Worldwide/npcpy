@@ -56,17 +56,9 @@ def format_training_examples(
     
     for inp, out in zip(inputs, outputs):
         if format_style == "gemma":
-            text = (
-                f"<start_of_turn>user\n{inp}<end_of_turn>\n"
-                f"<start_of_turn>model\n{out}<end_of_turn>"
-            )
+            text = f"<start_of_turn>user\n{inp}<end_of_turn>\n<start_of_turn>model\n{out}<end_of_turn>"
         elif format_style == "llama":
-            text = (
-                f"<|begin_of_text|><|start_header_id|>user"
-                f"<|end_header_id|>\n\n{inp}<|eot_id|>"
-                f"<|start_header_id|>assistant<|end_header_id|>"
-                f"\n\n{out}<|eot_id|>"
-            )
+            text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{inp}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n{out}<|eot_id|>"
         else:
             text = f"Input: {inp}\nOutput: {out}"
         
@@ -98,10 +90,7 @@ def run_sft(
         split_idx = int(len(formatted_examples) * (1 - validation_split))
         train_examples = formatted_examples[:split_idx]
         val_examples = formatted_examples[split_idx:]
-        print(
-            f"Split: {len(train_examples)} train, "
-            f"{len(val_examples)} val"
-        )
+        print(f"Split: {len(train_examples)} train, {len(val_examples)} val")
     else:
         train_examples = formatted_examples
         val_examples = []
@@ -199,10 +188,7 @@ def predict_sft(
 
     device = next(model.parameters()).device
     
-    formatted_prompt = (
-        f"<start_of_turn>user\n{prompt}<end_of_turn>\n"
-        f"<start_of_turn>model\n"
-    )
+    formatted_prompt = f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
     
     inputs = tokenizer(
         formatted_prompt,
