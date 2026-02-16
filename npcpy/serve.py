@@ -44,7 +44,10 @@ class SilentUndefined(Undefined):
 from npcsh._state import ShellState, initialize_base_npcs_if_needed
 from npcsh.config import NPCSH_DB_PATH
 
-from npcpy.memory.knowledge_graph import load_kg_from_db, find_similar_facts_chroma
+from npcpy.memory.knowledge_graph import (
+    load_kg_from_db,
+    find_similar_facts_chroma,
+)
 from npcpy.memory.command_history import setup_chroma_db
 from npcpy.gen.response import calculate_cost
 from npcpy.memory.search import execute_rag_command, execute_brainblast_command
@@ -971,6 +974,221 @@ def get_kg_concepts():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+# ── KG Node/Edge CRUD ───────────────────────────────────────────────
+
+@app.route('/api/kg/node', methods=['POST'])
+def add_kg_node():
+    """Add a new concept or fact at the current generation (no generation bump)."""
+    try:
+        data = request.get_json()
+        node_id = data.get('id')
+        node_type = data.get('type', 'concept')
+        properties = data.get('properties', {})
+
+        if not node_id:
+            return jsonify({"error": "Missing node id"}), 400
+
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+
+        # Get current max generation so we slot into the existing gen
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT MAX(generation) as gen FROM kg_facts")).fetchone()
+            current_gen = (row.gen if row and row.gen is not None else 0)
+
+        with engine.begin() as conn:
+            if node_type == 'fact':
+                conn.execute(
+                    text("INSERT OR IGNORE INTO kg_facts (statement, source_text, type, generation, origin) VALUES (:id, :id, 'manual', :gen, 'manual_add')"),
+                    {"id": node_id, "gen": current_gen}
+                )
+            else:
+                desc = properties.get('description', '')
+                conn.execute(
+                    text("INSERT OR IGNORE INTO kg_concepts (name, description, generation, origin) VALUES (:id, :desc, :gen, 'manual_add')"),
+                    {"id": node_id, "desc": desc, "gen": current_gen}
+                )
+
+        return jsonify({"success": True, "id": node_id, "generation": current_gen})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/kg/node/<path:node_id>', methods=['PUT'])
+def update_kg_node(node_id):
+    """Update a concept or fact in the knowledge graph."""
+    try:
+        data = request.get_json()
+        properties = data.get('properties', {})
+
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("UPDATE kg_concepts SET description = :desc WHERE name = :name"),
+                {"desc": properties.get('description', ''), "name": node_id}
+            )
+            if result.rowcount == 0:
+                conn.execute(
+                    text("UPDATE kg_facts SET source_text = :src WHERE statement = :stmt"),
+                    {"src": properties.get('source_text', ''), "stmt": node_id}
+                )
+            conn.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/kg/node/<path:node_id>', methods=['DELETE'])
+def delete_kg_node(node_id):
+    """Delete a concept or fact and all its connections (unscoped — matches the global KG view)."""
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        with engine.begin() as conn:
+            r1 = conn.execute(text("DELETE FROM kg_concepts WHERE name = :id"), {"id": node_id})
+            r2 = conn.execute(text("DELETE FROM kg_facts WHERE statement = :id"), {"id": node_id})
+            conn.execute(text("DELETE FROM kg_links WHERE source = :id OR target = :id"), {"id": node_id})
+        removed = r1.rowcount + r2.rowcount
+        return jsonify({"success": True, "removed": removed})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/kg/edge', methods=['POST'])
+def add_kg_edge():
+    """Add a new edge/link between two nodes (no generation bump)."""
+    try:
+        data = request.get_json()
+        source = data.get('source')
+        target = data.get('target')
+        edge_type = data.get('type', 'related_to')
+        weight = data.get('weight', 1)
+
+        if not source or not target:
+            return jsonify({"error": "Missing source or target"}), 400
+
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT OR IGNORE INTO kg_links (source, target, type, weight) VALUES (:src, :tgt, :typ, :w)"),
+                {"src": source, "tgt": target, "typ": edge_type, "w": weight}
+            )
+        return jsonify({"success": True})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/kg/edge/<path:source_id>/<path:target_id>', methods=['DELETE'])
+def delete_kg_edge(source_id, target_id):
+    """Delete an edge/link between two nodes."""
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM kg_links WHERE source = :src AND target = :tgt"),
+                {"src": source_id, "tgt": target_id}
+            )
+        return jsonify({"success": True})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/kg/trigger', methods=['POST'])
+def trigger_kg_process():
+    """Trigger a KG process (sleep or dream) to evolve the knowledge graph."""
+    try:
+        data = request.get_json() or {}
+        process_type = data.get('process_type', 'sleep')
+
+        db_path = app.config.get('DB_PATH')
+        engine = create_engine('sqlite:///' + db_path)
+
+        # Load current KG from DB
+        from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
+        existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
+
+        # Get model/provider from app config
+        model = app.config.get('DEFAULT_MODEL', None)
+        provider = app.config.get('DEFAULT_PROVIDER', None)
+
+        if process_type == 'sleep':
+            from npcpy.memory.knowledge_graph import kg_sleep_process
+            new_kg, changes = kg_sleep_process(
+                existing_kg, model=model, provider=provider
+            )
+        elif process_type == 'dream':
+            from npcpy.memory.knowledge_graph import kg_dream_process
+            new_kg, changes = kg_dream_process(
+                existing_kg, model=model, provider=provider
+            )
+        elif process_type == 'evolve':
+            from npcpy.memory.knowledge_graph import kg_evolve_incremental
+            new_kg, changes = kg_evolve_incremental(
+                existing_kg, content='', model=model, provider=provider
+            )
+        else:
+            return jsonify({"error": f"Unknown process type: {process_type}. Use 'sleep', 'dream', or 'evolve'."}), 400
+
+        # Save evolved KG back to DB
+        save_kg_to_db(engine, new_kg, team_name='', npc_name='', directory_path='')
+
+        return jsonify({
+            "success": True,
+            "process_type": process_type,
+            "generation": new_kg.get('generation', 0),
+            "changes": changes if isinstance(changes, dict) else {}
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/rollback', methods=['POST'])
+def rollback_kg():
+    """Rollback the KG to a specific generation by deleting newer data."""
+    try:
+        data = request.get_json() or {}
+        target_generation = data.get('generation')
+
+        if target_generation is None:
+            return jsonify({"error": "generation is required"}), 400
+
+        target_generation = int(target_generation)
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+
+        with engine.begin() as conn:
+            # Delete facts, concepts, and links added after target generation
+            conn.execute(
+                text("DELETE FROM kg_facts WHERE generation > :gen"),
+                {"gen": target_generation}
+            )
+            conn.execute(
+                text("DELETE FROM kg_concepts WHERE generation > :gen"),
+                {"gen": target_generation}
+            )
+            # Links don't have generation column, so clean up orphans
+            conn.execute(text("""
+                DELETE FROM kg_links WHERE source NOT IN (
+                    SELECT name FROM kg_concepts WHERE generation <= :gen
+                    UNION SELECT statement FROM kg_facts WHERE generation <= :gen
+                ) OR target NOT IN (
+                    SELECT name FROM kg_concepts WHERE generation <= :gen
+                    UNION SELECT statement FROM kg_facts WHERE generation <= :gen
+                )
+            """), {"gen": target_generation})
+            # Update metadata generation
+            conn.execute(text("""
+                INSERT OR REPLACE INTO kg_metadata (team_name, npc_name, directory_path, key, value)
+                VALUES ('', '', '', 'generation', :gen)
+            """), {"gen": str(target_generation)})
+
+        return jsonify({
+            "success": True,
+            "generation": target_generation
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/attachments/<message_id>", methods=["GET"])
 def get_message_attachments(message_id):
     """Get all attachments for a message"""
@@ -1663,11 +1881,6 @@ def test_jinx():
     })
 from npcpy.ft.diff import train_diffusion, DiffusionConfig
 import threading
-
-from npcpy.memory.knowledge_graph import (
-    load_kg_from_db,
-    save_kg_to_db
-)
 
 from collections import defaultdict
 
@@ -3341,6 +3554,212 @@ def init_npcsh_folder():
         })
     except Exception as e:
         print(f"Error initializing npcsh: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ============== NPC Team Sync (git-based) ==============
+
+def _resolve_team_dir(team_path=None):
+    """Resolve the team directory from the team_path query param.
+    None or 'incognide' -> ~/.npcsh/incognide/npc_team/
+    'npcsh' -> ~/.npcsh/npc_team/
+    Otherwise treat as absolute path.
+    """
+    if not team_path or team_path == 'incognide':
+        return os.path.expanduser("~/.npcsh/incognide/npc_team")
+    elif team_path == 'npcsh':
+        return os.path.expanduser("~/.npcsh/npc_team")
+    else:
+        return team_path
+
+def _git(args, cwd, timeout=15):
+    """Run a git command and return stdout."""
+    result = subprocess.run(
+        ['git'] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"git {args[0]} failed")
+    return result.stdout.strip()
+
+@app.route("/api/npc-team/status", methods=["GET"])
+def npc_team_sync_status():
+    """Get sync status for an npc_team directory."""
+    try:
+        team_dir = _resolve_team_dir(request.args.get("team_path"))
+
+        if not os.path.exists(team_dir):
+            return jsonify({"status": "unavailable", "error": "Team directory not found"})
+
+        git_dir = os.path.join(team_dir, ".git")
+        if not os.path.exists(git_dir):
+            return jsonify({"status": "uninitialized"})
+
+        # Modified files
+        status_out = _git(["status", "--porcelain"], team_dir)
+        modified = [l[3:] for l in status_out.split("\n") if l.strip()] if status_out else []
+
+        # Check for remote
+        has_remote = False
+        try:
+            remotes = _git(["remote"], team_dir)
+            has_remote = "origin" in remotes
+        except Exception:
+            pass
+
+        if not has_remote:
+            status = "ahead" if modified else "up-to-date"
+            return jsonify({"status": status, "modified": modified, "ahead": len(modified), "behind": 0})
+
+        # Fetch
+        try:
+            _git(["fetch", "origin"], team_dir)
+        except Exception:
+            pass  # offline is fine
+
+        # Ahead/behind
+        ahead, behind = 0, 0
+        try:
+            branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], team_dir)
+            counts = _git(["rev-list", "--left-right", "--count", f"origin/{branch}...HEAD"], team_dir)
+            parts = counts.split()
+            behind = int(parts[0]) if len(parts) > 0 else 0
+            ahead = int(parts[1]) if len(parts) > 1 else 0
+        except Exception:
+            pass
+
+        if ahead > 0 and behind > 0:
+            status = "diverged"
+        elif behind > 0:
+            status = "behind"
+        elif ahead > 0 or modified:
+            status = "ahead"
+        else:
+            status = "up-to-date"
+
+        return jsonify({"status": status, "modified": modified, "ahead": ahead, "behind": behind})
+    except Exception as e:
+        return jsonify({"status": "unavailable", "error": str(e)})
+
+@app.route("/api/npc-team/init", methods=["POST"])
+def npc_team_sync_init():
+    """Initialize git in an npc_team directory."""
+    try:
+        data = request.json or {}
+        team_dir = _resolve_team_dir(data.get("team_path"))
+        os.makedirs(team_dir, exist_ok=True)
+
+        git_dir = os.path.join(team_dir, ".git")
+        if not os.path.exists(git_dir):
+            _git(["init"], team_dir)
+            _git(["add", "."], team_dir)
+            _git(["commit", "-m", "Initial commit"], team_dir)
+
+        return jsonify({"success": True, "error": None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/npc-team/sync", methods=["POST"])
+def npc_team_sync_pull():
+    """Pull/rebase from upstream for an npc_team directory."""
+    try:
+        data = request.json or {}
+        team_dir = _resolve_team_dir(data.get("team_path"))
+
+        if not os.path.exists(os.path.join(team_dir, ".git")):
+            return jsonify({"error": "Not a git repo. Initialize first."}), 400
+
+        has_remote = False
+        try:
+            remotes = _git(["remote"], team_dir)
+            has_remote = "origin" in remotes
+        except Exception:
+            pass
+
+        if not has_remote:
+            return jsonify({"error": "No remote configured. Add an upstream remote first."}), 400
+
+        try:
+            _git(["pull", "--rebase", "origin", "main"], team_dir)
+            return jsonify({"success": True, "error": None})
+        except RuntimeError:
+            # Check for conflicts
+            status_out = _git(["status", "--porcelain"], team_dir)
+            conflicts = [l[3:] for l in status_out.split("\n") if l.startswith("UU") or l.startswith("AA")]
+            if conflicts:
+                return jsonify({"conflicts": conflicts, "error": None})
+            raise
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/npc-team/resolve", methods=["POST"])
+def npc_team_sync_resolve():
+    """Resolve a merge conflict in an npc_team directory."""
+    try:
+        data = request.json or {}
+        team_dir = _resolve_team_dir(data.get("team_path"))
+        file_path = data.get("file")
+        resolution = data.get("resolution")  # 'ours' or 'theirs'
+
+        if not file_path or not resolution:
+            return jsonify({"error": "file and resolution are required"}), 400
+
+        if resolution == "ours":
+            _git(["checkout", "--ours", file_path], team_dir)
+        elif resolution == "theirs":
+            _git(["checkout", "--theirs", file_path], team_dir)
+        else:
+            # Custom content
+            content = data.get("content")
+            if content is not None:
+                full_path = os.path.join(team_dir, file_path)
+                with open(full_path, "w") as f:
+                    f.write(content)
+
+        _git(["add", file_path], team_dir)
+
+        # Check if all conflicts resolved
+        status_out = _git(["status", "--porcelain"], team_dir)
+        remaining = [l for l in status_out.split("\n") if l.startswith("UU") or l.startswith("AA")]
+        if not remaining:
+            try:
+                _git(["rebase", "--continue"], team_dir)
+            except Exception:
+                pass  # might not be in rebase state
+
+        return jsonify({"success": True, "error": None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/npc-team/commit", methods=["POST"])
+def npc_team_sync_commit():
+    """Commit current state of an npc_team directory."""
+    try:
+        data = request.json or {}
+        team_dir = _resolve_team_dir(data.get("team_path"))
+        message = data.get("message", "Update NPC team")
+
+        _git(["add", "."], team_dir)
+        _git(["commit", "-m", message], team_dir)
+
+        return jsonify({"success": True, "error": None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/npc-team/diff", methods=["GET"])
+def npc_team_sync_diff():
+    """Get diff for an npc_team directory."""
+    try:
+        team_dir = _resolve_team_dir(request.args.get("team_path"))
+        file_path = request.args.get("file")
+
+        args = ["diff", "--", file_path] if file_path else ["diff"]
+        diff = _git(args, team_dir)
+
+        return jsonify({"diff": diff, "error": None})
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/context/websites", methods=["GET"])
@@ -6710,20 +7129,42 @@ _studio_action_results = {}
 
 import queue
 import threading
-_sse_subscribers = []
+# Window-aware SSE subscribers: {window_id: {"queue": Queue, "folder": str, "title": str}}
+_sse_subscribers = {}
 _sse_lock = threading.Lock()
+# Legacy list for backwards compat with unidentified connections
+_sse_subscribers_legacy = []
 
-def _notify_sse_subscribers(action_id, action_data):
-    """Push new action to all SSE subscribers."""
+def _notify_sse_subscribers(action_id, action_data, window_id=None):
+    """Push action to SSE subscribers. If window_id given, only push to that window."""
+    payload = {'id': action_id, **action_data}
+    if window_id:
+        payload['window_id'] = window_id
     with _sse_lock:
-        dead = []
-        for q in _sse_subscribers:
+        if window_id and window_id in _sse_subscribers:
             try:
-                q.put_nowait({'id': action_id, **action_data})
+                _sse_subscribers[window_id]['queue'].put_nowait(payload)
             except:
-                dead.append(q)
-        for q in dead:
-            _sse_subscribers.remove(q)
+                del _sse_subscribers[window_id]
+        else:
+            # Broadcast to all
+            dead = []
+            for wid, sub in _sse_subscribers.items():
+                try:
+                    sub['queue'].put_nowait(payload)
+                except:
+                    dead.append(wid)
+            for wid in dead:
+                del _sse_subscribers[wid]
+            # Also broadcast to legacy subscribers
+            dead_legacy = []
+            for q in _sse_subscribers_legacy:
+                try:
+                    q.put_nowait(payload)
+                except:
+                    dead_legacy.append(q)
+            for q in dead_legacy:
+                _sse_subscribers_legacy.remove(q)
 
 @app.route('/api/studio/action', methods=['POST'])
 def studio_action():
@@ -6737,6 +7178,7 @@ def studio_action():
         data = request.json or {}
         action = data.get('action')
         args = data.get('args', {})
+        window_id = data.get('window_id', '')
 
         if not action:
             return jsonify({'success': False, 'error': 'Missing action'}), 400
@@ -6749,11 +7191,13 @@ def studio_action():
             'args': args,
             'status': 'pending'
         }
+        if window_id:
+            action_data['window_id'] = window_id
         _pending_studio_actions[action_id] = action_data
 
-        print(f"[Studio] Queued action {action_id}: {action}")
+        print(f"[Studio] Queued action {action_id}: {action}" + (f" -> window {window_id}" if window_id else ""))
 
-        _notify_sse_subscribers(action_id, action_data)
+        _notify_sse_subscribers(action_id, action_data, window_id=window_id)
 
         import time
         start_time = time.time()
@@ -6794,18 +7238,31 @@ def studio_actions_stream():
     """
     SSE endpoint for streaming pending actions to the frontend.
     Frontend connects once, receives actions as they're created.
+    Accepts optional query params: windowId, folder
     """
     import json as json_module
+    window_id = request.args.get('windowId', '')
+    folder = request.args.get('folder', '')
 
     def generate():
         q = queue.Queue()
         with _sse_lock:
-            _sse_subscribers.append(q)
+            if window_id:
+                _sse_subscribers[window_id] = {
+                    'queue': q,
+                    'folder': folder,
+                    'title': '',
+                }
+                print(f"[Studio] SSE subscriber registered: window={window_id} folder={folder}")
+            else:
+                _sse_subscribers_legacy.append(q)
         try:
             for aid, action in _pending_studio_actions.items():
                 if action.get('status') == 'pending':
-                    data = json_module.dumps({'id': aid, **action})
-                    yield f"data: {data}\n\n"
+                    target = action.get('window_id', '')
+                    if not target or target == window_id:
+                        data = json_module.dumps({'id': aid, **action})
+                        yield f"data: {data}\n\n"
 
             while True:
                 try:
@@ -6816,8 +7273,11 @@ def studio_actions_stream():
                     yield ": keepalive\n\n"
         finally:
             with _sse_lock:
-                if q in _sse_subscribers:
-                    _sse_subscribers.remove(q)
+                if window_id and window_id in _sse_subscribers:
+                    del _sse_subscribers[window_id]
+                    print(f"[Studio] SSE subscriber disconnected: window={window_id}")
+                elif q in _sse_subscribers_legacy:
+                    _sse_subscribers_legacy.remove(q)
 
     return Response(generate(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache',
@@ -6848,6 +7308,53 @@ def studio_action_complete():
         return jsonify({'success': True})
     except Exception as e:
         print(f"Error completing studio action: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/studio/register_window', methods=['POST'])
+def register_studio_window():
+    """
+    Register or update a window's metadata.
+    Called by frontend on connect or workspace switch.
+    """
+    try:
+        data = request.json or {}
+        window_id = data.get('windowId', '')
+        folder = data.get('folder', '')
+        title = data.get('title', '')
+
+        if not window_id:
+            return jsonify({'success': False, 'error': 'Missing windowId'}), 400
+
+        with _sse_lock:
+            if window_id in _sse_subscribers:
+                _sse_subscribers[window_id]['folder'] = folder
+                _sse_subscribers[window_id]['title'] = title
+                print(f"[Studio] Window updated: {window_id} folder={folder}")
+            else:
+                print(f"[Studio] Window registered (no SSE yet): {window_id} folder={folder}")
+
+        return jsonify({'success': True, 'windowId': window_id})
+    except Exception as e:
+        print(f"Error registering window: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/studio/windows', methods=['GET'])
+def list_studio_windows():
+    """
+    List all connected windows with their IDs, folders, and titles.
+    """
+    try:
+        windows = []
+        with _sse_lock:
+            for wid, sub in _sse_subscribers.items():
+                windows.append({
+                    'id': wid,
+                    'folder': sub.get('folder', ''),
+                    'title': sub.get('title', ''),
+                })
+        return jsonify({'success': True, 'windows': windows, 'count': len(windows)})
+    except Exception as e:
+        print(f"Error listing windows: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/studio/action_result', methods=['POST'])

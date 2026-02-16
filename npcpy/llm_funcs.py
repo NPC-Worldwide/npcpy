@@ -664,9 +664,7 @@ def _react_fallback(
                 parts.append(f"{k}={repr(v)}")
         return f"- {name}({', '.join(parts)}): {jinx.description}"
 
-    jinx_list = "\n".join(_jinx_info(n, j) for n, j in jinxs.items()) if jinxs else "None"
-
-    effective_max = min(max_iterations, 7)
+    effective_max = min(max_iterations, 3)
 
     for iteration in range(effective_max):
         history_text = ""
@@ -676,20 +674,12 @@ def _react_fallback(
                 for h in jinx_executions[-5:]
             )
 
-        json_instructions = """Respond with a single JSON object only. No other text.
+        first_jinx = list(jinxs.keys())[0] if jinxs else "tool_name"
+        jinx_example = '{"action": "jinx", "jinx_name": "' + first_jinx + '", "inputs": {"param": "value"}}'
+        answer_example = '{"action": "answer", "response": "your answer"}'
+        json_instructions = f"Respond with a single JSON object only. No other text.\n\nTo use a jinx:\n{jinx_example}\n\nTo answer directly:\n{answer_example}"
 
-To use a jinx:
-{"action": "jinx", "jinx_name": "NAME", "inputs": {"param": "value"}}
-
-To answer directly:
-{"action": "answer", "response": "your answer"}
-
-Rules:
-- Use EXACT parameter names from the jinx definitions above
-- Do NOT repeat a jinx call with the same inputs
-- Do NOT invent jinxes or parameters not listed above"""
-
-        prompt = f"Request: {command}\n\nAvailable Jinxes:\n{jinx_list}\n\n{json_instructions}{history_text}"
+        prompt = f"Request: {command}\n\n{json_instructions}{history_text}"
 
         if context:
             prompt += f"\n\nCurrent context: {context}"
@@ -704,7 +694,6 @@ Rules:
             npc=npc,
             team=team,
             images=((images or []) if iteration == 0 else []) + generated_images or None,
-            format="json",
             context=context,
         )
 
@@ -712,7 +701,22 @@ Rules:
             total_usage["input_tokens"] += response["usage"].get("input_tokens", 0)
             total_usage["output_tokens"] += response["usage"].get("output_tokens", 0)
 
-        decision = response.get("response", {})
+        raw_response = response.get("response", {})
+        if isinstance(raw_response, str):
+            import json as _json
+            raw_response = raw_response.strip()
+            # Extract JSON from markdown code blocks if present
+            if "```" in raw_response:
+                import re
+                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+                if json_match:
+                    raw_response = json_match.group(1)
+            try:
+                decision = _json.loads(raw_response)
+            except (ValueError, _json.JSONDecodeError):
+                decision = raw_response
+        else:
+            decision = raw_response
 
         action = decision.get("action", "?") if isinstance(decision, dict) else type(decision).__name__
         if isinstance(decision, dict) and decision.get("action") == "jinx":
@@ -729,7 +733,8 @@ Rules:
             if jinx_executions:
                 last_output = jinx_executions[-1].get("output", "")
                 return {"messages": current_messages, "output": str(last_output), "usage": total_usage, "jinx_executions": jinx_executions}
-            retry_hint = '{"action": "answer", "response": "..."} or {"action": "jinx", "jinx_name": "jinx_name", "inputs": {...}}'
+            first_jinx = list(jinxs.keys())[0] if jinxs else "tool_name"
+            retry_hint = '{"action": "answer", "response": "..."} or {"action": "jinx", "jinx_name": "' + first_jinx + '", "inputs": {...}}'
             context = f"Your response was not valid JSON object. You must respond with a JSON object: either {retry_hint}"
             continue
         if decision.get("action") == "answer":
@@ -769,8 +774,11 @@ Rules:
                 return {"messages": current_messages, "output": str(last_output), "usage": total_usage, "jinx_executions": jinx_executions}
 
             if jinx_name not in jinxs:
-                context = f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}"
-                print(colored(f"Error: '{jinx_name}' not found. Available: {list(jinxs.keys())}", "red"))
+                available = list(jinxs.keys())
+                print(colored(f"Error: '{jinx_name}' not found. Available: {available}", "red"))
+                context = f"'{jinx_name}' is not a valid tool. The ONLY available tools are: {available}. Either use one of those exact names or answer directly with {{\"action\": \"answer\", \"response\": \"...\"}}"
+                # Force next iteration to be the last — don't burn more than 1 retry on bad tool names
+                effective_max = min(effective_max, iteration + 2)
                 continue
 
             jinx_obj = jinxs[jinx_name]
@@ -797,6 +805,12 @@ Rules:
                     context = f"Error: jinx '{jinx_name}' requires parameters {required_names} but got {provided}. Missing: {missing}. Optional params with defaults: {optional_names}. Please retry with correct parameter names."
                     print(colored(f"Missing required params for '{jinx_name}': {missing} (got: {provided})", "red"))
                     continue
+
+            # Unwrap nested dicts — models sometimes produce {"param": {"description": "value"}}
+            # when the jinx schema has description sub-fields
+            for k, v in list(inputs.items()):
+                if isinstance(v, dict) and 'description' in v:
+                    inputs[k] = v['description']
 
             output = _execute_jinx(jinxs[jinx_name], inputs, npc, team, current_messages, extra_globals)
             jinx_executions.append({
@@ -841,7 +855,8 @@ Rules:
                 last_output = jinx_executions[-1].get("output", "")
                 return {"messages": current_messages, "output": str(last_output), "usage": total_usage, "jinx_executions": jinx_executions}
             available = list(jinxs.keys()) if jinxs else []
-            retry_hint = '{"action": "answer", "response": "..."} or {"action": "jinx", "jinx_name": "jinx_name", "inputs": {...}}'
+            first_jinx = list(jinxs.keys())[0] if jinxs else "tool_name"
+            retry_hint = '{"action": "answer", "response": "..."} or {"action": "jinx", "jinx_name": "' + first_jinx + '", "inputs": {...}}'
             context = f"Your response had action='{action_val}' which is not valid. You must respond with either {retry_hint}. Available jinxes: {available}"
             continue
 

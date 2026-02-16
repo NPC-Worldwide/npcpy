@@ -1195,9 +1195,6 @@ def match_jinx_spec_to_names(jinx_spec: str, team_jinxs_dict: Dict[str, 'Jinx'],
     return matched_names
 
 def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
-    print(f"DEBUG extract_jinx_inputs called with args: {args}")
-    print(f"DEBUG jinx.inputs: {jinx.inputs}")
-    
     inputs = {}
 
     flag_mapping = {}
@@ -1238,20 +1235,15 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
                 used_args.add(i)
 
     unused_args = [arg for i, arg in enumerate(args) if i not in used_args]
-    
-    print(f"DEBUG unused_args: {unused_args}")
-    
+
     first_required = None
     for input_ in jinx.inputs:
         if isinstance(input_, str):
             first_required = input_
             break
-    
-    print(f"DEBUG first_required: {first_required}")
-    
+
     if first_required and unused_args:
         inputs[first_required] = ' '.join(unused_args).strip()
-        print(f"DEBUG assigned to first_required: {inputs[first_required]}")
     else:
         jinx_input_names = []
         for input_ in jinx.inputs:
@@ -1260,7 +1252,7 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
             elif isinstance(input_, dict):
                 jinx_input_names.append(list(input_.keys())[0])
         
-        if len(jinx_input_names) == 1:
+        if len(jinx_input_names) == 1 and unused_args:
             inputs[jinx_input_names[0]] = ' '.join(unused_args).strip()
         else:
             for i, arg in enumerate(unused_args):
@@ -1279,7 +1271,6 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
             if key not in inputs:
                 inputs[key] = default_value
 
-    print(f"DEBUG final inputs: {inputs}")
     return inputs
 from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
 from npcpy.memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_sleep_process, kg_dream_process

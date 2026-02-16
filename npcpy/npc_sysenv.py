@@ -1004,7 +1004,7 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         if npc.tables is not None:
             system_message += f"\nDatabase tables: {npc.tables}\n"
 
-    if team is not None:
+    if team is not None and npc.name == getattr(team, 'foreperson', 'sibiji'):
         team_context = team.context if hasattr(team, "context") and team.context else ""
         team_preferences = team.shared_context.get('preferences', '') if hasattr(team, "shared_context") else ""
         system_message += f"\nTeam context: {team_context}\n"
@@ -1049,19 +1049,8 @@ Do NOT invent jinxes or parameters not listed above.
 """
                 system_message += jinx_instructions
 
-    system_message += """
-    IMPORTANT:
-Some users may attach images to their request.
-Please process them accordingly. You do not need mention that you cannot "see" images. The user understands this and wants you
-to help them multimodally.
 
-If the user asked for you to explain what's on their screen or something similar,
-they are referring to the details contained within the attached image(s).
-You do not need to actually view their screen.
-You do not need to mention that you cannot view or interpret images directly.
-They understand that you can view them multimodally.
-You only need to answer the user's request based on the attached image(s).
-"""
+
 
     return system_message
 
