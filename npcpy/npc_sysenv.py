@@ -1004,7 +1004,7 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         if npc.tables is not None:
             system_message += f"\nDatabase tables: {npc.tables}\n"
 
-    if team is not None and npc.name == getattr(team, 'foreperson', 'sibiji'):
+    if team is not None and npc.name == getattr(team, 'forenpc_name', 'sibiji'):
         team_context = team.context if hasattr(team, "context") and team.context else ""
         team_preferences = team.shared_context.get('preferences', '') if hasattr(team, "shared_context") else ""
         system_message += f"\nTeam context: {team_context}\n"
@@ -1016,7 +1016,7 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             for name, member in team.npcs.items():
                 if name != npc.name:
                     directive = getattr(member, 'primary_directive', '')
-                    desc = directive[:500].strip() if directive else ''
+                    desc = directive[:50].strip() if directive else ''
                     members.append(f"  - @{name}: {desc}")
             if members:
                 system_message += "\nTeam members available for delegation:\n" + "\n".join(members) + "\n"
@@ -1025,26 +1025,19 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         tool_lines = []
         for jname, jinx in npc.jinxs_dict.items():
             desc = getattr(jinx, 'description', '') or ''
-            inputs = getattr(jinx, 'inputs', [])
-            parts = []
-            for inp in inputs:
-                if isinstance(inp, str):
-                    parts.append(f"{inp} (required)")
-                elif isinstance(inp, dict):
-                    k = list(inp.keys())[0]
-                    v = inp[k]
-                    parts.append(f"{k}={repr(v)}")
-            param_str = f"({', '.join(parts)})" if parts else ""
-            tool_lines.append(f"  - {jname}{param_str}: {desc.strip()}")
+            tool_lines.append(f"  - {jname}: {desc.strip()}")
         if tool_lines:
             system_message += "\nYou have access to the following jinxes:\n"
             system_message += "\n".join(tool_lines) + "\n"
             if tool_capable:
                 system_message += "\nUse the provided function calling interface to invoke tools when they are relevant to the request. For multi-step tasks, call one tool at a time and use its result to inform the next step.\n"
             else:
-                jinx_instructions = """
-To use a jinx, respond with JSON: {"action": "jinx", "jinx_name": "NAME", "inputs": {"param": "value"}}
-When you have a final answer, respond with: {"action": "answer", "response": "your answer"}
+                jinx_names_str = ", ".join(npc.jinxs_dict.keys())
+                jinx_instructions = f"""
+Respond with a single JSON object only.
+To use a jinx, set action to jinx, jinx_name to one of [{jinx_names_str}], and inputs with the required parameters.
+To answer directly, set action to answer and response to your answer.
+Read each jinx description carefully to pick the right one for the task.
 Do NOT invent jinxes or parameters not listed above.
 """
                 system_message += jinx_instructions
