@@ -1367,7 +1367,7 @@ def get_litellm_response(
             if key in [
                 "stop", "temperature", "top_p", "max_tokens", "max_completion_tokens",
                  "extra_headers", "parallel_tool_calls",
-                "response_format", "user", "timeout",
+                "response_format", "user", "timeout", "thinking", "reasoning_effort",
             ]:
                 api_params[key] = value
 
