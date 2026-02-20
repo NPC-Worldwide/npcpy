@@ -1394,12 +1394,25 @@ def get_litellm_response(
             
             llm_response = resp.choices[0].message.content
             result["response"] = llm_response
-            result["messages"].append({"role": "assistant", 
-                                       "content": llm_response})
-            
-            
+            assistant_msg = {"role": "assistant", "content": llm_response}
             if hasattr(resp.choices[0].message, 'tool_calls') and resp.choices[0].message.tool_calls:
-                result["tool_calls"] = resp.choices[0].message.tool_calls
+                raw_tcs = resp.choices[0].message.tool_calls
+                result["tool_calls"] = raw_tcs
+                tc_dicts = []
+                for tc in raw_tcs:
+                    if isinstance(tc, dict):
+                        tc_dicts.append(tc)
+                    else:
+                        tc_dicts.append({
+                            "id": getattr(tc, "id", str(uuid.uuid4())),
+                            "type": "function",
+                            "function": {
+                                "name": getattr(tc.function, "name", "") if hasattr(tc, "function") else "",
+                                "arguments": getattr(tc.function, "arguments", "{}") if hasattr(tc, "function") else "{}"
+                            }
+                        })
+                assistant_msg["tool_calls"] = tc_dicts
+            result["messages"].append(assistant_msg)
             if format == "json":
                 try:
                     if isinstance(llm_response, str):
