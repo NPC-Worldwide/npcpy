@@ -5508,12 +5508,12 @@ IMPORTANT AGENT BEHAVIOR:
         stream_response = {"output": f"Unsupported execution mode: {exe_mode}", "messages": messages}
 
     user_message_filled = ''
-
-    if isinstance(messages[-1].get('content'), list):
-        for cont in messages[-1].get('content'):
-            txt = cont.get('text')
-            if txt is not None:
-                user_message_filled += txt
+    if len(messages) >0:
+      if isinstance(messages[-1] .get('content'), list):
+          for cont in messages[-1].get('content'):
+              txt = cont.get('text')
+              if txt is not None:
+                  user_message_filled += txt
     
     if not is_resend:
         save_conversation_message(
