@@ -27,35 +27,99 @@ except OSError:
     pass
 
 def sanitize_messages(messages: list) -> list:
+    """Remove orphaned tool_use and tool_result blocks from message history.
+
+    Checks EVERY assistant message with tool_calls (not just the last one)
+    to ensure Anthropic never sees a tool_use without a matching tool_result.
+    For mid-history orphans, the tool_calls key is removed (keeping text content).
+    For tail orphans, the assistant message is stripped entirely.
+    Also merges consecutive same-role messages and ensures the conversation
+    doesn't end with an assistant message (Anthropic rejects that).
+    """
     if not messages:
         return messages
 
-    valid_tool_call_ids = set()
-    for msg in messages:
-        if msg.get('role') == 'assistant' and msg.get('tool_calls'):
-            for tc in msg['tool_calls']:
-                if isinstance(tc, dict):
-                    tc_id = tc.get('id')
-                else:
-                    tc_id = getattr(tc, 'id', None)
-                if tc_id:
-                    valid_tool_call_ids.add(tc_id)
+    def _extract_tc_ids(tool_calls_list):
+        ids = set()
+        for tc in tool_calls_list:
+            if isinstance(tc, dict):
+                tc_id = tc.get('id') or (tc.get('function') or {}).get('id', '')
+            else:
+                tc_id = getattr(tc, 'id', '')
+            if tc_id:
+                ids.add(tc_id)
+        return ids
 
+    # Pass 1: for each assistant with tool_calls, check that ALL tool_call_ids
+    # are fulfilled by immediately following tool messages.  Collect fulfilled
+    # IDs only from the contiguous run of tool messages right after the assistant.
     cleaned = []
-    for msg in messages:
-        if msg.get('role') == 'tool':
-            tc_id = msg.get('tool_call_id')
-            if tc_id and tc_id not in valid_tool_call_ids:
-                content = msg.get('content', '')
-                name = msg.get('name', 'tool')
-                cleaned.append({
-                    'role': 'assistant',
-                    'content': f"[{name} result]: {content}" if name != 'tool' else content
-                })
-                continue
-        cleaned.append(msg)
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
 
-    return cleaned
+        if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+            expected_ids = _extract_tc_ids(msg['tool_calls'])
+
+            # Collect tool results that immediately follow this assistant message
+            fulfilled_ids = set()
+            j = i + 1
+            while j < len(messages) and messages[j].get('role') == 'tool':
+                tid = messages[j].get('tool_call_id', '')
+                if tid:
+                    fulfilled_ids.add(tid)
+                j += 1
+
+            if expected_ids and expected_ids.issubset(fulfilled_ids):
+                # Valid pair — keep assistant and all its tool results
+                cleaned.append(msg)
+                for k in range(i + 1, j):
+                    cleaned.append(messages[k])
+                i = j
+            else:
+                # Orphaned tool_use — strip tool_calls, keep text content if any
+                text_content = msg.get('content')
+                if text_content:
+                    cleaned.append({'role': 'assistant', 'content': text_content})
+                # Also skip any partial tool results that followed
+                i = j
+        elif msg.get('role') == 'tool':
+            # Stray tool result not preceded by an assistant with tool_calls
+            content = msg.get('content', '')
+            name = msg.get('name', 'tool')
+            cleaned.append({
+                'role': 'assistant',
+                'content': f"[{name} result]: {content}" if name != 'tool' else content
+            })
+            i += 1
+        else:
+            cleaned.append(msg)
+            i += 1
+
+    # Pass 2: merge consecutive same-role messages (except system).
+    # Anthropic requires strict user/assistant alternation.
+    merged = []
+    for msg in cleaned:
+        role = msg.get('role', '')
+        if (merged
+                and role == merged[-1].get('role')
+                and role in ('user', 'assistant')
+                and not msg.get('tool_calls')
+                and not merged[-1].get('tool_calls')):
+            prev_content = merged[-1].get('content', '') or ''
+            new_content = msg.get('content', '') or ''
+            merged[-1]['content'] = (prev_content + '\n' + new_content).strip()
+        else:
+            merged.append(msg)
+
+    # Pass 3: ensure conversation doesn't end with an assistant message.
+    # Anthropic rejects "assistant message prefill" — last msg must be user/tool.
+    while merged and merged[-1].get('role') == 'assistant' and not merged[-1].get('tool_calls'):
+        # If the last non-system message is assistant text, drop it from the tail.
+        # The caller will re-add the user prompt or tool result.
+        merged.pop()
+
+    return merged
 
 
 TOKEN_COSTS = {

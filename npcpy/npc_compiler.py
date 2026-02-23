@@ -678,16 +678,9 @@ class Jinx:
             )
             output_str = str(context.get("output", ""))
             if "error" in output_str.lower():
-                self._log_debug(f"DEBUG: Jinx '{self.jinx_name}' execution stopped due to error in step '{step.get('name', 'unnamed_step')}': {context['output']}")
                 break
 
         return context
-
-    def _log_debug(self, msg: str):
-        """Helper for logging debug messages to a file."""
-        log_file_path = os.path.expanduser("~/jinx_debug_log.txt")
-        with open(log_file_path, "a") as f:
-            f.write(f"[{datetime.now().isoformat()}] {msg}\n")
 
     def _execute_step(self,
                   step: Dict[str, Any],
@@ -709,10 +702,7 @@ class Jinx:
         except Exception as e:
             error_msg = f"Error rendering template for step '{step_name}' (second pass): {type(e).__name__}: {e}"
             context['output'] = error_msg
-            self._log_debug(error_msg)
             return context
-        
-        self._log_debug(f"DEBUG: Executing step '{step_name}' with rendered code: {rendered_code}")
 
         from npcpy.npc_array import NPCArray, infer_matrix, ensemble_vote
 
@@ -756,7 +746,6 @@ class Jinx:
             error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': {type(e).__name__}: {e}"
             print(f"[JINX-ERROR] {error_msg}")
             context['output'] = error_msg
-            self._log_debug(error_msg)
             return context
 
         context_output = context.get("output")
