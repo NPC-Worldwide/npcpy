@@ -175,6 +175,16 @@ def init_kg_schema(engine: Engine):
         Column('generation', Integer),
         Column('origin', String(100)),
         UniqueConstraint('statement', 'team_name', 'npc_name', 'directory_path'),
+    )
+
+    kg_fact_sources = Table('kg_fact_sources', metadata,
+        Column('statement', Text, nullable=False),
+        Column('team_name', String(255), nullable=False),
+        Column('npc_name', String(255), nullable=False),
+        Column('directory_path', Text, nullable=False),
+        Column('conversation_id', String(255), nullable=False),
+        Column('message_id', String(255), nullable=False),
+        UniqueConstraint('statement', 'team_name', 'npc_name', 'directory_path', 'conversation_id', 'message_id'),
         schema=None
     )
 
@@ -246,17 +256,26 @@ def load_kg_from_db(engine: Engine, team_name: str, npc_name: str, directory_pat
 
             
             result = conn.execute(text("""
-                SELECT statement, source_text, type, generation, origin FROM kg_facts 
-                WHERE team_name = :team AND npc_name = :npc AND directory_path = :path
+                SELECT f.statement, f.source_text, f.type, f.generation, f.origin,
+                       COUNT(s.conversation_id) as weight
+                FROM kg_facts f
+                LEFT JOIN kg_fact_sources s
+                  ON f.statement = s.statement
+                  AND f.team_name = s.team_name
+                  AND f.npc_name = s.npc_name
+                  AND f.directory_path = s.directory_path
+                WHERE f.team_name = :team AND f.npc_name = :npc AND f.directory_path = :path
+                GROUP BY f.statement, f.source_text, f.type, f.generation, f.origin
             """), {"team": team_name, "npc": npc_name, "path": directory_path})
-            
+
             kg['facts'] = [
                 {
                     "statement": row.statement,
                     "source_text": row.source_text,
                     "type": row.type,
                     "generation": row.generation,
-                    "origin": row.origin
+                    "origin": row.origin,
+                    "weight": max(1, row.weight)
                 }
                 for row in result
             ]
@@ -297,11 +316,12 @@ def load_kg_from_db(engine: Engine, team_name: str, npc_name: str, directory_pat
     
     return kg
 
-def save_kg_to_db(engine: Engine, kg_data: Dict[str, Any], team_name: str, npc_name: str, directory_path: str):
-    """Saves a knowledge graph dictionary to the database, ignoring duplicates."""
+def save_kg_to_db(engine: Engine, kg_data: Dict[str, Any], team_name: str, npc_name: str, directory_path: str,
+                  conversation_id: str = None, message_id: str = None):
+    """Saves a knowledge graph dictionary to the database. Tracks which conversations/messages produced each fact."""
     try:
         with engine.begin() as conn:
-            
+
             facts_to_save = [
                 {
                     "statement": fact['statement'],
@@ -331,9 +351,31 @@ def save_kg_to_db(engine: Engine, kg_data: Dict[str, Any], team_name: str, npc_n
                         VALUES (:statement, :team_name, :npc_name, :directory_path, :source_text, :type, :generation, :origin)
                         ON CONFLICT (statement, team_name, npc_name, directory_path) DO NOTHING
                     """)
-                
+
                 for fact in facts_to_save:
                     conn.execute(stmt, fact)
+
+                # Record which conversation/message produced each fact
+                if conversation_id and message_id:
+                    src_stmt = text("""
+                        INSERT OR IGNORE INTO kg_fact_sources
+                        (statement, team_name, npc_name, directory_path, conversation_id, message_id)
+                        VALUES (:statement, :team_name, :npc_name, :directory_path, :conversation_id, :message_id)
+                    """) if 'sqlite' in str(engine.url) else text("""
+                        INSERT INTO kg_fact_sources
+                        (statement, team_name, npc_name, directory_path, conversation_id, message_id)
+                        VALUES (:statement, :team_name, :npc_name, :directory_path, :conversation_id, :message_id)
+                        ON CONFLICT DO NOTHING
+                    """)
+                    for fact in facts_to_save:
+                        conn.execute(src_stmt, {
+                            "statement": fact['statement'],
+                            "team_name": team_name,
+                            "npc_name": npc_name,
+                            "directory_path": directory_path,
+                            "conversation_id": conversation_id,
+                            "message_id": message_id
+                        })
 
             
             concepts_to_save = [

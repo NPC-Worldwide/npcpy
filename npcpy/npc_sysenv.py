@@ -7,6 +7,7 @@ import socket
 import concurrent.futures 
 import platform
 import sqlite3
+import subprocess
 import sys
 from typing import Dict, List
 import textwrap
@@ -18,9 +19,10 @@ ON_MACOS = platform.system() == "Darwin"
 
 def get_data_dir() -> str:
     """
-    Get the platform-specific data directory for npcsh.
+    Get the data directory for npcsh.
 
-    Returns:
+    If INCOGNIDE_HOME is set, use that directly.
+    Otherwise:
         - Linux: $XDG_DATA_HOME/npcsh or ~/.local/share/npcsh
         - macOS: ~/Library/Application Support/npcsh
         - Windows: %LOCALAPPDATA%/npcsh or ~/AppData/Local/npcsh
@@ -28,6 +30,10 @@ def get_data_dir() -> str:
     Falls back to ~/.npcsh for backwards compatibility if the new location
     doesn't exist but the old one does.
     """
+    npcsh_home = os.environ.get('INCOGNIDE_HOME')
+    if npcsh_home:
+        return os.path.expanduser(npcsh_home)
+
     if ON_WINDOWS:
         base = os.environ.get('LOCALAPPDATA', os.path.expanduser('~/AppData/Local'))
         new_path = os.path.join(base, 'npcsh')
@@ -740,22 +746,23 @@ def render_code_block(code: str, language: str = None) -> None:
     )
     console.print(syntax)
     
-def print_and_process_stream_with_markdown(response, model, provider, show=False):
+def print_and_process_stream_with_markdown(response, model, provider, show=False, rerender=True):
     import sys
-    
+
     str_output = ""
-    dot_count = 0  
+    dot_count = 0
     tool_call_data = {"id": None, "function_name": None, "arguments": ""}
     interrupted = False
-    
+
     if isinstance(response, str):
-        render_markdown(response)  
+        render_markdown(response)
         print('\n') 
         return response 
     
     
-    sys.stdout.write('\033[s')  
-    sys.stdout.flush()
+    if rerender:
+        sys.stdout.write('\033[s')
+        sys.stdout.flush()
     
     try:
         for chunk in response:
@@ -840,14 +847,13 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
         str_output += "\n\n[⚠️ Response interrupted by user]"
     
     
-    sys.stdout.write('\033[u')  
-    sys.stdout.write('\033[J')  
-    sys.stdout.flush()
-    
-    
-    render_markdown(str_output)
+    if rerender:
+        sys.stdout.write('\033[u')
+        sys.stdout.write('\033[J')
+        sys.stdout.flush()
+        render_markdown(str_output)
     print('\n')
-    
+
     return str_output
 
 def print_and_process_stream(response, model, provider):
@@ -1218,4 +1224,175 @@ gemini_api_key = os.getenv("GEMINI_API_KEY", None)
 
 anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", None)
 openai_api_key = os.getenv("OPENAI_API_KEY", None)
+
+
+# ── Team sync (git-based) ──────────────────────────────────────────
+
+def resolve_team_dir(team_path=None):
+    """Resolve the team directory from a team_path identifier.
+    None or 'incognide' -> <data_dir>/incognide/npc_team/
+    'npcsh' -> <data_dir>/npc_team/
+    Otherwise treat as absolute path.
+    """
+    base = get_data_dir()
+    if not team_path or team_path == "incognide":
+        return os.path.join(base, "incognide", "npc_team")
+    elif team_path == "npcsh":
+        return os.path.join(base, "npc_team")
+    else:
+        return team_path
+
+
+def _git(args, cwd, timeout=15):
+    """Run a git command and return stdout."""
+    result = subprocess.run(
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"git {args[0]} failed")
+    return result.stdout.strip()
+
+
+def team_sync_status(team_path=None):
+    """Get sync status for an npc_team directory."""
+    team_dir = resolve_team_dir(team_path)
+
+    if not os.path.exists(team_dir):
+        return {"status": "unavailable", "error": "Team directory not found"}
+
+    git_dir = os.path.join(team_dir, ".git")
+    if not os.path.exists(git_dir):
+        return {"status": "uninitialized"}
+
+    status_out = _git(["status", "--porcelain"], team_dir)
+    modified = [l[3:] for l in status_out.split("\n") if l.strip()] if status_out else []
+
+    has_remote = False
+    try:
+        remotes = _git(["remote"], team_dir)
+        has_remote = "origin" in remotes
+    except Exception:
+        pass
+
+    if not has_remote:
+        status = "ahead" if modified else "up-to-date"
+        return {"status": status, "modified": modified, "ahead": len(modified), "behind": 0}
+
+    try:
+        _git(["fetch", "origin"], team_dir)
+    except Exception:
+        pass
+
+    ahead, behind = 0, 0
+    try:
+        branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], team_dir)
+        counts = _git(["rev-list", "--left-right", "--count", f"origin/{branch}...HEAD"], team_dir)
+        parts = counts.split()
+        behind = int(parts[0]) if len(parts) > 0 else 0
+        ahead = int(parts[1]) if len(parts) > 1 else 0
+    except Exception:
+        pass
+
+    if ahead > 0 and behind > 0:
+        status = "diverged"
+    elif behind > 0:
+        status = "behind"
+    elif ahead > 0 or modified:
+        status = "ahead"
+    else:
+        status = "up-to-date"
+
+    return {"status": status, "modified": modified, "ahead": ahead, "behind": behind}
+
+
+def team_sync_init(team_path=None):
+    """Initialize git in an npc_team directory."""
+    team_dir = resolve_team_dir(team_path)
+    os.makedirs(team_dir, exist_ok=True)
+
+    git_dir = os.path.join(team_dir, ".git")
+    if not os.path.exists(git_dir):
+        _git(["init"], team_dir)
+        _git(["add", "."], team_dir)
+        _git(["commit", "-m", "Initial commit"], team_dir)
+
+    return {"success": True, "error": None}
+
+
+def team_sync_pull(team_path=None):
+    """Pull/rebase from upstream for an npc_team directory."""
+    team_dir = resolve_team_dir(team_path)
+
+    if not os.path.exists(os.path.join(team_dir, ".git")):
+        return {"error": "Not a git repo. Initialize first."}
+
+    has_remote = False
+    try:
+        remotes = _git(["remote"], team_dir)
+        has_remote = "origin" in remotes
+    except Exception:
+        pass
+
+    if not has_remote:
+        return {"error": "No remote configured. Add an upstream remote first."}
+
+    try:
+        _git(["pull", "--rebase", "origin", "main"], team_dir)
+        return {"success": True, "error": None}
+    except RuntimeError:
+        status_out = _git(["status", "--porcelain"], team_dir)
+        conflicts = [l[3:] for l in status_out.split("\n") if l.startswith("UU") or l.startswith("AA")]
+        if conflicts:
+            return {"conflicts": conflicts, "error": None}
+        raise
+
+
+def team_sync_resolve(team_path=None, file_path=None, resolution="ours", content=None):
+    """Resolve a merge conflict in an npc_team directory."""
+    team_dir = resolve_team_dir(team_path)
+
+    if not file_path or not resolution:
+        return {"error": "file and resolution are required"}
+
+    if resolution == "ours":
+        _git(["checkout", "--ours", file_path], team_dir)
+    elif resolution == "theirs":
+        _git(["checkout", "--theirs", file_path], team_dir)
+    else:
+        if content is not None:
+            full_path = os.path.join(team_dir, file_path)
+            with open(full_path, "w") as f:
+                f.write(content)
+
+    _git(["add", file_path], team_dir)
+
+    status_out = _git(["status", "--porcelain"], team_dir)
+    remaining = [l for l in status_out.split("\n") if l.startswith("UU") or l.startswith("AA")]
+    if not remaining:
+        try:
+            _git(["rebase", "--continue"], team_dir)
+        except Exception:
+            pass
+
+    return {"success": True, "error": None}
+
+
+def team_sync_commit(team_path=None, message="Update NPC team"):
+    """Commit current state of an npc_team directory."""
+    team_dir = resolve_team_dir(team_path)
+    _git(["add", "."], team_dir)
+    _git(["commit", "-m", message], team_dir)
+    return {"success": True, "error": None}
+
+
+def team_sync_diff(team_path=None, file_path=None):
+    """Get diff for an npc_team directory."""
+    team_dir = resolve_team_dir(team_path)
+    args = ["diff", "--", file_path] if file_path else ["diff"]
+    diff = _git(args, team_dir)
+    return {"diff": diff, "error": None}
 

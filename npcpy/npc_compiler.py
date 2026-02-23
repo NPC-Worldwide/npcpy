@@ -59,10 +59,10 @@ import math
 import random
 import base64
 from npcpy.npc_sysenv import (
-    ensure_dirs_exist, 
+    ensure_dirs_exist,
     init_db_tables,
-    get_system_message, 
-
+    get_system_message,
+    print_and_process_stream_with_markdown,
     )
 from npcpy.memory.command_history import CommandHistory, generate_message_id
 
@@ -727,6 +727,7 @@ class Jinx:
             "pathlib": pathlib,
             "subprocess": subprocess,
             "get_llm_response": npy.llm_funcs.get_llm_response,
+            "print_and_process_stream_with_markdown": print_and_process_stream_with_markdown,
             "CommandHistory": CommandHistory,
             "NPCArray": NPCArray,
             "infer_matrix": infer_matrix,
@@ -761,7 +762,7 @@ class Jinx:
             context[step_name] = outp
 
         final_output = context.get("output")
-        if final_output is not None and messages is not None:
+        if final_output and messages is not None:
             messages.append({
                 'role':'assistant',
                 'content': f'Jinx {self.jinx_name} step {step_name} executed: {final_output}'

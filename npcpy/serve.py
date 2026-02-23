@@ -64,7 +64,11 @@ from npcpy.llm_funcs import gen_image, gen_video, breathe
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from npcpy.npc_sysenv import get_locally_available_models, get_data_dir, get_models_dir, get_cache_dir
+from npcpy.npc_sysenv import (
+    get_locally_available_models, get_data_dir, get_models_dir, get_cache_dir,
+    team_sync_status, team_sync_init, team_sync_pull,
+    team_sync_resolve, team_sync_commit, team_sync_diff,
+)
 from npcpy.memory.command_history import (
     CommandHistory,
     save_conversation_message,
@@ -1242,6 +1246,7 @@ def get_global_settings():
             "embedding_provider": "ollama",
             "search_provider": "perplexity",
             "default_folder": os.path.expanduser("~/.npcsh/"),
+            "data_directory": os.path.expanduser("~/.npcsh/incognide"),
             "is_predictive_text_enabled": False,
             "predictive_text_model": "llama3.2",
             "predictive_text_provider": "ollama",
@@ -1278,6 +1283,7 @@ def get_global_settings():
                         "NPCSH_SEARCH_PROVIDER": "search_provider",
                         "NPCSH_STREAM_OUTPUT": "NPCSH_STREAM_OUTPUT",
                         "NPC_STUDIO_DEFAULT_FOLDER": "default_folder",
+                        "INCOGNIDE_HOME": "data_directory",
                         "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED": "is_predictive_text_enabled",
                         "NPC_STUDIO_PREDICTIVE_TEXT_MODEL": "predictive_text_model",
                         "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER": "predictive_text_provider",
@@ -1586,6 +1592,7 @@ def save_global_settings():
             "search_provider": "NPCSH_SEARCH_PROVIDER",
             "NPCSH_STREAM_OUTPUT": "NPCSH_STREAM_OUTPUT",
             "default_folder": "NPC_STUDIO_DEFAULT_FOLDER",
+            "data_directory": "INCOGNIDE_HOME",
             "is_predictive_text_enabled": "NPC_STUDIO_PREDICTIVE_TEXT_ENABLED",
             "predictive_text_model": "NPC_STUDIO_PREDICTIVE_TEXT_MODEL",
             "predictive_text_provider": "NPC_STUDIO_PREDICTIVE_TEXT_PROVIDER",
@@ -3557,208 +3564,62 @@ def init_npcsh_folder():
         return jsonify({"error": str(e)}), 500
 
 # ============== NPC Team Sync (git-based) ==============
-
-def _resolve_team_dir(team_path=None):
-    """Resolve the team directory from the team_path query param.
-    None or 'incognide' -> ~/.npcsh/incognide/npc_team/
-    'npcsh' -> ~/.npcsh/npc_team/
-    Otherwise treat as absolute path.
-    """
-    if not team_path or team_path == 'incognide':
-        return os.path.expanduser("~/.npcsh/incognide/npc_team")
-    elif team_path == 'npcsh':
-        return os.path.expanduser("~/.npcsh/npc_team")
-    else:
-        return team_path
-
-def _git(args, cwd, timeout=15):
-    """Run a git command and return stdout."""
-    result = subprocess.run(
-        ['git'] + args,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or f"git {args[0]} failed")
-    return result.stdout.strip()
+# Logic lives in npc_sysenv.py; these are thin Flask wrappers.
 
 @app.route("/api/npc-team/status", methods=["GET"])
-def npc_team_sync_status():
-    """Get sync status for an npc_team directory."""
+def npc_team_sync_status_endpoint():
     try:
-        team_dir = _resolve_team_dir(request.args.get("team_path"))
-
-        if not os.path.exists(team_dir):
-            return jsonify({"status": "unavailable", "error": "Team directory not found"})
-
-        git_dir = os.path.join(team_dir, ".git")
-        if not os.path.exists(git_dir):
-            return jsonify({"status": "uninitialized"})
-
-        # Modified files
-        status_out = _git(["status", "--porcelain"], team_dir)
-        modified = [l[3:] for l in status_out.split("\n") if l.strip()] if status_out else []
-
-        # Check for remote
-        has_remote = False
-        try:
-            remotes = _git(["remote"], team_dir)
-            has_remote = "origin" in remotes
-        except Exception:
-            pass
-
-        if not has_remote:
-            status = "ahead" if modified else "up-to-date"
-            return jsonify({"status": status, "modified": modified, "ahead": len(modified), "behind": 0})
-
-        # Fetch
-        try:
-            _git(["fetch", "origin"], team_dir)
-        except Exception:
-            pass  # offline is fine
-
-        # Ahead/behind
-        ahead, behind = 0, 0
-        try:
-            branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], team_dir)
-            counts = _git(["rev-list", "--left-right", "--count", f"origin/{branch}...HEAD"], team_dir)
-            parts = counts.split()
-            behind = int(parts[0]) if len(parts) > 0 else 0
-            ahead = int(parts[1]) if len(parts) > 1 else 0
-        except Exception:
-            pass
-
-        if ahead > 0 and behind > 0:
-            status = "diverged"
-        elif behind > 0:
-            status = "behind"
-        elif ahead > 0 or modified:
-            status = "ahead"
-        else:
-            status = "up-to-date"
-
-        return jsonify({"status": status, "modified": modified, "ahead": ahead, "behind": behind})
+        return jsonify(team_sync_status(request.args.get("team_path")))
     except Exception as e:
         return jsonify({"status": "unavailable", "error": str(e)})
 
 @app.route("/api/npc-team/init", methods=["POST"])
-def npc_team_sync_init():
-    """Initialize git in an npc_team directory."""
+def npc_team_sync_init_endpoint():
     try:
         data = request.json or {}
-        team_dir = _resolve_team_dir(data.get("team_path"))
-        os.makedirs(team_dir, exist_ok=True)
-
-        git_dir = os.path.join(team_dir, ".git")
-        if not os.path.exists(git_dir):
-            _git(["init"], team_dir)
-            _git(["add", "."], team_dir)
-            _git(["commit", "-m", "Initial commit"], team_dir)
-
-        return jsonify({"success": True, "error": None})
+        return jsonify(team_sync_init(data.get("team_path")))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/npc-team/sync", methods=["POST"])
-def npc_team_sync_pull():
-    """Pull/rebase from upstream for an npc_team directory."""
+def npc_team_sync_pull_endpoint():
     try:
         data = request.json or {}
-        team_dir = _resolve_team_dir(data.get("team_path"))
-
-        if not os.path.exists(os.path.join(team_dir, ".git")):
-            return jsonify({"error": "Not a git repo. Initialize first."}), 400
-
-        has_remote = False
-        try:
-            remotes = _git(["remote"], team_dir)
-            has_remote = "origin" in remotes
-        except Exception:
-            pass
-
-        if not has_remote:
-            return jsonify({"error": "No remote configured. Add an upstream remote first."}), 400
-
-        try:
-            _git(["pull", "--rebase", "origin", "main"], team_dir)
-            return jsonify({"success": True, "error": None})
-        except RuntimeError:
-            # Check for conflicts
-            status_out = _git(["status", "--porcelain"], team_dir)
-            conflicts = [l[3:] for l in status_out.split("\n") if l.startswith("UU") or l.startswith("AA")]
-            if conflicts:
-                return jsonify({"conflicts": conflicts, "error": None})
-            raise
+        result = team_sync_pull(data.get("team_path"))
+        if "error" in result and result["error"] and "conflicts" not in result:
+            return jsonify(result), 400
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/npc-team/resolve", methods=["POST"])
-def npc_team_sync_resolve():
-    """Resolve a merge conflict in an npc_team directory."""
+def npc_team_sync_resolve_endpoint():
     try:
         data = request.json or {}
-        team_dir = _resolve_team_dir(data.get("team_path"))
-        file_path = data.get("file")
-        resolution = data.get("resolution")  # 'ours' or 'theirs'
-
-        if not file_path or not resolution:
-            return jsonify({"error": "file and resolution are required"}), 400
-
-        if resolution == "ours":
-            _git(["checkout", "--ours", file_path], team_dir)
-        elif resolution == "theirs":
-            _git(["checkout", "--theirs", file_path], team_dir)
-        else:
-            # Custom content
-            content = data.get("content")
-            if content is not None:
-                full_path = os.path.join(team_dir, file_path)
-                with open(full_path, "w") as f:
-                    f.write(content)
-
-        _git(["add", file_path], team_dir)
-
-        # Check if all conflicts resolved
-        status_out = _git(["status", "--porcelain"], team_dir)
-        remaining = [l for l in status_out.split("\n") if l.startswith("UU") or l.startswith("AA")]
-        if not remaining:
-            try:
-                _git(["rebase", "--continue"], team_dir)
-            except Exception:
-                pass  # might not be in rebase state
-
-        return jsonify({"success": True, "error": None})
+        result = team_sync_resolve(
+            team_path=data.get("team_path"),
+            file_path=data.get("file"),
+            resolution=data.get("resolution", "ours"),
+            content=data.get("content"),
+        )
+        if "error" in result and result["error"]:
+            return jsonify(result), 400
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/npc-team/commit", methods=["POST"])
-def npc_team_sync_commit():
-    """Commit current state of an npc_team directory."""
+def npc_team_sync_commit_endpoint():
     try:
         data = request.json or {}
-        team_dir = _resolve_team_dir(data.get("team_path"))
-        message = data.get("message", "Update NPC team")
-
-        _git(["add", "."], team_dir)
-        _git(["commit", "-m", message], team_dir)
-
-        return jsonify({"success": True, "error": None})
+        return jsonify(team_sync_commit(data.get("team_path"), data.get("message", "Update NPC team")))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/npc-team/diff", methods=["GET"])
-def npc_team_sync_diff():
-    """Get diff for an npc_team directory."""
+def npc_team_sync_diff_endpoint():
     try:
-        team_dir = _resolve_team_dir(request.args.get("team_path"))
-        file_path = request.args.get("file")
-
-        args = ["diff", "--", file_path] if file_path else ["diff"]
-        diff = _git(args, team_dir)
-
-        return jsonify({"diff": diff, "error": None})
+        return jsonify(team_sync_diff(request.args.get("team_path"), request.args.get("file")))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -4898,6 +4759,7 @@ def stream():
         params["top_k"] = data.get("top_k")
     if data.get("max_tokens") is not None:
         params["max_tokens"] = data.get("max_tokens")
+    disable_thinking = data.get("disableThinking", False)
     params = params if params else None
 
     if current_path:
@@ -5130,6 +4992,12 @@ def stream():
 
     if exe_mode == 'chat':
         print(f"[DEBUG] Calling get_llm_response with images={images}, attachments={attachment_paths_for_llm}")
+        thinking_kwargs = {}
+        if not disable_thinking and provider in ('anthropic',):
+            thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
+            # Anthropic doesn't allow temperature with extended thinking
+            if params and 'temperature' in params:
+                del params['temperature']
         stream_response = get_llm_response(
             commandstr,
             messages=messages,
@@ -5141,6 +5009,8 @@ def stream():
             team=team_object,
             stream=True,
             attachments=attachment_paths_for_llm,
+            include_usage=True,
+            **thinking_kwargs,
         )
         messages = stream_response.get('messages', messages)
     elif exe_mode == 'tool_agent':
@@ -5500,7 +5370,8 @@ IMPORTANT AGENT BEHAVIOR:
                 prompt = ""
 
             app.mcp_clients[state_key]["messages"] = messages
-            yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens}
+            mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else 0
+            yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
             return
         stream_response = stream_mcp_sse()
 
@@ -5761,6 +5632,23 @@ IMPORTANT AGENT BEHAVIOR:
                         }
                         yield f"data: {json.dumps(chunk_data)}\n\n"
 
+                    # Extract usage from streaming chunks (works across all providers)
+                    chunk_usage = getattr(response_chunk, 'usage', None)
+                    if chunk_usage is None and isinstance(response_chunk, dict):
+                        chunk_usage = response_chunk.get('usage')
+                    if chunk_usage:
+                        inp = getattr(chunk_usage, 'prompt_tokens', None) or (chunk_usage.get('prompt_tokens', 0) if isinstance(chunk_usage, dict) else 0)
+                        out = getattr(chunk_usage, 'completion_tokens', None) or (chunk_usage.get('completion_tokens', 0) if isinstance(chunk_usage, dict) else 0)
+                        if inp: total_input_tokens = inp
+                        if out: total_output_tokens = out
+                    # Ollama-style usage
+                    prompt_eval = getattr(response_chunk, 'prompt_eval_count', None)
+                    eval_count = getattr(response_chunk, 'eval_count', None)
+                    if prompt_eval:
+                        total_input_tokens = prompt_eval
+                    if eval_count:
+                        total_output_tokens = eval_count
+
         except Exception as e:
             print(f"\nAn exception occurred during streaming for {current_stream_id}: {e}")
             traceback.print_exc()
@@ -5771,6 +5659,10 @@ IMPORTANT AGENT BEHAVIOR:
             print('\r' + ' ' * dot_count*2 + '\r', end="", flush=True)
 
             final_response_text = ''.join(complete_response)
+
+            if total_input_tokens or total_output_tokens:
+                stream_cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else 0
+                yield f"data: {json.dumps({'type': 'usage', 'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'cost': stream_cost or 0})}\n\n"
 
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
 

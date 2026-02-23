@@ -382,10 +382,11 @@ def kg_evolve_incremental(existing_kg,
         logger.info("No new content or facts provided")
         return existing_kg, {}
 
+    existing_stmts = {f['statement'] for f in existing_facts}
     for fact in all_new_facts:
         fact['generation'] = next_gen
 
-    final_facts = existing_facts + all_new_facts
+    final_facts = existing_facts + [f for f in all_new_facts if f['statement'] not in existing_stmts]
 
     if get_concepts:
         logger.info('Generating groups...')
