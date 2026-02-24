@@ -83,8 +83,8 @@ def generate_image_diffusers(
                     use_safetensors=True,
                     variant="fp16" if torch_dtype == torch.float16 else None,
                 )
-            else:        
-                pipe = StableDiffusionPipeline.from_pretrained(
+            else:
+                pipe = DiffusionPipeline.from_pretrained(
                     model,
                     torch_dtype=torch_dtype,
                     use_safetensors=True,
@@ -289,10 +289,11 @@ def gemini_image_gen(
 
         if hasattr(response, 'candidates') and response.candidates:
             for candidate in response.candidates:
-                for part in candidate.content.parts:
-                    if hasattr(part, 'inline_data') and part.inline_data:
-                        image_data = part.inline_data.data
-                        collected_images.append(Image.open(BytesIO(image_data)))
+                if candidate.content and candidate.content.parts:
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            image_data = part.inline_data.data
+                            collected_images.append(Image.open(BytesIO(image_data)))
 
         if not collected_images and hasattr(response, 'text'):
             print(f"Gemini response text: {response.text}")
@@ -310,7 +311,7 @@ def gemini_image_gen(
             for generated_image in response.generated_images:
                 collected_images.append(Image.open(BytesIO(generated_image.image.image_bytes)))
             return collected_images
-            
+
         elif 'flash-image' in model or 'image-preview' in model or '2.5-flash' in model:
             response = client.models.generate_content(
                 model=model,
@@ -319,13 +320,14 @@ def gemini_image_gen(
                     response_modalities=["IMAGE", "TEXT"],
                 ),
             )
-            
+
             if hasattr(response, 'candidates') and response.candidates:
                 for candidate in response.candidates:
-                    for part in candidate.content.parts:
-                        if hasattr(part, 'inline_data') and part.inline_data:
-                            image_data = part.inline_data.data
-                            collected_images.append(Image.open(BytesIO(image_data)))
+                    if candidate.content and candidate.content.parts:
+                        for part in candidate.content.parts:
+                            if hasattr(part, 'inline_data') and part.inline_data:
+                                image_data = part.inline_data.data
+                                collected_images.append(Image.open(BytesIO(image_data)))
             
             if not collected_images and hasattr(response, 'text'):
                 print(f"Gemini response text: {response.text}")
@@ -449,7 +451,7 @@ def generate_image(
         elif provider == "diffusers":
             model = "runwayml/stable-diffusion-v1-5"
         elif provider == "gemini":
-            model = "gemini-2.5-flash-image-preview"
+            model = "gemini-2.5-flash-image"
         elif provider == "ollama":
             model = "x/z-image-turbo"
     
@@ -578,7 +580,7 @@ def edit_image(
         if provider == "openai":
             model = "gpt-image-1"
         elif provider == "gemini":
-            model = "gemini-2.5-flash-image-preview"
+            model = "gemini-2.5-flash-image"
     
     image = generate_image(
         prompt=prompt,

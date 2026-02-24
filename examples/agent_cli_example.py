@@ -21,7 +21,7 @@ def web_search(query: str, num_results: int = 5) -> str:
 
 def generate_image(prompt: str, style: str = "photorealistic") -> str:
     try:
-        image_path = gen_image(prompt, model='gemini-2.5-flash-image-preview', provider='gemini')
+        image_path = gen_image(prompt, model='gemini-2.5-flash-image', provider='gemini')
         if image_path:
             return f"Generated image for: {prompt}. Image saved to: {image_path}"
         else:

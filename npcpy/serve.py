@@ -3817,7 +3817,7 @@ IMAGE_MODELS = {
     ],
     "gemini": [
         {"value": "gemini-3-pro-image-preview", "display_name": "Gemini 3 Pro Image"},
-        {"value": "gemini-2.5-flash-image-preview", "display_name": "Gemini 2.5 Flash Image"},
+        {"value": "gemini-2.5-flash-image", "display_name": "Gemini 2.5 Flash Image"},
         {"value": "imagen-3.0-generate-002", "display_name": "Imagen 3.0 Generate (Preview)"},
     ],
     "stability": [
