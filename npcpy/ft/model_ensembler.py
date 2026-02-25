@@ -7,7 +7,7 @@ from npcpy.llm_funcs import get_llm_response
 
 try:
     from npcpy.ft.sft import predict_sft, load_sft_model
-except:
+except Exception:
     pass
 
 @dataclass

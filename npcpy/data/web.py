@@ -9,7 +9,7 @@ from duckduckgo_search.exceptions import DuckDuckGoSearchException
 
 try:
     from googlesearch import search as _google_search
-except:
+except Exception:
     _google_search = None
 from typing import List, Dict, Any, Optional, Union
 import numpy as np
@@ -17,7 +17,7 @@ import json
 
 try:
     from sentence_transformers import util, SentenceTransformer
-except:
+except Exception:
     pass
 
 def search_exa(query:str,

@@ -146,7 +146,7 @@ def fit_model(
         if hasattr(model_instance, 'score') and y is not None:
             try:
                 score = model_instance.score(X, y)
-            except:
+            except Exception:
                 pass
         return {'model': model_instance, 'score': score}
 
@@ -345,7 +345,7 @@ def score_model(
             if metric_name in metric_funcs:
                 try:
                     model_scores[metric_name] = metric_funcs[metric_name](y, preds)
-                except:
+                except Exception:
                     model_scores[metric_name] = None
         all_scores.append(model_scores)
 

@@ -22,7 +22,7 @@ def close_current():
     if current and current in _sessions:
         try:
             _sessions[current].quit()
-        except:
+        except Exception:
             pass
         del _sessions[current]
         _sessions['current'] = None

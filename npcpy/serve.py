@@ -34,7 +34,7 @@ import pandas as pd
 import subprocess
 try:
     import ollama 
-except:
+except Exception:
     pass
 from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoader
 class SilentUndefined(Undefined):
@@ -827,7 +827,7 @@ def embed_kg_facts():
                     if existing and existing.get('ids'):
                         skipped_count += 1
                         continue
-                except:
+                except Exception:
                     pass
 
                 row = facts_df[facts_df['statement'] == statement].iloc[0] if len(facts_df[facts_df['statement'] == statement]) > 0 else None
@@ -1335,7 +1335,7 @@ def get_available_jinxs():
                 data = load_yaml_file(filepath)
                 if data and 'jinx_name' in data:
                     return data['jinx_name']
-            except:
+            except Exception:
                 pass
             return os.path.basename(filepath)[:-5]
 
@@ -6144,7 +6144,7 @@ def get_branch_messages(conversation_id, branch_id):
                     return None
                 try:
                     return json.loads(value)
-                except:
+                except Exception:
                     return None
 
             return jsonify({
@@ -6766,7 +6766,7 @@ def scan_local_models():
                 data = response.json()
                 models = [{'name': m.get('id', m.get('name', 'unknown'))} for m in data.get('data', [])]
                 return jsonify({'models': models, 'error': None})
-        except:
+        except Exception:
             pass
         return jsonify({'models': [], 'error': 'LM Studio not running or not accessible'})
 
@@ -6778,7 +6778,7 @@ def scan_local_models():
                 data = response.json()
                 models = [{'name': m.get('id', m.get('name', 'unknown'))} for m in data.get('data', [])]
                 return jsonify({'models': models, 'error': None})
-        except:
+        except Exception:
             pass
         return jsonify({'models': [], 'error': 'llama.cpp server not running or not accessible'})
 
@@ -6795,7 +6795,7 @@ def get_local_model_status():
             response = requests.get('http://127.0.0.1:1234/v1/models', timeout=2)
             if response.ok:
                 return jsonify({'status': 'running', 'running': True})
-        except:
+        except Exception:
             pass
         return jsonify({'status': 'not_running', 'running': False})
 
@@ -6805,7 +6805,7 @@ def get_local_model_status():
             response = requests.get('http://127.0.0.1:8080/v1/models', timeout=2)
             if response.ok:
                 return jsonify({'status': 'running', 'running': True})
-        except:
+        except Exception:
             pass
         return jsonify({'status': 'not_running', 'running': False})
 
@@ -7036,7 +7036,7 @@ def _notify_sse_subscribers(action_id, action_data, window_id=None):
         if window_id and window_id in _sse_subscribers:
             try:
                 _sse_subscribers[window_id]['queue'].put_nowait(payload)
-            except:
+            except Exception:
                 del _sse_subscribers[window_id]
         else:
             # Broadcast to all
@@ -7044,7 +7044,7 @@ def _notify_sse_subscribers(action_id, action_data, window_id=None):
             for wid, sub in _sse_subscribers.items():
                 try:
                     sub['queue'].put_nowait(payload)
-                except:
+                except Exception:
                     dead.append(wid)
             for wid in dead:
                 del _sse_subscribers[wid]
@@ -7053,7 +7053,7 @@ def _notify_sse_subscribers(action_id, action_data, window_id=None):
             for q in _sse_subscribers_legacy:
                 try:
                     q.put_nowait(payload)
-                except:
+                except Exception:
                     dead_legacy.append(q)
             for q in dead_legacy:
                 _sse_subscribers_legacy.remove(q)

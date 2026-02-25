@@ -9,7 +9,7 @@ try:
     )
     from trl import SFTTrainer
     from peft import LoraConfig
-except:
+except Exception:
     Dataset = None
     load_dataset = None
     torch = None

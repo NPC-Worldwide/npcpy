@@ -12,7 +12,7 @@ try:
     )
     from trl import SFTTrainer
     from peft import LoraConfig
-except:
+except Exception:
     torch = None
     SFTTrainer = None
     LoraConfig = None
