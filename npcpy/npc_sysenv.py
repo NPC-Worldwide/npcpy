@@ -840,7 +840,7 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
             try:
                 args_parsed = json.loads(tool_call_data["arguments"])
                 str_output += f"**Arguments:**\n```json\n{json.dumps(args_parsed, indent=2)}\n```"
-            except:
+            except Exception:
                 str_output += f"**Arguments:** `{tool_call_data['arguments']}`"
 
     if interrupted:
@@ -951,7 +951,7 @@ def print_and_process_stream(response, model, provider):
             try:
                 args_parsed = json.loads(tool_call_data["arguments"])
                 str_output += f"**Arguments:**\n```json\n{json.dumps(args_parsed, indent=2)}\n```"
-            except:
+            except Exception:
                 str_output += f"**Arguments:** `{tool_call_data['arguments']}`"
 
     if interrupted:
@@ -1157,7 +1157,7 @@ def lookup_provider(model: str) -> str:
                     
                     if model in models:
                         return provider_name
-        except:
+        except Exception:
             pass
     
     if model == "deepseek-chat" or model == "deepseek-reasoner":

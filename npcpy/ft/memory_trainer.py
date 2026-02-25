@@ -161,7 +161,7 @@ try:
                 return {"action": action, "confidence": confidence, "auto_processed": True}
             else:
                 return {"action": "pending_approval", "confidence": confidence, "auto_processed": False}    
-except:
+except Exception:
     Dataset = None
     nn = None
     Trainer = None

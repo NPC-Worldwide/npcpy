@@ -157,7 +157,7 @@ def auto_tools(functions: List[Callable]) -> tuple[List[Dict[str, Any]], Dict[st
             try:
                 result = eval(expression)
                 return f"The result of {expression} is {result}"
-            except:
+            except Exception:
                 return "Invalid mathematical expression"
         
         
