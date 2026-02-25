@@ -975,85 +975,79 @@ def check_llm_command(
     if not isinstance(actions,list) and isinstance(actions,dict): # the llm returned only one action
         actions = [actions]
 
-    for action in actions:         
-        render_markdown(f"- {action}" )
-    
-        # Execute
-        step_outputs = []
-        current_messages = messages.copy()
-        last_jinx_output = None
-    
-        for i, action_data in enumerate(actions):
-            action_result = handle_action_choice(
-                         command,
-                         action_data,
-                         jinxs, 
-                         model = model,
-                         provider = provider,
-                         api_url = api_url, 
-                         api_key = api_key, 
-                         npc = npc,
-                         team = team,
-                         messages = current_messages,
-                         stream = stream,
-                         extra_globals = extra_globals,
-                         last_jinx_output = last_jinx_output,
-                         step_outputs = step_outputs,
-                         context = context,
-            )
-            current_messages = action_result.get('messages', [])           
-            output = action_result.get('output', [])   
-            if output== 'INVALID_ACTION':
-                return check_llm_command(
-                                f"""In the previous attempt, the correct action name was not provided and a jinx could not be deciphered. only select from available jinxes.
-                Original request: {command}""",
-                                model=model, 
-                                provider=provider, 
-                                api_url=api_url, 
-                                api_key=api_key,
-                                npc=npc, 
-                                team=team,
-                                messages=messages, 
-                                stream=stream,
-                                context=context, 
-                                extra_globals=extra_globals,
-                            )
-  
-            step_outputs.append(output)
-            last_jinx_output = output
-          
-    
-        # Single step — return directly
-        if len(step_outputs) == 1:
-            return {
-                "messages": current_messages,
-                "output": step_outputs[0] if step_outputs else "",
-                "usage": response.get("usage", {}),
-            }
+    # Execute
+    step_outputs = []
+    current_messages = messages.copy()
+    last_jinx_output = None
 
-        # Multi-step — synthesize
-        synthesis_prompt = f"""The user asked: "{command}"
-                          
-                          The following information was gathered:
-                          {json.dumps(step_outputs, indent=2)}
-                          
-                          Provide a single, coherent response answering the user's question directly.
-                          Do not mention the steps taken."""
-                          
-        synthesis = get_llm_response(
-            synthesis_prompt,
-            model=model, provider=provider, npc=npc, team=team,
-            messages=[], stream=stream, context=context,
-        )          
-    else:
-        render_markdown(f"- actions")
-        
+    for i, action_data in enumerate(actions):
+        render_markdown(f"- {action_data}")
 
+        action_result = handle_action_choice(
+                     command,
+                     action_data,
+                     jinxs,
+                     model = model,
+                     provider = provider,
+                     api_url = api_url,
+                     api_key = api_key,
+                     npc = npc,
+                     team = team,
+                     messages = current_messages,
+                     stream = stream,
+                     extra_globals = extra_globals,
+                     last_jinx_output = last_jinx_output,
+                     step_outputs = step_outputs,
+                     context = context,
+        )
+        current_messages = action_result.get('messages', [])
+        output = action_result.get('output', [])
+        if output == 'INVALID_ACTION':
+            return check_llm_command(
+                            f"""In the previous attempt, the correct action name was not provided and a jinx could not be deciphered. only select from available jinxes.
+            Original request: {command}""",
+                            model=model,
+                            provider=provider,
+                            api_url=api_url,
+                            api_key=api_key,
+                            npc=npc,
+                            team=team,
+                            messages=messages,
+                            stream=stream,
+                            context=context,
+                            extra_globals=extra_globals,
+                        )
+
+        step_outputs.append(output)
+        last_jinx_output = output
+
+    # Single step — return directly
+    if len(step_outputs) == 1:
+        return {
+            "messages": current_messages,
+            "output": step_outputs[0] if step_outputs else "",
+            "usage": response.get("usage", {}),
+        }
+
+    # Multi-step — synthesize
+    synthesis_prompt = f"""The user asked: "{command}"
+
+                      The following information was gathered:
+                      {json.dumps(step_outputs, indent=2)}
+
+                      Provide a single, coherent response answering the user's question directly.
+                      Do not mention the steps taken."""
+
+    synthesis = get_llm_response(
+        synthesis_prompt,
+        model=model, provider=provider, npc=npc, team=team,
+        messages=[], stream=stream, context=context,
+    )
 
     return {
         "messages": current_messages,
         "output": synthesis.get("response", "\n".join(str(o) for o in step_outputs)),
-        "usage": plan_response.get("usage", {}),
+        "usage": response.get("usage", {}),
     }
 
 def identify_groups(

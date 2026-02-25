@@ -743,6 +743,11 @@ class Jinx:
 
         try:
             exec(rendered_code, exec_globals, exec_locals)
+        except SystemExit as e:
+            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': code called sys.exit({e.code})"
+            print(f"[JINX-ERROR] {error_msg}")
+            context['output'] = error_msg
+            return context
         except Exception as e:
             error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': {type(e).__name__}: {e}"
             print(f"[JINX-ERROR] {error_msg}")
@@ -1720,8 +1725,12 @@ class NPC:
             exec_globals.update(locals_dict)
             
             exec_locals = {}
-            exec(generated_code, exec_globals, exec_locals)
-            
+            try:
+                exec(generated_code, exec_globals, exec_locals)
+            except SystemExit as e:
+                result["error"] = f"Code called sys.exit({e.code})"
+                return result
+
             locals_dict.update(exec_locals)
             result["executed"] = True
             result["output"] = exec_locals.get("output", "Code executed successfully")
