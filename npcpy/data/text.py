@@ -31,7 +31,7 @@ def rag_search(
     if embedding_model is None:
         try:
             embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        except:
+        except Exception:
             raise Exception(
                 "Please install the sentence-transformers library to use this function or provide an embedding transformer model."
             )

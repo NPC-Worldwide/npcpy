@@ -13,7 +13,7 @@ action_space = {
     }
 try:
     import pyautogui
-except:
+except Exception:
     print('could not import pyautogui')
 import time
 import subprocess

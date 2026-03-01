@@ -14,7 +14,7 @@ def get_team_name(team_path):
                 ctx = yaml.safe_load(f)
             if ctx and ctx.get('name'):
                 return ctx['name']
-        except:
+        except Exception:
             pass
 
     name = team_path.name

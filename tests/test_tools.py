@@ -20,7 +20,7 @@ def calculate_math(expression: str) -> str:
     try:
         result = eval(expression)
         return f"The result of {expression} is {result}"
-    except:
+    except Exception:
         return "Invalid mathematical expression"
 
 
