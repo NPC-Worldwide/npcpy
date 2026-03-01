@@ -216,7 +216,7 @@ def _json_dumps_with_undefined(obj, **kwargs):
 def load_yaml_file(file_path):
     """Load a YAML file with error handling, rendering Jinja2 first"""
     try:
-        with open(os.path.expanduser(file_path), 'r') as f:
+        with open(os.path.expanduser(file_path), 'r', encoding="utf-8") as f:
             content = f.read()
 
         if '{%' not in content:
@@ -279,7 +279,7 @@ def initialize_npc_project(
             "name": "forenpc",
             "primary_directive": "You are the forenpc of an NPC team", 
         }
-        with open(forenpc_path, "w") as f:
+        with open(forenpc_path, "w", encoding="utf-8") as f:
             yaml.dump(default_npc, f)
     parsed_templates: List[str] = []
     if templates:
@@ -354,7 +354,7 @@ primary_directive: You oversee the sales pipeline, track progress, and optimize 
             os.makedirs(embedded_dir, exist_ok=True)
             npc_file = os.path.join(embedded_dir, f"{template_name}.npc")
             if not os.path.exists(npc_file):
-                with open(npc_file, "w") as f:
+                with open(npc_file, "w", encoding="utf-8") as f:
                     f.write(embedded_templates[template_name])
             return embedded_dir
         return None
@@ -431,7 +431,7 @@ primary_directive: You oversee the sales pipeline, track progress, and optimize 
         }
         if parsed_templates:
             default_ctx['templates'] = parsed_templates
-        with open(default_ctx_path, "w") as f:
+        with open(default_ctx_path, "w", encoding="utf-8") as f:
             yaml.dump(default_ctx, f)
         ctx_destination = default_ctx_path
 
@@ -442,7 +442,7 @@ primary_directive: You oversee the sales pipeline, track progress, and optimize 
 def write_yaml_file(file_path, data):
     """Write data to a YAML file"""
     try:
-        with open(os.path.expanduser(file_path), 'w') as f:
+        with open(os.path.expanduser(file_path), 'w', encoding="utf-8") as f:
             yaml.dump(data, f)
         return True
     except Exception as e:
@@ -2824,7 +2824,7 @@ class Team:
             team_ctx_path = os.path.join(self.team_path, "team.ctx")
             
             if os.path.exists(team_ctx_path):
-                with open(team_ctx_path, 'r') as f:
+                with open(team_ctx_path, 'r', encoding="utf-8") as f:
                     ctx_data = yaml.safe_load(f) or {}
             else:
                 ctx_data = {}
@@ -2849,7 +2849,7 @@ class Team:
                 if user_approval == 'y':
                     ctx_data['context'] = new_context
                     self.context = new_context
-                    with open(team_ctx_path, 'w') as f:
+                    with open(team_ctx_path, 'w', encoding="utf-8") as f:
                         yaml.dump(ctx_data, f)
             
     def _load_sub_teams(self):
