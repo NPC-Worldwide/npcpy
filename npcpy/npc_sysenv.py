@@ -362,8 +362,8 @@ def get_locally_available_models(project_directory, airplane_mode=False):
                             'gemini-2.0-pro', 
                             'gemini-1.5-pro', 
                             'gemini-1.5-flash'
-                            'gemini-3-flash-preview', 
-                            'gemini-3-pro-preview', 
+                            'gemini-3-flash-preview',
+                            'gemini-3.1-pro-preview',
                         ]
                         
                         for m in client.models.list():

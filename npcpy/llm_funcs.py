@@ -1342,12 +1342,13 @@ def breathe(
     format_output = f"""Here is a summary of the previous session. 
     The high level objective was: {res.get('high_level_objective')} \n The accomplishments were: {res.get('accomplishments')}, 
     the failures were: {res.get('failures')} and the most recent task was: {res.get('most_recent_task')}   """
-    return {'output': format_output, 
+    return {'output': format_output,
+            'summary': res,
             'messages': [
                          {
-                           'content': format_output, 
+                           'content': format_output,
                            'role': 'assistant'}
-                           ] 
+                           ]
                           }
 def abstract(groups, 
              model, 

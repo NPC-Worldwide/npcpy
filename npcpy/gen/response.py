@@ -147,7 +147,7 @@ TOKEN_COSTS = {
     "gemini-2.0-flash": (0.10, 0.40),
     "gemini-2.5-pro": (1.25, 10.00),
     "gemini-2.5-flash": (0.15, 0.60),
-    "gemini-3-pro": (2.00, 12.00),
+    "gemini-3.1-pro": (2.00, 12.00),
     "llama-3": (0.05, 0.08),
     "llama-3.1": (0.05, 0.08),
     "llama-3.2": (0.05, 0.08),
@@ -179,6 +179,60 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 
     input_cost, output_cost = costs
     return (input_tokens * input_cost / 1_000_000) + (output_tokens * output_cost / 1_000_000)
+
+def get_model_context_window(model: str, provider: str = None) -> int:
+    """Get the context window size (max input tokens) for a model.
+
+    Uses litellm's model info database. Falls back to provider-specific
+    queries (e.g. ollama show) when litellm doesn't have the model.
+
+    Returns 0 if the context window cannot be determined.
+    """
+    if not model:
+        return 0
+
+    # Try litellm first - it has a comprehensive model database
+    try:
+        info = litellm.get_model_info(model)
+        ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
+        if ctx > 0:
+            return ctx
+    except Exception:
+        pass
+
+    # Try with provider prefix if given
+    if provider:
+        try:
+            prefixed = f"{provider}/{model}"
+            info = litellm.get_model_info(prefixed)
+            ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
+            if ctx > 0:
+                return ctx
+        except Exception:
+            pass
+
+    # Fallback: query ollama directly for local models
+    resolved_provider = provider
+    if not resolved_provider:
+        try:
+            resolved_provider = lookup_provider(model)
+        except Exception:
+            pass
+
+    if resolved_provider == "ollama":
+        try:
+            info = ollama.show(model)
+            params = info.get("model_info", {})
+            for key, val in params.items():
+                if "context_length" in key:
+                    return int(val)
+        except Exception:
+            pass
+        # ollama default
+        return int(os.environ.get("NPCSH_OLLAMA_NUM_CTX", 32768))
+
+    return 0
+
 
 def handle_streaming_json(api_params):
     """

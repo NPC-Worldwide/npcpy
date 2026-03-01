@@ -32,6 +32,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd 
 import subprocess
+import platform
 try:
     import ollama 
 except:
@@ -83,6 +84,7 @@ from npcpy.gen.embeddings import get_embeddings
 from termcolor import cprint
 
 from npcpy.tools import auto_tools
+from npcpy.work.plan import schedule_job, unschedule_job, list_jobs, job_status
 
 import json
 import os
@@ -1125,8 +1127,10 @@ def trigger_kg_process():
             )
         elif process_type == 'evolve':
             from npcpy.memory.knowledge_graph import kg_evolve_incremental
+            content_text = data.get('content', '')
             new_kg, changes = kg_evolve_incremental(
-                existing_kg, content='', model=model, provider=provider
+                existing_kg, new_content_text=content_text or None, model=model, provider=provider,
+                get_concepts=True, link_concepts_facts=True
             )
         else:
             return jsonify({"error": f"Unknown process type: {process_type}. Use 'sleep', 'dream', or 'evolve'."}), 400
@@ -1139,6 +1143,138 @@ def trigger_kg_process():
             "process_type": process_type,
             "generation": new_kg.get('generation', 0),
             "changes": changes if isinstance(changes, dict) else {}
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/ingest', methods=['POST'])
+def ingest_to_kg():
+    """Ingest text content into the knowledge graph. Accepts raw text or CSV rows."""
+    try:
+        data = request.get_json() or {}
+        content_text = data.get('content', '')
+        context = data.get('context', '')
+        get_concepts = data.get('get_concepts', True)
+        link_concepts_facts = data.get('link_concepts_facts', True)
+
+        if not content_text or not content_text.strip():
+            return jsonify({"error": "content is required"}), 400
+
+        db_path = app.config.get('DB_PATH')
+        engine = create_engine('sqlite:///' + db_path)
+
+        model = app.config.get('DEFAULT_MODEL', None)
+        provider = app.config.get('DEFAULT_PROVIDER', None)
+
+        from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
+        from npcpy.memory.knowledge_graph import kg_evolve_incremental, kg_initial
+
+        existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
+
+        if not existing_kg or not existing_kg.get('facts'):
+            # First-time: build KG from scratch
+            from npcpy.memory.knowledge_graph import kg_initial
+            new_kg = kg_initial(
+                content=content_text,
+                model=model, provider=provider,
+                context=context
+            )
+        else:
+            new_kg, _ = kg_evolve_incremental(
+                existing_kg=existing_kg,
+                new_content_text=content_text,
+                model=model, provider=provider,
+                context=context,
+                get_concepts=get_concepts,
+                link_concepts_facts=link_concepts_facts
+            )
+
+        save_kg_to_db(engine, new_kg, team_name='', npc_name='', directory_path='')
+
+        return jsonify({
+            "success": True,
+            "generation": new_kg.get('generation', 0),
+            "facts": len(new_kg.get('facts', [])),
+            "concepts": len(new_kg.get('concepts', []))
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/query', methods=['POST'])
+def query_kg():
+    """Query the knowledge graph with a natural language question. Returns an LLM response grounded in KG facts."""
+    try:
+        data = request.get_json() or {}
+        question = data.get('question', '')
+        top_k = data.get('top_k', 15)
+
+        if not question.strip():
+            return jsonify({"error": "question is required"}), 400
+
+        db_path = app.config.get('DB_PATH')
+        engine = create_engine('sqlite:///' + db_path)
+
+        model = app.config.get('DEFAULT_MODEL', None)
+        provider = app.config.get('DEFAULT_PROVIDER', None)
+
+        from npcpy.memory.command_history import load_kg_from_db
+        existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
+
+        if not existing_kg or not existing_kg.get('facts'):
+            return jsonify({"error": "Knowledge graph is empty. Ingest some data first."}), 400
+
+        # Gather relevant facts via keyword matching
+        facts = existing_kg.get('facts', [])
+        concepts = existing_kg.get('concepts', [])
+        q_lower = question.lower()
+        q_words = set(q_lower.split())
+
+        scored_facts = []
+        for f in facts:
+            stmt = (f.get('statement', '') or '').lower()
+            score = sum(1 for w in q_words if w in stmt)
+            if score > 0:
+                scored_facts.append((score, f))
+        scored_facts.sort(key=lambda x: -x[0])
+        relevant_facts = [f['statement'] for _, f in scored_facts[:top_k]]
+
+        # Also include concept names for context
+        relevant_concepts = [c.get('name', '') for c in concepts[:20]]
+
+        if not relevant_facts:
+            # Fallback: take most recent facts
+            relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
+
+        kg_context = "Known facts:\n" + "\n".join(f"- {f}" for f in relevant_facts)
+        if relevant_concepts:
+            kg_context += "\n\nKey concepts: " + ", ".join(relevant_concepts)
+
+        from npcpy.llm_funcs import get_llm_response
+        prompt = f"""Based on the following knowledge graph data, answer the user's question.
+Use only the provided facts to ground your response. If the facts don't contain enough information, say so.
+
+{kg_context}
+
+User question: {question}
+
+Answer:"""
+
+        response = get_llm_response(
+            prompt,
+            model=model,
+            provider=provider,
+        )
+
+        answer = response.get('response', '') if isinstance(response, dict) else str(response)
+
+        return jsonify({
+            "answer": answer,
+            "sources": relevant_facts[:5],
+            "concepts": relevant_concepts[:10]
         })
     except Exception as e:
         traceback.print_exc()
@@ -3180,6 +3316,124 @@ def list_npcsql_models():
         traceback.print_exc()
         return jsonify({"models": [], "error": str(e)}), 500
 
+## ── Cron / Scheduling ─────────────────────────────────────────────
+
+@app.route("/api/cron/jobs", methods=["GET"])
+def list_cron_jobs():
+    return jsonify(list_jobs())
+
+@app.route("/api/cron/schedule", methods=["POST"])
+def schedule_cron_job():
+    data = request.json
+    ok, msg = schedule_job(data["schedule"], data["command"], data["jobName"])
+    return jsonify({"success": ok, "message": msg})
+
+@app.route("/api/cron/unschedule", methods=["POST"])
+def unschedule_cron_job():
+    data = request.json
+    ok, msg = unschedule_job(data["jobName"])
+    return jsonify({"success": ok, "message": msg})
+
+@app.route("/api/cron/status/<job_name>", methods=["GET"])
+def cron_job_status(job_name):
+    return jsonify(job_status(job_name))
+
+@app.route("/api/cron/crontab", methods=["GET"])
+def get_crontab():
+    system = platform.system()
+    result = {"platform": system.lower(), "user_crontab": "", "system_crontab": "", "cron_d": [], "timers": [], "services": []}
+    if system == "Windows":
+        r = subprocess.run(["schtasks", "/query", "/fo", "CSV", "/nh"], capture_output=True, text=True)
+        result["user_crontab"] = r.stdout if r.returncode == 0 else ""
+    else:
+        # User crontab
+        r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        result["user_crontab"] = r.stdout if r.returncode == 0 else ""
+        # System crontab
+        try:
+            with open("/etc/crontab", "r") as f:
+                result["system_crontab"] = f.read()
+        except Exception:
+            pass
+        # /etc/cron.d/
+        cron_d_dir = "/etc/cron.d"
+        if os.path.isdir(cron_d_dir):
+            for fname in sorted(os.listdir(cron_d_dir)):
+                fpath = os.path.join(cron_d_dir, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        with open(fpath, "r") as f:
+                            result["cron_d"].append({"name": fname, "content": f.read()})
+                    except Exception:
+                        result["cron_d"].append({"name": fname, "content": "(unreadable)"})
+        # Systemd timers
+        if system == "Linux":
+            r = subprocess.run(["systemctl", "list-timers", "--all", "--no-pager"], capture_output=True, text=True)
+            if r.returncode == 0:
+                result["timers"] = r.stdout
+            # Systemd services (user + system npcsh-related)
+            r = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"], capture_output=True, text=True)
+            if r.returncode == 0:
+                result["services"] = r.stdout
+    return jsonify(result)
+
+@app.route("/api/cron/daemons", methods=["GET"])
+def list_system_daemons():
+    system = platform.system()
+    result = {"services": "", "npcsh_services": [], "platform": system.lower()}
+    if system == "Linux":
+        r = subprocess.run(["systemctl", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"], capture_output=True, text=True)
+        result["services"] = r.stdout if r.returncode == 0 else ""
+        # Also user services
+        r2 = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"], capture_output=True, text=True)
+        if r2.returncode == 0:
+            result["user_services"] = r2.stdout
+        # npcsh-specific triggers
+        triggers_dir = os.path.expanduser("~/.npcsh/triggers")
+        if os.path.isdir(triggers_dir):
+            for f in os.listdir(triggers_dir):
+                result["npcsh_services"].append(f)
+    elif system == "Darwin":
+        r = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
+        result["services"] = r.stdout if r.returncode == 0 else ""
+        # npcsh agents
+        agents_dir = os.path.expanduser("~/Library/LaunchAgents")
+        if os.path.isdir(agents_dir):
+            for f in os.listdir(agents_dir):
+                if "npcsh" in f:
+                    result["npcsh_services"].append(f)
+    elif system == "Windows":
+        r = subprocess.run(["tasklist", "/fo", "CSV", "/nh"], capture_output=True, text=True)
+        result["services"] = r.stdout if r.returncode == 0 else ""
+    return jsonify(result)
+
+@app.route("/api/cron/service-info/<unit>", methods=["GET"])
+def get_service_info(unit):
+    """Return unit file contents and recent journal logs for a systemd service."""
+    system = platform.system()
+    if system != "Linux":
+        return jsonify({"error": "Only supported on Linux"})
+    result = {"unit": unit, "unit_file": "", "journal": ""}
+    # Unit file contents
+    r = subprocess.run(["systemctl", "cat", unit], capture_output=True, text=True)
+    if r.returncode == 0:
+        result["unit_file"] = r.stdout
+    else:
+        # Try user unit
+        r2 = subprocess.run(["systemctl", "--user", "cat", unit], capture_output=True, text=True)
+        if r2.returncode == 0:
+            result["unit_file"] = r2.stdout
+    # Recent journal logs
+    r = subprocess.run(["journalctl", "-u", unit, "-n", "100", "--no-pager", "--output=short-iso"], capture_output=True, text=True)
+    if r.returncode == 0:
+        result["journal"] = r.stdout
+    else:
+        # Try user unit
+        r2 = subprocess.run(["journalctl", "--user-unit", unit, "-n", "100", "--no-pager", "--output=short-iso"], capture_output=True, text=True)
+        if r2.returncode == 0:
+            result["journal"] = r2.stdout
+    return jsonify(result)
+
 @app.route("/api/npc_team_global")
 def get_npc_team_global():
     npc_data = []
@@ -3816,6 +4070,7 @@ IMAGE_MODELS = {
         {"value": "dall-e-2", "display_name": "DALL-E 2"},
     ],
     "gemini": [
+        {"value": "gemini-3.1-flash-image-preview", "display_name": "Gemini 3.1 Flash Image"},
         {"value": "gemini-3-pro-image-preview", "display_name": "Gemini 3 Pro Image"},
         {"value": "gemini-2.5-flash-image", "display_name": "Gemini 2.5 Flash Image"},
         {"value": "imagen-3.0-generate-002", "display_name": "Imagen 3.0 Generate (Preview)"},
@@ -5718,24 +5973,26 @@ IMPORTANT AGENT BEHAVIOR:
                 cost=cost,
             )
 
-            conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
-            background_thread = threading.Thread(
-                target=_run_stream_post_processing,
-                args=(
-                    conversation_turn_text,
-                    conversation_id,
-                    command_history,
-                    npc_name,
-                    team,
-                    current_path,
-                    model,
-                    provider,
-                    npc_object,
-                    messages
-                )
-            )
-            background_thread.daemon = True
-            background_thread.start()
+            # Auto memory extraction and context compression disabled —
+            # these are now controlled via scheduled jobs / cron instead
+            # conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
+            # background_thread = threading.Thread(
+            #     target=_run_stream_post_processing,
+            #     args=(
+            #         conversation_turn_text,
+            #         conversation_id,
+            #         command_history,
+            #         npc_name,
+            #         team,
+            #         current_path,
+            #         model,
+            #         provider,
+            #         npc_object,
+            #         messages
+            #     )
+            # )
+            # background_thread.daemon = True
+            # background_thread.start()
 
             with cancellation_lock:
                 if current_stream_id in cancellation_flags:

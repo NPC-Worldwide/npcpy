@@ -1302,11 +1302,21 @@ class CommandHistory:
 
     def get_last_conversation(self, conversation_id) -> Optional[Dict]:
         stmt = """
-            SELECT * FROM conversation_history 
+            SELECT * FROM conversation_history
             WHERE conversation_id = :conversation_id and role = 'user'
             ORDER BY id DESC LIMIT 1
         """
         return self._fetch_one(stmt, {"conversation_id": conversation_id})
+
+    def get_last_message_id(self, conversation_id) -> Optional[str]:
+        """Get the message_id of the most recent message in a conversation."""
+        stmt = """
+            SELECT message_id FROM conversation_history
+            WHERE conversation_id = :conversation_id
+            ORDER BY id DESC LIMIT 1
+        """
+        row = self._fetch_one(stmt, {"conversation_id": conversation_id})
+        return row["message_id"] if row else None
 
     def get_messages_by_npc(self, npc, n_last=20) -> List[Dict]:
         stmt = """

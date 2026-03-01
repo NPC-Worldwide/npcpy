@@ -1306,7 +1306,8 @@ def kg_backfill_from_memories(
     link_concepts_facts: bool = False,
     link_concepts_concepts: bool = False,
     link_facts_facts: bool = False,
-    dry_run: bool = False
+    dry_run: bool = False,
+    context: str = ''
 ):
     """Backfill KG from approved memories that haven't been incorporated yet."""
     from sqlalchemy import text
@@ -1369,6 +1370,7 @@ def kg_backfill_from_memories(
                 model=model or (npc.model if npc else None),
                 provider=provider or (npc.provider if npc else None),
                 npc=npc,
+                context=context,
                 get_concepts=get_concepts,
                 link_concepts_facts=link_concepts_facts,
                 link_concepts_concepts=link_concepts_concepts,

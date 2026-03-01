@@ -116,7 +116,7 @@ class DatabaseAIFunctionMapper:
         'databricks-gpt-5', 'databricks-gpt-5-mini', 'databricks-gpt-5-nano',
         'databricks-gpt-oss-120b', 'databricks-gpt-oss-20b',
         # Google
-        'databricks-gemini-3-flash', 'databricks-gemini-3-pro',
+        'databricks-gemini-3-flash', 'databricks-gemini-3.1-pro',
         'databricks-gemini-2-5-pro', 'databricks-gemini-2-5-flash',
         'databricks-gemma-3-12b',
         # Alibaba
@@ -148,6 +148,7 @@ class DatabaseAIFunctionMapper:
         'gemini-2.5-flash': 'databricks-gemini-2-5-flash',
         'gemini-2.5-pro': 'databricks-gemini-2-5-pro',
         'gemini-3-flash': 'databricks-gemini-3-flash',
+        'gemini-3.1-pro': 'databricks-gemini-3.1-pro',
         'gemma3:12b': 'databricks-gemma-3-12b',
         'claude-opus-4': 'databricks-claude-opus-4-6',
         'claude-sonnet-4': 'databricks-claude-sonnet-4',
