@@ -763,6 +763,7 @@ The format of the JSON object is:
     output = _execute_jinx(jinx, input_values, npc, team, messages, extra_globals)
 
     print(f"[RESULT] {str(output)[:300]}", flush=True)
+
     # Retry on error
     if isinstance(output, str) and output.startswith("Error:") and attempt < n_attempts:
         return handle_jinx_call(
@@ -783,7 +784,15 @@ The format of the JSON object is:
             attempt=attempt + 1,
         )
 
-    return {"output": output, "messages": messages}
+    return {
+        "output": output,
+        "messages": messages,
+        "jinx_calls": [{
+            "name": jinx_name,
+            "arguments": input_values,
+            "result": str(output) if output else "",
+        }],
+    }
 
 def handle_action_choice(command: str,
                          action_data: dict, 
@@ -828,6 +837,7 @@ def handle_action_choice(command: str,
         )
         output = result.get("output", "")
         current_messages = result.get("messages", messages)
+        jinx_calls = result.get("jinx_calls", [])
 
         # Display
         if output and str(output).strip():
@@ -842,27 +852,29 @@ def handle_action_choice(command: str,
                 render_markdown(content)
     elif action_name != 'answer':
         output = 'INVALID_ACTION'
-        return {'output':output, 'messages':messages}
+        jinx_calls = []
+        return {'output':output, 'messages':messages, 'jinx_calls': jinx_calls}
     else:
         response = get_llm_response(
             f"""The user asked: {command}
 
               Provide a direct answer. Do not reference tools or jinxes.""",
-            model=model, 
-            provider=provider, 
-            api_url=api_url, 
+            model=model,
+            provider=provider,
+            api_url=api_url,
             api_key=api_key,
-            messages=[], 
-            npc=npc, 
+            messages=[],
+            npc=npc,
             team=team,
-            images=images, 
-            stream=stream, 
+            images=images,
+            stream=stream,
             context=context,
         )
         output = response.get("response", "")
         current_messages = response.get("messages", messages)
-      
-    return {'output':output, 'messages':current_messages}
+        jinx_calls = []
+
+    return {'output':output, 'messages':current_messages, 'jinx_calls': jinx_calls}
   
       
 def check_llm_command(
@@ -955,19 +967,19 @@ def check_llm_command(
 
     response = get_llm_response(
         prompt,
-        model=model, 
-        provider=provider, 
-        api_url=api_url, 
+        model=model,
+        provider=provider,
+        api_url=api_url,
         api_key=api_key,
-        npc=npc, 
-        team=team, 
-        format="json", 
-        messages=[], 
+        npc=npc,
+        team=team,
+        format="json",
+        messages=[],
         context=context,
     )
 
     actions = response.get("response", {})
-    #import pdb 
+    #import pdb
     #pdb.set_trace()
     # Display plan
     print(actions)
@@ -977,6 +989,7 @@ def check_llm_command(
 
     # Execute
     step_outputs = []
+    all_jinx_calls = []
     current_messages = messages.copy()
     last_jinx_output = None
 
@@ -1002,6 +1015,7 @@ def check_llm_command(
         )
         current_messages = action_result.get('messages', [])
         output = action_result.get('output', [])
+        all_jinx_calls.extend(action_result.get('jinx_calls', []))
         if output == 'INVALID_ACTION':
             return check_llm_command(
                             f"""In the previous attempt, the correct action name was not provided and a jinx could not be deciphered. only select from available jinxes.
@@ -1027,6 +1041,7 @@ def check_llm_command(
             "messages": current_messages,
             "output": step_outputs[0] if step_outputs else "",
             "usage": response.get("usage", {}),
+            "jinx_calls": all_jinx_calls,
         }
 
     # Multi-step — synthesize
@@ -1048,6 +1063,7 @@ def check_llm_command(
         "messages": current_messages,
         "output": synthesis.get("response", "\n".join(str(o) for o in step_outputs)),
         "usage": response.get("usage", {}),
+        "jinx_calls": all_jinx_calls,
     }
 
 def identify_groups(

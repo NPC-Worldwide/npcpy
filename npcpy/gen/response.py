@@ -1232,7 +1232,7 @@ def get_litellm_response(
         "tool_calls": [], 
         "tool_results":[],
     }
-    if provider == "ollama" and 'gpt-oss' not in model:
+    if provider == "ollama":
         return get_ollama_response(
             prompt, 
             model, 

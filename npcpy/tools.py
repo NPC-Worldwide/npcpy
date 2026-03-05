@@ -176,3 +176,28 @@ def auto_tools(functions: List[Callable]) -> tuple[List[Dict[str, Any]], Dict[st
     schema = create_tool_schema(functions)
     tool_map = create_tool_map(functions)
     return schema, tool_map
+
+
+def flatten_tool_messages(messages: list) -> list:
+    """Convert tool_calls/tool messages to plain text for non-tool-capable models.
+
+    Keeps the information but in a format that won't break models
+    that don't support the tool calling protocol.
+    """
+    flat = []
+    for msg in messages:
+        if msg.get("tool_calls"):
+            parts = []
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", {})
+                name = fn.get("name", "?")
+                args = fn.get("arguments", "{}")
+                parts.append(f"Called {name} with: {args}")
+            flat.append({"role": "assistant", "content": "\n".join(parts)})
+        elif msg.get("role") == "tool":
+            name = msg.get("name", "tool")
+            content = msg.get("content", "")
+            flat.append({"role": "user", "content": f"Result of {name}: {content}"})
+        else:
+            flat.append(msg)
+    return flat
