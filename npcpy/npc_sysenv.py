@@ -855,7 +855,7 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
     try:
         for chunk in response:
 
-            if provider == "ollama" and 'gpt-oss' not in model:
+            if provider == "ollama":
 
                 if "message" in chunk and "tool_calls" in chunk["message"]:
                     for tool_call in chunk["message"]["tool_calls"]:
@@ -960,7 +960,7 @@ def print_and_process_stream(response, model, provider):
     try:
         for chunk in response:
 
-            if provider == "ollama" and 'gpt-oss' not in model:
+            if provider == "ollama":
 
                 if "message" in chunk and "tool_calls" in chunk["message"]:
                     for tool_call in chunk["message"]["tool_calls"]:

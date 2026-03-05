@@ -5256,7 +5256,7 @@ def text_predict():
                         break
 
                 chunk_content = ""
-                if "hf.co" in model or (provider == 'ollama' and 'gpt-oss' not in model):
+                if "hf.co" in model or provider == 'ollama':
                     chunk_content = response_chunk["message"]["content"] if "message" in response_chunk and "content" in response_chunk["message"] else ""
                 else:
                     chunk_content = "".join(choice.delta.content for choice in response_chunk.choices if choice.delta.content is not None)
@@ -5722,7 +5722,7 @@ IMPORTANT AGENT BEHAVIOR:
                             yield {"type": "interrupt"}
                             return
 
-                    if "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
+                    if "hf.co" in model or provider == 'ollama':
                         msg = getattr(response_chunk, "message", None) or (response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {})
                         chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
                         reasoning_content = getattr(msg, "thinking", None) or (msg.get("thinking") if hasattr(msg, "get") else None)
@@ -6126,7 +6126,7 @@ IMPORTANT AGENT BEHAVIOR:
                             "choices": [{"index": 0, "delta": {"content": chunk_content, "role": "assistant", "reasoning_content": reasoning_content}, "finish_reason": response_chunk.get("choices", [{}])[0].get("finish_reason")}]
                         }
                         yield f"data: {json.dumps(chunk_data)}\n\n"
-                    elif "hf.co" in model or provider == 'ollama' and 'gpt-oss' not in model:
+                    elif "hf.co" in model or provider == 'ollama':
                         msg = getattr(response_chunk, "message", None) or response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {}
                         chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
                         reasoning_content = getattr(msg, "thinking", None) or (msg.get("thinking") if hasattr(msg, "get") else None)
