@@ -62,10 +62,11 @@ def generate_video_diffusers(
         video_writer.release()
         print(f"Successfully saved {frames.shape[0]} frames to {output_path}")
 
-    os.makedirs("~/.npcsh/videos/", exist_ok=True)  
+    from npcpy.npc_sysenv import get_videos_dir
+    _vid_dir = get_videos_dir()
+    os.makedirs(_vid_dir, exist_ok=True)
     if output_path == "":
-
-        output_path = "~/.npcsh/videos/" + prompt[0:8] + ".mp4"
+        output_path = os.path.join(_vid_dir, prompt[0:8] + ".mp4")
     save_frames_to_video(output.frames, output_path)
     return output_path
 
@@ -102,10 +103,12 @@ def generate_video_veo3(
     
     generated_video = operation.result.generated_videos[0]
     
-    os.makedirs(os.path.expanduser("~/.npcsh/videos/"), exist_ok=True)
+    from npcpy.npc_sysenv import get_videos_dir
+    videos_dir = get_videos_dir()
+    os.makedirs(videos_dir, exist_ok=True)
     if output_path == "":
         safe_prompt = "".join(c for c in prompt[:20] if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        output_path = os.path.expanduser("~/.npcsh/videos/") + safe_prompt.replace(" ", "_") + "_veo3.mp4"
+        output_path = os.path.join(videos_dir, safe_prompt.replace(" ", "_") + "_veo3.mp4")
     
     client.files.download(file=generated_video.video)
     generated_video.video.save(output_path)

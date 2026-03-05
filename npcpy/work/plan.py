@@ -11,8 +11,10 @@ import tempfile
 
 from typing import Any
 
-JOBS_DIR = os.path.expanduser("~/.npcsh/jobs")
-LOGS_DIR = os.path.expanduser("~/.npcsh/logs")
+from npcpy.npc_sysenv import get_jobs_dir, get_logs_dir
+
+JOBS_DIR = get_jobs_dir()
+LOGS_DIR = get_logs_dir()
 
 
 def _npc_bin_path():

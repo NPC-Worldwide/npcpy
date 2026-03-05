@@ -67,6 +67,8 @@ from sqlalchemy.orm import sessionmaker
 
 from npcpy.npc_sysenv import (
     get_locally_available_models, get_data_dir, get_models_dir, get_cache_dir,
+    get_images_dir, get_jobs_dir, get_triggers_dir, get_videos_dir,
+    get_attachments_dir, get_logs_dir,
     team_sync_status, team_sync_init, team_sync_pull,
     team_sync_resolve, team_sync_commit, team_sync_diff,
 )
@@ -279,54 +281,79 @@ class MCPServerManager:
         self._procs = {}
         self._lock = threading.Lock()
 
-    def start(self, server_path: str):
+    def start(self, server_path: str, env_vars: dict = None):
         server_path = os.path.expanduser(server_path)
-        abs_path = os.path.abspath(server_path)
-        if not os.path.exists(abs_path):
-            raise FileNotFoundError(f"MCP server script not found at {abs_path}")
+
+        # Build environment with optional extra vars
+        proc_env = os.environ.copy()
+        if env_vars:
+            proc_env.update(env_vars)
+
+        # Detect command type: npx, uvx, node, etc. vs local file path
+        stripped = server_path.strip()
+        is_command = stripped.startswith(('npx ', 'uvx ', 'node ', 'python ', 'python3 '))
+
+        if is_command:
+            # For commands like "npx -y @modelcontextprotocol/server-github"
+            import shlex
+            cmd = shlex.split(stripped)
+            key = stripped  # Use the full command string as key
+            cwd = os.getcwd()
+        else:
+            abs_path = os.path.abspath(server_path)
+            if not os.path.exists(abs_path):
+                raise FileNotFoundError(f"MCP server script not found at {abs_path}")
+            cmd = [sys.executable, abs_path]
+            key = abs_path
+            cwd = os.path.dirname(abs_path) or "."
 
         with self._lock:
-            existing = self._procs.get(abs_path)
+            existing = self._procs.get(key)
             if existing and existing.poll() is None:
-                return {"status": "running", "pid": existing.pid, "serverPath": abs_path}
+                return {"status": "running", "pid": existing.pid, "serverPath": key}
 
-            cmd = [sys.executable, abs_path]
             proc = subprocess.Popen(
                 cmd,
-                cwd=os.path.dirname(abs_path) or ".",
+                cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=proc_env,
             )
-            self._procs[abs_path] = proc
-            return {"status": "started", "pid": proc.pid, "serverPath": abs_path}
+            self._procs[key] = proc
+            return {"status": "started", "pid": proc.pid, "serverPath": key}
+
+    def _resolve_key(self, server_path: str) -> str:
+        """Resolve server_path to the key used in _procs."""
+        stripped = server_path.strip()
+        if stripped.startswith(('npx ', 'uvx ', 'node ', 'python ', 'python3 ')):
+            return stripped
+        return os.path.abspath(os.path.expanduser(server_path))
 
     def stop(self, server_path: str):
-        server_path = os.path.expanduser(server_path)
-        abs_path = os.path.abspath(server_path)
+        key = self._resolve_key(server_path)
         with self._lock:
-            proc = self._procs.get(abs_path)
+            proc = self._procs.get(key)
             if not proc:
-                return {"status": "not_found", "serverPath": abs_path}
+                return {"status": "not_found", "serverPath": key}
             if proc.poll() is None:
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-            del self._procs[abs_path]
-            return {"status": "stopped", "serverPath": abs_path}
+            del self._procs[key]
+            return {"status": "stopped", "serverPath": key}
 
     def status(self, server_path: str):
-        server_path = os.path.expanduser(server_path)
-        abs_path = os.path.abspath(server_path)
+        key = self._resolve_key(server_path)
         with self._lock:
-            proc = self._procs.get(abs_path)
+            proc = self._procs.get(key)
             if not proc:
-                return {"status": "not_started", "serverPath": abs_path}
+                return {"status": "not_started", "serverPath": key}
             running = proc.poll() is None
             return {
                 "status": "running" if running else "exited",
-                "serverPath": abs_path,
+                "serverPath": key,
                 "pid": proc.pid,
                 "returncode": None if running else proc.returncode,
             }
@@ -1923,20 +1950,186 @@ def save_jinx():
 
         os.makedirs(jinxs_dir, exist_ok=True)
 
-        
         jinx_yaml = {
             "description": jinx_data.get("description", ""),
             "inputs": jinx_data.get("inputs", []),
             "steps": jinx_data.get("steps", []),
         }
 
-        file_path = os.path.join(jinxs_dir, f"{jinx_name}.jinx")
+        # Use path field for subdirectory placement
+        jinx_rel_path = jinx_data.get("path", "")
+        if jinx_rel_path and "/" in jinx_rel_path:
+            sub_dir = os.path.join(jinxs_dir, os.path.dirname(jinx_rel_path))
+            os.makedirs(sub_dir, exist_ok=True)
+            file_path = os.path.join(sub_dir, f"{jinx_name}.jinx")
+        else:
+            file_path = os.path.join(jinxs_dir, f"{jinx_name}.jinx")
         with open(file_path, "w") as f:
             yaml.safe_dump(jinx_yaml, f, sort_keys=False)
 
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/jinxs/delete", methods=["POST"])
+def delete_jinx():
+    """Delete a jinx file from the filesystem."""
+    try:
+        data = request.json or {}
+        jinx_path = data.get("jinxPath", "")  # relative path without .jinx extension
+        scope = data.get("scope", "global")
+        current_path = data.get("currentPath", "")
+        source_path = data.get("sourcePath", "")  # absolute path if provided
+
+        if source_path and os.path.exists(source_path):
+            file_path = source_path
+        elif jinx_path:
+            if scope == "global":
+                jinxs_dir = os.path.join(os.path.expanduser("~"), ".npcsh", "npc_team", "jinxs")
+            else:
+                base = current_path
+                if not base.endswith("npc_team"):
+                    base = os.path.join(base, "npc_team")
+                jinxs_dir = os.path.join(base, "jinxs")
+            file_path = os.path.join(jinxs_dir, f"{jinx_path}.jinx")
+        else:
+            return jsonify({"error": "jinxPath or sourcePath required"}), 400
+
+        if not os.path.exists(file_path):
+            return jsonify({"error": f"File not found: {file_path}"}), 404
+
+        os.unlink(file_path)
+
+        # Clean up empty parent directories
+        parent = os.path.dirname(file_path)
+        while parent and parent != jinxs_dir if not source_path else False:
+            try:
+                if not os.listdir(parent):
+                    os.rmdir(parent)
+                    parent = os.path.dirname(parent)
+                else:
+                    break
+            except OSError:
+                break
+
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/jinxs/ingest", methods=["POST"])
+def ingest_jinx_from_url():
+    """
+    Ingest a jinx or skill from a URL. Supports:
+    - .jinx files (YAML) → saved directly
+    - SKILL.md files → saved as skill directory
+    - Raw text/markdown → wrapped as a skill with sections
+    - GitHub URLs → auto-resolved to raw content
+    """
+    try:
+        import requests as req_lib
+
+        data = request.json
+        url = data.get("url", "").strip()
+        name = data.get("name", "").strip()
+        scope = data.get("scope", "project")  # "global" or "project"
+        current_path = data.get("currentPath", "")
+        skill_type = data.get("type", "auto")  # "jinx", "skill", "auto"
+
+        if not url:
+            return jsonify({"error": "URL is required"}), 400
+
+        # Resolve GitHub URLs to raw content
+        if "github.com" in url and "/blob/" in url:
+            url = url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+
+        # Fetch the content
+        resp = req_lib.get(url, timeout=30)
+        resp.raise_for_status()
+        content = resp.text
+
+        # Determine the target directory
+        if scope == "global":
+            jinxs_dir = os.path.join(os.path.expanduser("~"), ".npcsh", "npc_team", "jinxs")
+        else:
+            base = current_path if current_path else os.path.expanduser("~/.npcsh")
+            if not base.endswith("npc_team"):
+                base = os.path.join(base, "npc_team")
+            jinxs_dir = os.path.join(base, "jinxs")
+
+        os.makedirs(jinxs_dir, exist_ok=True)
+
+        # Auto-detect type from URL and content
+        url_lower = url.lower()
+        if skill_type == "auto":
+            if url_lower.endswith(".jinx") or url_lower.endswith(".yaml") or url_lower.endswith(".yml"):
+                skill_type = "jinx"
+            elif "SKILL.md" in url or url_lower.endswith("skill.md"):
+                skill_type = "skill"
+            elif content.strip().startswith("---") and "jinx_name" in content[:500]:
+                skill_type = "jinx"
+            elif content.strip().startswith("---") and ("name:" in content[:500] or "description:" in content[:500]):
+                skill_type = "skill"
+            else:
+                skill_type = "skill"  # Default: wrap as skill
+
+        # Auto-generate name from URL if not provided
+        if not name:
+            # Extract from URL path
+            path_parts = url.rstrip("/").split("/")
+            raw_name = path_parts[-1] if path_parts else "imported_skill"
+            # Remove extensions
+            for ext in [".jinx", ".yaml", ".yml", ".md"]:
+                if raw_name.lower().endswith(ext):
+                    raw_name = raw_name[: -len(ext)]
+            name = raw_name.replace(" ", "_").replace("-", "_").lower()
+
+        if skill_type == "jinx":
+            # Save as .jinx file directly
+            file_path = os.path.join(jinxs_dir, f"{name}.jinx")
+            with open(file_path, "w") as f:
+                f.write(content)
+
+            return jsonify({
+                "status": "success",
+                "type": "jinx",
+                "name": name,
+                "path": file_path,
+                "message": f"Jinx '{name}' saved to {file_path}"
+            })
+
+        else:
+            # Save as skill (SKILL.md in subdirectory)
+            skill_dir = os.path.join(jinxs_dir, "skills", name)
+            os.makedirs(skill_dir, exist_ok=True)
+            skill_path = os.path.join(skill_dir, "SKILL.md")
+
+            # If content already has frontmatter, save as-is
+            if content.strip().startswith("---"):
+                with open(skill_path, "w") as f:
+                    f.write(content)
+            else:
+                # Wrap raw content as a skill with frontmatter
+                frontmatter = f"---\nname: {name}\ndescription: Skill ingested from {url}\n---\n"
+                # Try to split content into sections by ## headers
+                with open(skill_path, "w") as f:
+                    f.write(frontmatter + "\n" + content)
+
+            return jsonify({
+                "status": "success",
+                "type": "skill",
+                "name": name,
+                "path": skill_path,
+                "message": f"Skill '{name}' saved to {skill_path}"
+            })
+
+    except req_lib.exceptions.RequestException as e:
+        return jsonify({"error": f"Failed to fetch URL: {str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 def serialize_jinx_inputs(inputs):
     result = []
     for inp in inputs:
@@ -2115,16 +2308,16 @@ def get_finetuned_models():
     current_path = request.args.get("currentPath")
     
     potential_root_paths = [
-        os.path.expanduser('~/.npcsh/models'),
-        os.path.expanduser('~/.npcsh/images'),
+        get_models_dir(),
+        get_images_dir(),
     ]
     if current_path:
         project_models_path = os.path.join(current_path, 'models')
         project_images_path = os.path.join(current_path, 'images')
         potential_root_paths.extend([project_models_path, project_images_path])
-            
+
     finetuned_models = []
-    
+
     print(f"🌋 Searching for fine-tuned models in potential root paths: {set(potential_root_paths)}")
 
     for root_path in set(potential_root_paths):
@@ -2166,8 +2359,8 @@ def finetune_diffusers():
     num_epochs = data.get('epochs', 100)
     batch_size = data.get('batchSize', 4)
     learning_rate = data.get('learningRate', 1e-4)
-    output_path = data.get('outputPath', '~/.npcsh/models')
-    
+    output_path = data.get('outputPath', get_models_dir())
+
     print(f"🌋 Finetune Diffusers Request Received!")
     print(f"  Images: {len(images)} files")
     print(f"  Output Name: {output_name}")
@@ -2308,7 +2501,7 @@ def finetune_instruction():
         "batchSize": 2,
         "loraR": 8,
         "loraAlpha": 16,
-        "outputPath": "~/.npcsh/models",
+        "outputPath": "<data_dir>/npc_team/models",
         "systemPrompt": "optional system prompt to prepend",
         "npc": "optional npc name",
         "formatStyle": "gemma"  // "gemma", "llama", or "default"
@@ -2334,7 +2527,7 @@ def finetune_instruction():
     batch_size = data.get('batchSize', 2)
     lora_r = data.get('loraR', 8)
     lora_alpha = data.get('loraAlpha', 16)
-    output_path = data.get('outputPath', '~/.npcsh/models')
+    output_path = data.get('outputPath', get_models_dir())
     system_prompt = data.get('systemPrompt', '')
     format_style = data.get('formatStyle', 'gemma')
     npc_name = data.get('npc', None)
@@ -2588,7 +2781,7 @@ def get_instruction_models():
     current_path = request.args.get("currentPath")
 
     potential_root_paths = [
-        os.path.expanduser('~/.npcsh/models'),
+        get_models_dir(),
     ]
     if current_path:
         project_models_path = os.path.join(current_path, 'models')
@@ -3146,6 +3339,7 @@ def get_jinxs_global():
                 jinx_data.append({
                     "jinx_name": raw_data.get("jinx_name", file[:-5]),
                     "path": path_without_ext,
+                    "source_path": jinx_path,
                     "description": raw_data.get("description", ""),
                     "inputs": inputs,
                     "steps": raw_data.get("steps", [])
@@ -3182,11 +3376,12 @@ def get_jinxs_project():
                 jinx_data.append({
                     "jinx_name": raw_data.get("jinx_name", file[:-5]),
                     "path": path_without_ext,
+                    "source_path": jinx_path,
                     "description": raw_data.get("description", ""),
                     "inputs": inputs,
                     "steps": raw_data.get("steps", [])
                 })
-    print(jinx_data)
+
     return jsonify({"jinxs": jinx_data, "error": None})
 
 @app.route("/api/npcsql/run_model", methods=["POST"])
@@ -3389,7 +3584,7 @@ def list_system_daemons():
         if r2.returncode == 0:
             result["user_services"] = r2.stdout
         # npcsh-specific triggers
-        triggers_dir = os.path.expanduser("~/.npcsh/triggers")
+        triggers_dir = get_triggers_dir()
         if os.path.isdir(triggers_dir):
             for f in os.listdir(triggers_dir):
                 result["npcsh_services"].append(f)
@@ -3508,7 +3703,91 @@ def get_npc_team_project():
             npc_data.append(serialized_npc)
 
     return jsonify({"npcs": npc_data, "error": None})
-        
+
+
+@app.route("/api/npc-team/import", methods=["POST"])
+def import_npc_team():
+    """
+    Import an npc_team from a git repository URL.
+    Clones the repo, finds npc_team/ directory, copies contents to target.
+    """
+    import tempfile
+    import shutil as _shutil
+
+    data = request.json or {}
+    repo_url = data.get("repoUrl", "").strip()
+    scope = data.get("scope", "global")
+    current_path = data.get("currentPath", "")
+    branch = data.get("branch", "")
+
+    if not repo_url:
+        return jsonify({"error": "repoUrl is required"}), 400
+
+    # Determine target directory
+    if scope == "global":
+        target = os.path.expanduser("~/.npcsh/npc_team")
+    else:
+        if not current_path:
+            return jsonify({"error": "currentPath required for project scope"}), 400
+        target = os.path.join(current_path, "npc_team")
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Clone repo
+            clone_cmd = ["git", "clone", "--depth", "1"]
+            if branch:
+                clone_cmd += ["-b", branch]
+            clone_cmd += [repo_url, tmp_dir]
+
+            result = subprocess.run(
+                clone_cmd, capture_output=True, text=True, timeout=120
+            )
+            if result.returncode != 0:
+                return jsonify({"error": f"Git clone failed: {result.stderr.strip()}"}), 400
+
+            # Find npc_team/ directory
+            npc_team_src = os.path.join(tmp_dir, "npc_team")
+            if not os.path.isdir(npc_team_src):
+                # Search one level deep
+                for item in os.listdir(tmp_dir):
+                    candidate = os.path.join(tmp_dir, item, "npc_team")
+                    if os.path.isdir(candidate):
+                        npc_team_src = candidate
+                        break
+
+            if not os.path.isdir(npc_team_src):
+                return jsonify({"error": "No npc_team/ directory found in repository"}), 404
+
+            # Copy contents (merge into target)
+            imported = {"jinxs": 0, "npcs": 0, "contexts": 0, "other": 0}
+            for root, dirs, files in os.walk(npc_team_src):
+                # Skip .git directories
+                dirs[:] = [d for d in dirs if d != '.git']
+                rel = os.path.relpath(root, npc_team_src)
+                dest_dir = os.path.join(target, rel) if rel != '.' else target
+                os.makedirs(dest_dir, exist_ok=True)
+
+                for f in files:
+                    src_file = os.path.join(root, f)
+                    dst_file = os.path.join(dest_dir, f)
+                    _shutil.copy2(src_file, dst_file)
+                    if f.endswith(".jinx"):
+                        imported["jinxs"] += 1
+                    elif f.endswith(".npc"):
+                        imported["npcs"] += 1
+                    elif f.endswith(".ctx"):
+                        imported["contexts"] += 1
+                    else:
+                        imported["other"] += 1
+
+        return jsonify({"status": "success", "imported": imported, "target": target, "error": None})
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Git clone timed out (120s limit)"}), 504
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 def get_last_used_model_and_npc_in_directory(directory_path):
     """
     Fetches the model and NPC from the most recent message in any conversation
@@ -3609,7 +3888,11 @@ def read_ctx_file(file_path):
                 
                 
                 if 'mcp_servers' in data and isinstance(data['mcp_servers'], list):
-                    data['mcp_servers'] = [{"value": item} for item in data['mcp_servers']]
+                    data['mcp_servers'] = [
+                        item if isinstance(item, dict) and 'value' in item
+                        else {"value": item}
+                        for item in data['mcp_servers']
+                    ]
 
                 
                 if 'preferences' in data and isinstance(data['preferences'], list):
@@ -3638,7 +3921,18 @@ def write_ctx_file(file_path, data):
     
     
     if 'mcp_servers' in data_to_save and isinstance(data_to_save['mcp_servers'], list):
-        data_to_save['mcp_servers'] = [item.get("value", "") for item in data_to_save['mcp_servers'] if isinstance(item, dict)]
+        normalized = []
+        for item in data_to_save['mcp_servers']:
+            if isinstance(item, dict):
+                # If entry has extra fields (env, name, id), preserve as dict
+                has_extras = any(k in item for k in ('env', 'name', 'id'))
+                if has_extras:
+                    normalized.append({k: v for k, v in item.items() if v})
+                else:
+                    normalized.append(item.get("value", ""))
+            elif isinstance(item, str):
+                normalized.append(item)
+        data_to_save['mcp_servers'] = normalized
 
     
     if 'preferences' in data_to_save and isinstance(data_to_save['preferences'], list):
@@ -3986,7 +4280,14 @@ def get_attachment_response():
     for attachment in attachments:
         extension = attachment["name"].split(".")[-1]
         extension_mapped = extension_map.get(extension.upper(), "others")
-        file_path = os.path.expanduser("~/.npcsh/" + extension_mapped + "/" + attachment["name"])
+        _type_dir_map = {
+            "images": get_images_dir(),
+            "videos": get_videos_dir(),
+            "models": get_models_dir(),
+        }
+        _type_base = _type_dir_map.get(extension_mapped, os.path.join(get_attachments_dir(), extension_mapped))
+        os.makedirs(_type_base, exist_ok=True)
+        file_path = os.path.join(_type_base, attachment["name"])
         
         if extension_mapped == "images":
             ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -4142,14 +4443,14 @@ IMAGE_PROVIDER_API_KEYS = {
 def _get_finetuned_models_internal(current_path=None):
     
     potential_root_paths = [
-        os.path.expanduser('~/.npcsh/models'),
-        os.path.expanduser('~/.npcsh/images'),
+        get_models_dir(),
+        get_images_dir(),
     ]
     if current_path:
         project_models_path = os.path.join(current_path, 'models')
         project_images_path = os.path.join(current_path, 'images')
         potential_root_paths.extend([project_models_path, project_images_path])
-            
+
     finetuned_models = []
     
     print(f"🌋 (Internal) Searching for fine-tuned models in potential root paths: {set(potential_root_paths)}")
@@ -4429,7 +4730,7 @@ def generate_images():
     provider_name = data.get('provider')
     attachments = data.get('attachments', [])
     base_filename = data.get('base_filename', 'vixynt_gen')  
-    save_dir = data.get('currentPath', '~/.npcsh/images')     
+    save_dir = data.get('currentPath', get_images_dir())     
 
     if not prompt:
         return jsonify({"error": "Prompt is required."}), 400
@@ -4662,9 +4963,15 @@ def api_mcp_start():
     data = request.get_json() or {}
     current_path = data.get("currentPath")
     explicit = data.get("serverPath")
+    env_vars = data.get("envVars")
     try:
-        server_path = resolve_mcp_server_path(current_path=current_path, explicit_path=explicit)
-        result = mcp_server_manager.start(server_path)
+        # For npx/uvx commands, don't resolve as file path
+        stripped = (explicit or "").strip()
+        if stripped.startswith(('npx ', 'uvx ', 'node ')):
+            server_path = stripped
+        else:
+            server_path = resolve_mcp_server_path(current_path=current_path, explicit_path=explicit)
+        result = mcp_server_manager.start(server_path, env_vars=env_vars)
         return jsonify({**result, "error": None})
     except Exception as e:
         print(f"Error starting MCP server: {e}")
@@ -4678,6 +4985,7 @@ def api_mcp_stop():
     if not explicit:
         return jsonify({"error": "serverPath is required to stop a server."}), 400
     try:
+        # _resolve_key in manager handles both file paths and commands
         result = mcp_server_manager.stop(explicit)
         return jsonify({**result, "error": None})
     except Exception as e:
@@ -4691,7 +4999,12 @@ def api_mcp_status():
     current_path = request.args.get("currentPath")
     try:
         if explicit:
-            result = mcp_server_manager.status(explicit)
+            # For npx/uvx commands, use directly without resolving as file path
+            stripped = explicit.strip()
+            if stripped.startswith(('npx ', 'uvx ', 'node ')):
+                result = mcp_server_manager.status(stripped)
+            else:
+                result = mcp_server_manager.status(explicit)
         else:
             resolved = resolve_mcp_server_path(current_path=current_path, explicit_path=explicit)
             result = mcp_server_manager.status(resolved)
@@ -4737,7 +5050,7 @@ def generate_video_api():
         if output_dir:
             save_dir = os.path.expanduser(output_dir)
         else:
-            save_dir = os.path.expanduser("~/.npcsh/videos")
+            save_dir = get_videos_dir()
         os.makedirs(save_dir, exist_ok=True)
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -6160,10 +6473,13 @@ def get_conversations():
         try:
             with engine.connect() as conn:
                 query = text("""
-                SELECT DISTINCT conversation_id,
+                SELECT conversation_id,
                        MIN(timestamp) as start_time,
                        MAX(timestamp) as last_message_timestamp,
-                       GROUP_CONCAT(content) as preview
+                       GROUP_CONCAT(content) as preview,
+                       GROUP_CONCAT(DISTINCT CASE WHEN npc IS NOT NULL AND npc != '' THEN npc END) as npcs,
+                       GROUP_CONCAT(DISTINCT CASE WHEN model IS NOT NULL AND model != '' THEN model END) as models,
+                       GROUP_CONCAT(DISTINCT CASE WHEN provider IS NOT NULL AND provider != '' THEN provider END) as providers
                 FROM conversation_history
                 WHERE REPLACE(RTRIM(directory_path, '/\\'), '\\', '/') = :normalized_path
                 GROUP BY conversation_id
@@ -6181,14 +6497,21 @@ def get_conversations():
                     {
                         "conversations": [
                             {
-                                "id": conv[0],  
-                                "timestamp": conv[1],  
-                                "last_message_timestamp": conv[2],  
+                                "id": conv[0],
+                                "timestamp": conv[1],
+                                "last_message_timestamp": conv[2],
                                 "preview": (
-                                    conv[3][:100] + "..."  
+                                    conv[3][:100] + "..."
                                     if conv[3] and len(conv[3]) > 100
                                     else conv[3]
                                 ),
+                                "npcs": [n for n in (conv[4] or "").split(",") if n],
+                                "models": [m for m in (conv[5] or "").split(",") if m],
+                                "providers": [p for p in (conv[6] or "").split(",") if p],
+                                # Keep singular fields for backwards compat (first entry)
+                                "npc": (conv[4] or "").split(",")[0] if conv[4] else "",
+                                "model": (conv[5] or "").split(",")[0] if conv[5] else "",
+                                "provider": (conv[6] or "").split(",")[0] if conv[6] else "",
                             }
                             for conv in conversations
                         ],
@@ -6201,6 +6524,66 @@ def get_conversations():
     except Exception as e:
         print(f"Error getting conversations: {str(e)}")
         return jsonify({"error": str(e), "conversations": []}), 500
+
+@app.route("/api/search_conversations", methods=["GET"])
+def search_conversations():
+    try:
+        q = request.args.get("q", "").strip()
+        limit = int(request.args.get("limit", 20))
+        if not q:
+            return jsonify({"conversations": [], "error": None})
+
+        engine = get_db_connection()
+        try:
+            with engine.connect() as conn:
+                query = text("""
+                SELECT DISTINCT ch.conversation_id,
+                       MIN(ch.timestamp) as start_time,
+                       MAX(ch.timestamp) as last_message_timestamp,
+                       GROUP_CONCAT(DISTINCT CASE WHEN ch.npc IS NOT NULL AND ch.npc != '' THEN ch.npc END) as npcs
+                FROM conversation_history ch
+                WHERE ch.content LIKE :pattern
+                GROUP BY ch.conversation_id
+                ORDER BY MAX(ch.timestamp) DESC
+                LIMIT :limit
+                """)
+                result = conn.execute(query, {"pattern": f"%{q}%", "limit": limit})
+                rows = result.fetchall()
+
+                conversations = []
+                for row in rows:
+                    # Get the matching message snippet
+                    snippet_q = text("""
+                    SELECT content FROM conversation_history
+                    WHERE conversation_id = :cid AND content LIKE :pattern
+                    LIMIT 1
+                    """)
+                    snippet_result = conn.execute(snippet_q, {"cid": row[0], "pattern": f"%{q}%"})
+                    snippet_row = snippet_result.fetchone()
+                    preview = ""
+                    if snippet_row and snippet_row[0]:
+                        content = snippet_row[0]
+                        idx = content.lower().find(q.lower())
+                        start = max(0, idx - 40)
+                        end = min(len(content), idx + len(q) + 40)
+                        preview = ("..." if start > 0 else "") + content[start:end] + ("..." if end < len(content) else "")
+
+                    conversations.append({
+                        "id": row[0],
+                        "timestamp": row[1],
+                        "last_message_timestamp": row[2],
+                        "preview": preview,
+                        "title": preview[:50] if preview else row[0][:20],
+                        "npc": (row[3] or "").split(",")[0] if row[3] else "",
+                    })
+
+                return jsonify({"conversations": conversations, "error": None})
+        finally:
+            engine.dispose()
+    except Exception as e:
+        print(f"Error searching conversations: {str(e)}")
+        return jsonify({"conversations": [], "error": str(e)}), 500
+
 
 @app.route("/api/conversation/<conversation_id>/messages", methods=["GET"])
 def get_conversation_messages(conversation_id):

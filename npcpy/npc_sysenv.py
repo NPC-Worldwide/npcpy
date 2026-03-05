@@ -124,11 +124,99 @@ def get_history_db_path() -> str:
 
 def get_models_dir() -> str:
     """Get the directory for storing models."""
-    return os.path.join(get_data_dir(), 'models')
+    return os.path.join(get_data_dir(), 'npc_team', 'models')
+
+def get_images_dir() -> str:
+    """Get the directory for storing generated images."""
+    return os.path.join(get_data_dir(), 'npc_team', 'images')
+
+def get_jobs_dir() -> str:
+    """Get the directory for cron/scheduled jobs."""
+    return os.path.join(get_data_dir(), 'npc_team', 'jobs')
+
+def get_triggers_dir() -> str:
+    """Get the directory for trigger scripts."""
+    return os.path.join(get_data_dir(), 'npc_team', 'triggers')
+
+def get_videos_dir() -> str:
+    """Get the directory for generated videos."""
+    return os.path.join(get_data_dir(), 'npc_team', 'videos')
+
+def get_attachments_dir() -> str:
+    """Get the directory for attachments."""
+    return os.path.join(get_data_dir(), 'npc_team', 'attachments')
+
+def get_logs_dir() -> str:
+    """Get the directory for logs."""
+    return os.path.join(get_data_dir(), 'npc_team', 'logs')
+
+def _migrate_dirs_to_npc_team() -> None:
+    """One-time migration: move top-level resource dirs into npc_team/.
+
+    Runs only when the marker file is absent and old dirs exist.
+    """
+    data_dir = get_data_dir()
+    marker = os.path.join(data_dir, '.dirs_migrated_to_npc_team')
+    if os.path.isfile(marker):
+        return
+
+    old_dirs = ["images", "models", "attachments", "mcp_servers",
+                "jobs", "triggers", "videos", "logs"]
+    # Only bother if at least one old top-level dir has content
+    needs_migration = any(
+        os.path.isdir(os.path.join(data_dir, d)) and os.listdir(os.path.join(data_dir, d))
+        for d in old_dirs
+        if os.path.isdir(os.path.join(data_dir, d))
+    )
+    if not needs_migration:
+        # No old dirs with content — just write marker and return
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+            with open(marker, 'w') as f:
+                f.write('No migration needed\n')
+        except OSError:
+            pass
+        return
+
+    try:
+        from migrations.migrate_dirs_to_npc_team import run_migration
+        run_migration(data_dir, dry_run=False)
+    except ImportError:
+        # Inline fallback if the migration module isn't on sys.path
+        import shutil
+        npc_team_dir = os.path.join(data_dir, 'npc_team')
+        os.makedirs(npc_team_dir, exist_ok=True)
+        for dirname in old_dirs:
+            old = os.path.join(data_dir, dirname)
+            new = os.path.join(npc_team_dir, dirname)
+            if not os.path.isdir(old) or not os.listdir(old):
+                if os.path.isdir(old) and not os.listdir(old):
+                    try:
+                        os.rmdir(old)
+                    except OSError:
+                        pass
+                continue
+            os.makedirs(new, exist_ok=True)
+            for item in os.listdir(old):
+                src = os.path.join(old, item)
+                dst = os.path.join(new, item)
+                if not os.path.exists(dst):
+                    shutil.move(src, dst)
+            if not os.listdir(old):
+                try:
+                    os.rmdir(old)
+                except OSError:
+                    pass
+        with open(marker, 'w') as f:
+            f.write('Migration applied: top-level dirs moved into npc_team/\n')
 
 def ensure_npcsh_dirs() -> None:
-    """Ensure all npcsh directories exist."""
-    for dir_path in [get_data_dir(), get_config_dir(), get_cache_dir(), get_models_dir()]:
+    """Ensure all npcsh directories exist, migrating old layouts if needed."""
+    _migrate_dirs_to_npc_team()
+    for dir_path in [get_data_dir(), get_config_dir(), get_cache_dir(),
+                     get_models_dir(), get_images_dir(), get_jobs_dir(),
+                     get_triggers_dir(), get_videos_dir(), get_attachments_dir(),
+                     get_logs_dir()]:
         os.makedirs(dir_path, exist_ok=True)
 
 try:
@@ -477,7 +565,7 @@ def get_locally_available_models(project_directory, airplane_mode=False):
         logging.debug(f"MLX server (port 5000) not available: {e}")
 
     lora_dirs = [
-        os.path.expanduser('~/.npcsh/models'),
+        get_models_dir(),
     ]
     for scan_dir in lora_dirs:
         if not os.path.isdir(scan_dir):

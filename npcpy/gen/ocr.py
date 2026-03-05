@@ -13,6 +13,8 @@ import tempfile
 from dataclasses import dataclass
 from typing import Optional, Union
 
+from npcpy.npc_sysenv import get_models_dir
+
 try:
     from PIL import Image
 except ImportError:
@@ -25,13 +27,15 @@ class DeepSeekOCR:
     """Lazy loader/wrapper around the Unsloth DeepSeek OCR vision model."""
 
     model_id: str = "unsloth/DeepSeek-OCR"
-    local_dir: str = os.path.expanduser("~/.npcsh/models/deepseek_ocr")
+    local_dir: str = ""
     load_in_4bit: bool = False
     base_size: int = 1024
     image_size: int = 640
     crop_mode: bool = True
 
     def __post_init__(self) -> None:
+        if not self.local_dir:
+            self.local_dir = os.path.join(get_models_dir(), "deepseek_ocr")
         self._model = None
         self._tokenizer = None
 
@@ -161,7 +165,7 @@ def deepseek_ocr(
     """
     runner = DeepSeekOCR(
         model_id=model_id,
-        local_dir=local_dir or os.path.expanduser("~/.npcsh/models/deepseek_ocr"),
+        local_dir=local_dir or os.path.join(get_models_dir(), "deepseek_ocr"),
         load_in_4bit=kwargs.pop("load_in_4bit", False),
         base_size=kwargs.pop("base_size", 1024),
         image_size=kwargs.pop("image_size", 640),

@@ -213,19 +213,29 @@ def _json_dumps_with_undefined(obj, **kwargs):
         raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
     return json.dumps(obj, default=default_handler, **kwargs)
 
-def load_yaml_file(file_path):
-    """Load a YAML file with error handling, rendering Jinja2 first"""
+def load_yaml_file(file_path, jinja_context=None):
+    """Load a YAML file with error handling, rendering Jinja2 first.
+
+    Args:
+        file_path: Path to the YAML file
+        jinja_context: Optional dict of variables to pass to Jinja2 rendering.
+            Used by Team to inject jinx name->path mappings so NPC files can
+            use {{ jinx_name }} to resolve to the correct relative path.
+    """
     try:
         with open(os.path.expanduser(file_path), 'r', encoding="utf-8") as f:
             content = f.read()
 
-        if '{%' not in content:
+        # Only trigger Jinja on {{ }} if jinja_context is provided (NPC files).
+        # Jinx files use {{ }} for runtime templating and should NOT be rendered at load time.
+        has_jinja = '{%' in content or (jinja_context and '{{' in content and '}}' in content)
+        if not has_jinja:
             return yaml.safe_load(content)
 
         jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
         jinja_env.policies['json.dumps_function'] = _json_dumps_with_undefined
         template = jinja_env.from_string(content)
-        rendered_content = template.render({})
+        rendered_content = template.render(jinja_context or {})
 
         return yaml.safe_load(rendered_content)
     except Exception as e:
@@ -248,14 +258,17 @@ def initialize_npc_project(
     context=None,
     model=None,
     provider=None,
+    include_jinx_groups=None,
 ) -> str:
-    """Initialize an NPC project"""
+    """Initialize an NPC project.
+
+    Args:
+        include_jinx_groups: List of jinx subdir paths to copy from the global
+            team (e.g. ['lib/core', 'lib/utils', 'modes']).  None = skip.
+    """
     if directory is None:
         directory = os.getcwd()
     directory = os.path.expanduser(os.fspath(directory))
-
-    for subdir in ["images", "models", "attachments", "mcp_servers"]:
-        os.makedirs(os.path.join(directory, subdir), exist_ok=True)
 
     npc_team_dir = os.path.join(directory, "npc_team")
     os.makedirs(npc_team_dir, exist_ok=True)
@@ -266,8 +279,37 @@ def initialize_npc_project(
                    "sql_models",
                    "jobs",
                    "triggers",
-                   "tools"]:
+                   "tools",
+                   "images",
+                   "models",
+                   "attachments",
+                   "mcp_servers"]:
         os.makedirs(os.path.join(npc_team_dir, subdir), exist_ok=True)
+
+    # Copy selected jinx groups from the global npcsh team
+    if include_jinx_groups:
+        global_jinxs = os.path.expanduser("~/.npcsh/npc_team/jinxs")
+        if not os.path.isdir(global_jinxs):
+            pkg_jinxs = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     '..', 'npcsh', 'npcsh', 'npc_team', 'jinxs')
+            if os.path.isdir(pkg_jinxs):
+                global_jinxs = pkg_jinxs
+        if os.path.isdir(global_jinxs):
+            dest_jinxs = os.path.join(npc_team_dir, "jinxs")
+            for group in include_jinx_groups:
+                src_group = os.path.join(global_jinxs, group)
+                if not os.path.isdir(src_group):
+                    continue
+                for dirpath, dirnames, filenames in os.walk(src_group):
+                    rel = os.path.relpath(dirpath, global_jinxs)
+                    dest_dir = os.path.join(dest_jinxs, rel)
+                    os.makedirs(dest_dir, exist_ok=True)
+                    for fname in filenames:
+                        if fname.endswith('.jinx'):
+                            src = os.path.join(dirpath, fname)
+                            dst = os.path.join(dest_dir, fname)
+                            if not os.path.exists(dst):
+                                shutil.copy2(src, dst)
     
     forenpc_path = os.path.join(npc_team_dir, "forenpc.npc")
     
@@ -277,8 +319,12 @@ def initialize_npc_project(
         
         default_npc = {
             "name": "forenpc",
-            "primary_directive": "You are the forenpc of an NPC team", 
+            "primary_directive": "You are the forenpc of an NPC team",
         }
+        if model:
+            default_npc["model"] = model
+        if provider:
+            default_npc["provider"] = provider
         with open(forenpc_path, "w", encoding="utf-8") as f:
             yaml.dump(default_npc, f)
     parsed_templates: List[str] = []
@@ -429,6 +475,10 @@ primary_directive: You oversee the sales pipeline, track progress, and optimize 
             'use_global_jinxs': True,
             'forenpc': 'forenpc'
         }
+        if model:
+            default_ctx['model'] = model
+        if provider:
+            default_ctx['provider'] = provider
         if parsed_templates:
             default_ctx['templates'] = parsed_templates
         with open(default_ctx_path, "w", encoding="utf-8") as f:
@@ -1151,27 +1201,40 @@ def build_jinx_tool_catalog(jinxs: Dict[str, 'Jinx']) -> Dict[str, Dict[str, Any
     """Helper to build a name->tool_def catalog from a dict of Jinx objects."""
     return {name: jinx_to_tool_def(jinx_obj) for name, jinx_obj in jinxs.items()}
 
-def match_jinx_spec_to_names(jinx_spec: str, team_jinxs_dict: Dict[str, 'Jinx'], jinxs_base_dir: str) -> List[str]:
+def match_jinx_spec_to_names(jinx_spec: str, team_jinxs_dict: Dict[str, 'Jinx'], jinxs_base_dir: str, jinx_path_map: dict = None) -> List[str]:
     """
-    Match a jinx spec pattern to actual jinx names from the team's jinxs_dict.
+    Match a jinx spec to actual jinx names from the team's jinxs_dict.
+
+    Specs can be:
+    - A direct jinx name: 'edit_file', 'sh', 'python'
+    - A relative path (resolved via {{ Jinx() }} in .npc files): 'lib/core/files/edit_file'
+    - A glob pattern for bulk loading: 'lib/browser/*'
 
     Args:
-        jinx_spec: A spec like 'lib/core/python', 'lib/computer_use/*', or just 'python'
+        jinx_spec: The spec string
         team_jinxs_dict: Dict mapping jinx_name -> Jinx object
-        jinxs_base_dir: Base directory where team jinxs are stored (e.g., '/path/to/npc_team/jinxs')
+        jinxs_base_dir: Base directory where team jinxs are stored
+        jinx_path_map: Optional dict mapping jinx_name -> relative path (for reverse lookup)
 
     Returns:
         List of jinx names that match the spec
     """
-    matched_names = []
-
+    # 1) Direct name match
     if jinx_spec in team_jinxs_dict:
         return [jinx_spec]
 
+    # 1.5) Reverse path lookup - resolved paths like 'lib/core/sql' map back to names
+    if jinx_path_map:
+        for name, path in jinx_path_map.items():
+            if jinx_spec == path and name in team_jinxs_dict:
+                return [name]
+
+    # 2) Path/glob match against source_path relative to jinxs_base_dir
     spec_pattern = jinx_spec
     if not spec_pattern.endswith('.jinx') and not spec_pattern.endswith('*'):
         spec_pattern += '.jinx'
 
+    matched_names = []
     for jinx_name, jinx_obj in team_jinxs_dict.items():
         source_path = getattr(jinx_obj, '_source_path', None)
         if not source_path:
@@ -1183,8 +1246,6 @@ def match_jinx_spec_to_names(jinx_spec: str, team_jinxs_dict: Dict[str, 'Jinx'],
             continue
 
         if fnmatch.fnmatch(rel_path, spec_pattern):
-            matched_names.append(jinx_name)
-        elif fnmatch.fnmatch(rel_path, spec_pattern.replace('.jinx', '') + '.jinx'):
             matched_names.append(jinx_name)
 
     return matched_names
@@ -1436,9 +1497,10 @@ class NPC:
                 if hasattr(self.team, 'team_path') and self.team.team_path:
                     jinxs_base_dir = os.path.join(self.team.team_path, 'jinxs')
 
+                path_map = getattr(self.team, '_jinx_path_map', None)
                 for jinx_spec in self.jinxs_spec:
                     if jinxs_base_dir:
-                        matched_names = match_jinx_spec_to_names(jinx_spec, self.team.jinxs_dict, jinxs_base_dir)
+                        matched_names = match_jinx_spec_to_names(jinx_spec, self.team.jinxs_dict, jinxs_base_dir, jinx_path_map=path_map)
                     else:
                         matched_names = [jinx_spec] if jinx_spec in self.team.jinxs_dict else []
 
@@ -1749,8 +1811,13 @@ class NPC:
             file = os.path.expanduser(file)
         if not os.path.isabs(file):
             file = os.path.abspath(file)
-            
-        npc_data = load_yaml_file(file)
+
+        # If team has jinx path context, pass it so {{ jinx_name }} resolves
+        jinja_ctx = None
+        if self.team and hasattr(self.team, '_npc_jinja_context'):
+            jinja_ctx = self.team._npc_jinja_context
+
+        npc_data = load_yaml_file(file, jinja_context=jinja_ctx)
         if not npc_data:
             raise ValueError(f"Failed to load NPC from {file}")
             
@@ -2560,24 +2627,27 @@ Requirements:
         return {row['status']: row['count'] for row in results}
 
 class Team:
-    def __init__(self, 
-                    team_path=None, 
+    def __init__(self,
+                    team_path=None,
                     npcs: Optional[List['NPC']] = None,
                     forenpc: Optional[Union[str, 'NPC']] = None,
                     jinxs: Optional[List[Union['Jinx', Dict[str, Any]]]] = None,
-                    db_conn=None, 
-                    model = None, 
-                    provider = None, 
-                    api_url = None, 
-                    api_key = None):
+                    db_conn=None,
+                    model = None,
+                    provider = None,
+                    api_url = None,
+                    api_key = None,
+                    team_jinxs: Optional[List['Jinx']] = None):
         """
         Initialize an NPC team from directory or list of NPCs
-        
+
         Args:
             team_path: Path to team directory
             npcs: List of NPC objects
             db_conn: Database connection
+            team_jinxs: Pre-loaded jinxes (sub-teams use the same jinxes as the team)
         """
+        self._team_jinxs = team_jinxs
         self.model = model
         self.provider = provider
         self.api_url = api_url
@@ -2652,12 +2722,117 @@ class Team:
         """
         Consolidated method to load NPCs, team context, and resolve the forenpc.
         Ensures self.npcs is populated and self.forenpc is an NPC object.
+
+        Load order: context → jinxes → NPCs (so NPC files can use {{ jinx_name }}
+        Jinja references that resolve to the jinx's relative path).
         """
         if not os.path.exists(self.team_path):
             raise ValueError(f"Team directory not found: {self.team_path}")
-        
+
         self._load_team_context_file()
 
+        # Load jinxes FIRST so we can build the name→path map for NPC Jinja context.
+        # Sub-teams use the same jinxes as the team — they're just organizational groupings.
+        if self._team_jinxs:
+            self._raw_jinxs_list.extend(self._team_jinxs)
+
+        jinxs_dir = os.path.join(self.team_path, "jinxs")
+        if os.path.exists(jinxs_dir):
+            for jinx_obj in load_jinxs_from_directory(jinxs_dir):
+                self._raw_jinxs_list.append(jinx_obj)
+
+        if hasattr(self, 'skills_directory') and self.skills_directory:
+            skills_path = os.path.expanduser(self.skills_directory)
+            if not os.path.isabs(skills_path):
+                skills_path = os.path.join(self.team_path, skills_path)
+            if os.path.exists(skills_path):
+                for jinx_obj in load_jinxs_from_directory(skills_path):
+                    self._raw_jinxs_list.append(jinx_obj)
+                print(f"[TEAM] Loaded skills from SKILLS_DIRECTORY: {skills_path}")
+            else:
+                print(f"[TEAM] Warning: SKILLS_DIRECTORY not found: {skills_path}")
+
+        # Build jinx name→relative_path map for Jinja context.
+        # e.g. { "edit_file": "lib/core/files/edit_file", "sh": "lib/core/sh", ... }
+        self._jinx_path_map = {}
+        for jinx_obj in self._raw_jinxs_list:
+            if jinx_obj.jinx_name in self._jinx_path_map:
+                continue
+            source = getattr(jinx_obj, '_source_path', None)
+            if source:
+                # Derive the jinxs/ base dir from the source path
+                base_dir = None
+                parts = source.split(os.sep)
+                for i, p in enumerate(parts):
+                    if p == 'jinxs':
+                        base_dir = os.sep.join(parts[:i+1])
+                if not base_dir:
+                    continue
+                try:
+                    rel = os.path.relpath(source, base_dir)
+                    if rel.endswith('.jinx'):
+                        rel = rel[:-5]
+                    self._jinx_path_map[jinx_obj.jinx_name] = rel
+                except ValueError:
+                    pass
+
+        # --- Unified Jinja template functions (dbt-style) ---
+
+        def _Jinx(name):
+            """Resolve a jinx by name to its relative path.
+            Usage: {{ Jinx('edit_file') }} → 'lib/core/files/edit_file'
+            """
+            if name in self._jinx_path_map:
+                return self._jinx_path_map[name]
+            print(f"Warning: Jinx('{name}') not found. Available: {list(self._jinx_path_map.keys())[:15]}...")
+            return name
+
+        def _NPC(name):
+            """Reference an NPC by name.
+            Usage: {{ NPC('corca') }} → 'corca'
+            Returns the name for use in directives and jinx configs.
+            Validation happens at runtime, not compile time.
+            """
+            return name
+
+        def _ref(model_name):
+            """Reference a SQL model by name (dbt-style).
+            Usage: FROM {{ ref('customer_feedback') }}
+            At compile time in SQL models, resolves to the actual table name.
+            In non-SQL contexts, returns the model name as-is.
+            """
+            return model_name
+
+        def _jinxs_list(pattern):
+            """Glob-expand a jinx path pattern to a list of paths.
+            Usage: {% for j in jinxs_list('lib/browser/*') %}
+              - {{ j }}
+            {% endfor %}
+            """
+            import fnmatch as _fn
+            matched = []
+            for name, rel_path in self._jinx_path_map.items():
+                spec_pattern = pattern
+                if not spec_pattern.endswith('.jinx') and not spec_pattern.endswith('*'):
+                    spec_pattern += '.jinx'
+                rel_with_ext = rel_path + '.jinx'
+                if _fn.fnmatch(rel_with_ext, spec_pattern):
+                    matched.append(rel_path)
+            return matched
+
+        # Context dict used for NPC file loading and first-pass jinx rendering.
+        # Provides both explicit functions and bare name shortcuts.
+        self._npc_jinja_context = {
+            # Explicit functions (preferred)
+            'Jinx': _Jinx,
+            'NPC': _NPC,
+            'ref': _ref,
+            'jinxs_list': _jinxs_list,
+            # Bare jinx names as shortcuts (backward compat)
+            **self._jinx_path_map,
+        }
+
+        # Now load NPCs with jinx path context available
         for filename in os.listdir(self.team_path):
             if filename.endswith(".npc"):
                 npc_path = os.path.join(self.team_path, filename)
@@ -2671,22 +2846,6 @@ class Team:
             self.forenpc_name = self.forenpc.name
         else:
             self._create_default_forenpc()
-        
-        jinxs_dir = os.path.join(self.team_path, "jinxs")
-        if os.path.exists(jinxs_dir):
-            for jinx_obj in load_jinxs_from_directory(jinxs_dir):
-                self._raw_jinxs_list.append(jinx_obj)
-        
-        if hasattr(self, 'skills_directory') and self.skills_directory:
-            skills_path = os.path.expanduser(self.skills_directory)
-            if not os.path.isabs(skills_path):
-                skills_path = os.path.join(self.team_path, skills_path)
-            if os.path.exists(skills_path):
-                for jinx_obj in load_jinxs_from_directory(skills_path):
-                    self._raw_jinxs_list.append(jinx_obj)
-                print(f"[TEAM] Loaded skills from SKILLS_DIRECTORY: {skills_path}")
-            else:
-                print(f"[TEAM] Warning: SKILLS_DIRECTORY not found: {skills_path}")
 
         self._load_sub_teams()
 
@@ -2773,13 +2932,18 @@ class Team:
         """
         Performs the first-pass Jinja rendering on all loaded raw Jinxs.
         This expands nested Jinx calls but preserves runtime variables.
+
+        Also injects team-level Jinja helpers into the rendering context:
+        - NPC('name') — validates an NPC exists and returns its name
+        - jinx name variables — e.g., {{ edit_file }} resolves to 'lib/core/files/edit_file'
+        - jinxs_list('pattern') — glob-expands a jinx path pattern to a list
         """
         jinx_macro_globals = {}
         for raw_jinx in self._raw_jinxs_list:
             def create_jinx_callable(jinx_obj_in_closure):
                 def callable_jinx(**kwargs):
                     temp_jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
-                    
+
                     rendered_target_steps = []
                     for target_step in jinx_obj_in_closure._raw_steps:
                         temp_rendered_step = {}
@@ -2793,17 +2957,32 @@ class Team:
                             else:
                                 temp_rendered_step[k] = v
                         rendered_target_steps.append(temp_rendered_step)
-                    
+
                     return yaml.dump(rendered_target_steps, default_flow_style=False)
                 return callable_jinx
-            
+
             jinx_macro_globals[raw_jinx.jinx_name] = create_jinx_callable(raw_jinx)
-        
+
+        # Inject unified Jinja context + jinx macros + ctx into first-pass globals
         self.jinja_env_for_first_pass.globals['jinxs'] = jinx_macro_globals
+        # ctx — exposes team context variables: {{ ctx.forenpc }}, {{ ctx.preferences }}, etc.
+        self.jinja_env_for_first_pass.globals['ctx'] = self.shared_context
+        if hasattr(self, '_npc_jinja_context'):
+            # Adds: Jinx(), NPC(), ref(), jinxs_list(), and bare jinx name shortcuts
+            self.jinja_env_for_first_pass.globals.update(self._npc_jinja_context)
         self.jinja_env_for_first_pass.globals.update(jinx_macro_globals)
 
         for raw_jinx in self._raw_jinxs_list:
             try:
+                # Re-resolve top-level 'npc' field if it contains Jinja
+                if hasattr(raw_jinx, 'npc') and isinstance(raw_jinx.npc, str):
+                    if '{{' in raw_jinx.npc and '}}' in raw_jinx.npc:
+                        try:
+                            template = self.jinja_env_for_first_pass.from_string(raw_jinx.npc)
+                            raw_jinx.npc = template.render(**self.jinja_env_for_first_pass.globals)
+                        except Exception as e:
+                            print(f"Warning: Error rendering npc field for jinx '{raw_jinx.jinx_name}': {e}")
+
                 raw_jinx.render_first_pass(self.jinja_env_for_first_pass, jinx_macro_globals)
                 self.jinxs_dict[raw_jinx.jinx_name] = raw_jinx
             except Exception as e:
@@ -2862,7 +3041,7 @@ class Team:
                 
                 if any(f.endswith(".npc") for f in os.listdir(item_path) 
                         if os.path.isfile(os.path.join(item_path, f))):
-                    sub_team = Team(team_path=item_path, db_conn=self.db_conn)
+                    sub_team = Team(team_path=item_path, db_conn=self.db_conn, team_jinxs=self._raw_jinxs_list)
                     self.sub_teams[item] = sub_team
         
     def get_forenpc(self) -> Optional['NPC']:

@@ -103,8 +103,9 @@ def execute_trigger_command(
     trigger_info = response.get("response")
     print("Trigger info:", trigger_info)
 
-    triggers_dir = os.path.expanduser("~/.npcsh/triggers")
-    logs_dir = os.path.expanduser("~/.npcsh/logs")
+    from npcpy.npc_sysenv import get_triggers_dir, get_logs_dir
+    triggers_dir = get_triggers_dir()
+    logs_dir = get_logs_dir()
     os.makedirs(triggers_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
