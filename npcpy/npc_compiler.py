@@ -273,7 +273,7 @@ def initialize_npc_project(
     npc_team_dir = os.path.join(directory, "npc_team")
     os.makedirs(npc_team_dir, exist_ok=True)
 
-    for subdir in ["jinxs",
+    for subdir in ["jinxes",
                    "jinxs/skills",
                    "assembly_lines",
                    "sql_models",
@@ -291,11 +291,11 @@ def initialize_npc_project(
         global_jinxs = os.path.expanduser("~/.npcsh/npc_team/jinxs")
         if not os.path.isdir(global_jinxs):
             pkg_jinxs = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     '..', 'npcsh', 'npcsh', 'npc_team', 'jinxs')
+                                     '..', 'npcsh', 'npcsh', 'npc_team', 'jinxes')
             if os.path.isdir(pkg_jinxs):
                 global_jinxs = pkg_jinxs
         if os.path.isdir(global_jinxs):
-            dest_jinxs = os.path.join(npc_team_dir, "jinxs")
+            dest_jinxs = os.path.join(npc_team_dir, "jinxes")
             for group in include_jinx_groups:
                 src_group = os.path.join(global_jinxs, group)
                 if not os.path.isdir(src_group):
@@ -1376,7 +1376,7 @@ class NPC:
             if file.endswith(".npc"):
                 self._load_from_file(file)
             file_parent = os.path.dirname(file)
-            self.jinxs_directory = os.path.join(file_parent, "jinxs")
+            self.jinxs_directory = os.path.join(file_parent, "jinxes")
             self.npc_directory = file_parent
         else:
             self.name = name            
@@ -1495,7 +1495,7 @@ class NPC:
             if self.team and hasattr(self.team, 'jinxs_dict') and self.team.jinxs_dict:
                 jinxs_base_dir = None
                 if hasattr(self.team, 'team_path') and self.team.team_path:
-                    jinxs_base_dir = os.path.join(self.team.team_path, 'jinxs')
+                    jinxs_base_dir = os.path.join(self.team.team_path, 'jinxes')
 
                 path_map = getattr(self.team, '_jinx_path_map', None)
                 for jinx_spec in self.jinxs_spec:
@@ -1516,7 +1516,7 @@ class NPC:
             if not self.team:
                 should_load_from_directory = True
             elif hasattr(self.team, 'team_path') and self.team.team_path:
-                team_jinxs_dir = os.path.join(self.team.team_path, 'jinxs')
+                team_jinxs_dir = os.path.join(self.team.team_path, 'jinxes')
                 if os.path.normpath(self.npc_jinxs_directory) != os.path.normpath(team_jinxs_dir):
                     should_load_from_directory = True
 
@@ -1827,7 +1827,7 @@ class NPC:
             
         self.primary_directive = npc_data.get("primary_directive")
         
-        jinxs_spec = npc_data.get("jinxs", "*")
+        jinxs_spec = npc_data.get("jinxes", "*")
         
         if jinxs_spec == "*":
             self.jinxs_spec = "*" 
@@ -1852,7 +1852,7 @@ class NPC:
         self.name = npc_data.get("name", self.name)
 
         self.npc_path = file
-        self.npc_jinxs_directory = os.path.join(os.path.dirname(file), "jinxs")
+        self.npc_jinxs_directory = os.path.join(os.path.dirname(file), "jinxes")
 
     def get_system_prompt(self, simple=False):
         """Get system prompt for the NPC"""
@@ -2429,7 +2429,7 @@ Requirements:
             "provider": self.provider,
             "api_url": self.api_url,
             "api_key": self.api_key,
-            "jinxs": self.jinxs_spec,
+            "jinxes": self.jinxs_spec,
             "use_global_jinxs": self.use_global_jinxs
         }
         
@@ -2736,7 +2736,7 @@ class Team:
         if self._team_jinxs:
             self._raw_jinxs_list.extend(self._team_jinxs)
 
-        jinxs_dir = os.path.join(self.team_path, "jinxs")
+        jinxs_dir = os.path.join(self.team_path, "jinxes")
         if os.path.exists(jinxs_dir):
             for jinx_obj in load_jinxs_from_directory(jinxs_dir):
                 self._raw_jinxs_list.append(jinx_obj)
@@ -2764,7 +2764,7 @@ class Team:
                 base_dir = None
                 parts = source.split(os.sep)
                 for i, p in enumerate(parts):
-                    if p == 'jinxs':
+                    if p == 'jinxes':
                         base_dir = os.sep.join(parts[:i+1])
                 if not base_dir:
                     continue
@@ -2964,7 +2964,7 @@ class Team:
             jinx_macro_globals[raw_jinx.jinx_name] = create_jinx_callable(raw_jinx)
 
         # Inject unified Jinja context + jinx macros + ctx into first-pass globals
-        self.jinja_env_for_first_pass.globals['jinxs'] = jinx_macro_globals
+        self.jinja_env_for_first_pass.globals['jinxes'] = jinx_macro_globals
         # ctx — exposes team context variables: {{ ctx.forenpc }}, {{ ctx.preferences }}, etc.
         self.jinja_env_for_first_pass.globals['ctx'] = self.shared_context
         if hasattr(self, '_npc_jinja_context'):
@@ -3037,7 +3037,7 @@ class Team:
             item_path = os.path.join(self.team_path, item)
             if (os.path.isdir(item_path) and 
                 not item.startswith('.') and 
-                item != "jinxs"):
+                item != "jinxes"):
                 
                 if any(f.endswith(".npc") for f in os.listdir(item_path) 
                         if os.path.isfile(os.path.join(item_path, f))):
@@ -3165,7 +3165,7 @@ class Team:
             "name": self.name,
             "npcs": {name: npc.to_dict() for name, npc in self.npcs.items()},
             "sub_teams": {name: team.to_dict() for name, team in self.sub_teams.items()},
-            "jinxs": {name: jinx.to_dict() for name, jinx in self.jinxs_dict.items()},
+            "jinxes": {name: jinx.to_dict() for name, jinx in self.jinxs_dict.items()},
             "context": getattr(self, 'context', {})
         }
     
@@ -3186,7 +3186,7 @@ class Team:
         for npc in self.npcs.values():
             npc.save(directory)
             
-        jinxs_dir = os.path.join(directory, "jinxs")
+        jinxs_dir = os.path.join(directory, "jinxes")
         ensure_dirs_exist(jinxs_dir)
         
         for jinx in self.jinxs_dict.values():

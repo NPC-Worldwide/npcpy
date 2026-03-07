@@ -139,7 +139,7 @@ Explanation:
 
 Data Plotter Usage: The NPC uses the data_plotter jinx to generate a line graph, saving the plot as an image file and displaying it.
 
-## Example 11: Custom NPCs and Jinxs
+## Example 11: Custom NPCs and Jinxes
 ```bash
 
 # Assuming you have created a custom NPC named 'marketing_analyst'
@@ -169,7 +169,7 @@ print(f"The average units sold is {mean_units}")
 Explanation:
 
 Pandas Executor: Executes arbitrary pandas code within the context of the NPC, allowing for customized data analysis.
-## Example 13: Combining Jinxs for Complex Tasks
+## Example 13: Combining Jinxes for Complex Tasks
 
 ```bash
 # Switch to the data analyst NPC
@@ -183,4 +183,4 @@ Use the data_plotter jinx to create a histogram of 'Performance_Score' for the '
 ```
 Explanation:
 
-Combining Jinxs: Demonstrates how to use multiple jinxs in sequence to perform advanced analysis.
+Combining Jinxes: Demonstrates how to use multiple jinxes in sequence to perform advanced analysis.

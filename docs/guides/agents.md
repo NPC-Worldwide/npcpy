@@ -196,7 +196,7 @@ This design lets you build pipelines where tool results feed into subsequent rea
 
 ## Skills as Agent Knowledge
 
-Skills are jinxs that serve knowledge content instead of executing code. They use the same jinx pipeline and are assigned to agents the same way — through the `jinxs:` list in `.npc` files or via the team's `jinxs/` directory.
+Skills are jinxes that serve knowledge content instead of executing code. They use the same jinx pipeline and are assigned to agents the same way — through the `jinxes:` list in `.npc` files or via the team's `jinxes/` directory.
 
 ```yaml
 # reviewer.npc
@@ -205,7 +205,7 @@ primary_directive: |
   You review code and provide actionable feedback.
 model: llama3.2
 provider: ollama
-jinxs:
+jinxes:
   - lib/core/sh
   - lib/core/python
   - skills/code-review

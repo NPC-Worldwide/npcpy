@@ -47,7 +47,7 @@ When the Team is initialized:
 
 - Each NPC's `.team` attribute is set to the team instance
 - The forenpc is determined (either the provided NPC or resolved by name)
-- Team-level jinxs are rendered and distributed to NPCs
+- Team-level jinxes are rendered and distributed to NPCs
 - A jinx tool catalog is built for the team
 
 ## Orchestration
@@ -146,7 +146,7 @@ Agent passing also works explicitly through the `handle_agent_pass` mechanism wh
 
 ## Team-Based Jinx Usage
 
-Teams can have jinxs (workflow templates) that are shared across all member NPCs. Pass jinx objects when creating the team.
+Teams can have jinxes (workflow templates) that are shared across all member NPCs. Pass jinx objects when creating the team.
 
 ```python
 from npcpy.npc_compiler import NPC, Team, Jinx
@@ -174,7 +174,7 @@ literary_research_jinx = Jinx(jinx_data={
 lit_team = Team(
     npcs=[ggm, isabel],
     forenpc=borges,
-    jinxs=[literary_research_jinx]
+    jinxes=[literary_research_jinx]
 )
 
 result = lit_team.orchestrate(
@@ -183,7 +183,7 @@ result = lit_team.orchestrate(
 print(result['output'])
 ```
 
-Team-level jinxs are distributed to all NPCs during initialization, so any team member can execute them when the forenpc delegates work.
+Team-level jinxes are distributed to all NPCs during initialization, so any team member can execute them when the forenpc delegates work.
 
 ## Creating Teams from Directories
 
@@ -196,7 +196,7 @@ team = Team(team_path='~/.npcsh/npc_team')
 The directory should contain:
 
 - `.npc` files for each agent
-- A `jinxs/` subdirectory with `.jinx` workflow files and `skills/` subfolder
+- A `jinxes/` subdirectory with `.jinx` workflow files and `skills/` subfolder
 - An optional `team.ctx` YAML file defining the forenpc and team context
 
 The `team.ctx` file can also specify `SKILLS_DIRECTORY` to load skills from an external directory:
@@ -208,7 +208,7 @@ forenpc: lead-dev
 SKILLS_DIRECTORY: ~/shared-skills
 ```
 
-Skills loaded this way are merged into the team's `jinxs_dict` and distributed to all NPCs, just like jinxs in the `jinxs/` directory. See the [Skills guide](skills.md) for details.
+Skills loaded this way are merged into the team's `jinxes_dict` and distributed to all NPCs, just like jinxes in the `jinxes/` directory. See the [Skills guide](skills.md) for details.
 
 ## Team Parameters
 
@@ -219,7 +219,7 @@ The `Team` constructor accepts:
 | `team_path` | `str` | Path to team directory |
 | `npcs` | `List[NPC]` | List of NPC objects |
 | `forenpc` | `NPC` or `str` | Coordinator NPC or name |
-| `jinxs` | `List[Jinx]` | Team-level workflow templates |
+| `jinxes` | `List[Jinx]` | Team-level workflow templates |
 | `db_conn` | connection | Database connection |
 | `model` | `str` | Default model for the team |
 | `provider` | `str` | Default provider for the team |

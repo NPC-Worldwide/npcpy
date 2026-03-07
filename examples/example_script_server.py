@@ -10,7 +10,7 @@ def create_simple_team():
     
     team_dir = os.path.expanduser("~/.npcsh/simple_team")
     os.makedirs(team_dir, exist_ok=True)
-    os.makedirs(os.path.join(team_dir, "jinxs"), exist_ok=True)
+    os.makedirs(os.path.join(team_dir, "jinxes"), exist_ok=True)
     
     print(f"Creating team in: {team_dir}")
     
@@ -70,7 +70,7 @@ def create_simple_team():
         ]
     }
     
-    jinx_path = os.path.join(team_dir, "jinxs", "hello_world.jinx")
+    jinx_path = os.path.join(team_dir, "jinxes", "hello_world.jinx")
     with open(jinx_path, 'w') as f:
         yaml.dump(simple_jinx, f, default_flow_style=False)
     

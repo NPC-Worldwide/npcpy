@@ -11,7 +11,7 @@ def setup_test_team():
     temp_dir = tempfile.mkdtemp()
     team_dir = os.path.join(temp_dir, "test_team")
     os.makedirs(team_dir, exist_ok=True)
-    os.makedirs(os.path.join(team_dir, "jinxs"), exist_ok=True)
+    os.makedirs(os.path.join(team_dir, "jinxes"), exist_ok=True)
     
     
     analyst_config = {
@@ -115,7 +115,7 @@ Focus on actionable insights that would be valuable for business decision making
         ]
     }
     
-    jinx_path = os.path.join(team_dir, "jinxs", "analyze_csv_data.jinx")
+    jinx_path = os.path.join(team_dir, "jinxes", "analyze_csv_data.jinx")
     with open(jinx_path, 'w') as f:
         yaml.dump(data_jinx, f)
     

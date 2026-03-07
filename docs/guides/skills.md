@@ -1,6 +1,6 @@
 # Skills
 
-Skills are knowledge-content jinxs that provide instructional sections to agents on demand. Unlike code-executing jinxs, skills serve structured knowledge that agents can request when they need guidance on specific topics.
+Skills are knowledge-content jinxes that provide instructional sections to agents on demand. Unlike code-executing jinxes, skills serve structured knowledge that agents can request when they need guidance on specific topics.
 
 ## What is a Skill
 
@@ -14,7 +14,7 @@ Skills are authored as `SKILL.md` files inside a folder structure:
 
 ```
 npc_team/
-└── jinxs/
+└── jinxes/
     └── skills/
         └── code-review/
             ├── SKILL.md
@@ -83,7 +83,7 @@ Section content is preserved exactly as written, including code blocks, lists, a
 
 ## Assigning Skills to NPCs
 
-Reference skills in your NPC's `jinxs` list:
+Reference skills in your NPC's `jinxes` list:
 
 **reviewer.npc:**
 ```yaml
@@ -91,7 +91,7 @@ name: reviewer
 primary_directive: You review code for quality and security issues.
 model: llama3.2
 provider: ollama
-jinxs:
+jinxes:
   - skills/code-review
   - skills/debugging
 ```
@@ -121,7 +121,7 @@ The agent will automatically invoke `code-review(section=security)` if it determ
 Skills can include helper scripts and reference files:
 
 ```
-npc_team/jinxs/skills/testing/
+npc_team/jinxes/skills/testing/
 ├── SKILL.md
 ├── scripts/
 │   ├── run_tests.sh
@@ -204,7 +204,7 @@ model: llama3.2
 provider: ollama
 ```
 
-Place skills in `npc_team/jinxs/skills/` and they're automatically loaded for all NPCs in the team.
+Place skills in `npc_team/jinxes/skills/` and they're automatically loaded for all NPCs in the team.
 
 ```python
 from npcpy.npc_compiler import Team
@@ -220,14 +220,14 @@ response = lead.get_llm_response("Review the authentication module")
 
 1. **Parsing**: `_parse_skill_md()` reads the SKILL.md file, extracts frontmatter and sections
 2. **Compilation**: `_compile_skill_to_jinx()` converts the skill to a Jinx with `engine: skill` steps
-3. **Registration**: The skill jinx is added to `jinxs_dict` like any other jinx
+3. **Registration**: The skill jinx is added to `jinxes_dict` like any other jinx
 4. **Execution**: When called, the skill engine returns the requested section content
 
 The skill content is base64-encoded internally to survive Jinja templating without being mangled.
 
 ## Example: Debugging Skill
 
-**npc_team/jinxs/skills/debugging/SKILL.md:**
+**npc_team/jinxes/skills/debugging/SKILL.md:**
 ```markdown
 ---
 name: debugging
@@ -279,7 +279,7 @@ name: debugger
 primary_directive: You help debug code issues and errors.
 model: llama3.2
 provider: ollama
-jinxs:
+jinxes:
   - skills/debugging
 ```
 

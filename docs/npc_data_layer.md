@@ -8,17 +8,17 @@ The NPC Data Layer forms the technical foundation of the npcsh system, providing
 
 The `NPC` class is the fundamental entity representing an AI agent within the system. NPCs are initialized from YAML files (with `.npc` extension) or directly with parameters. Key features include:
 - Model/provider configuration for LLM interactions
-- Access to jinxs (function-like capabilities)
+- Access to jinxes (function-like capabilities)
 - Database connection for persistence
 - Integration with teams
 - Tool usage configuration
 - Jinja templating environment for dynamic content
 
-Each NPC maintains its own shared context dictionary which serves as working memory during execution. The class provides methods for executing jinxs, generating LLM responses, handling agent passes between NPCs, and checking/executing commands.
+Each NPC maintains its own shared context dictionary which serves as working memory during execution. The class provides methods for executing jinxes, generating LLM responses, handling agent passes between NPCs, and checking/executing commands.
 
 ### Jinx Class
 
-The `Jinx` class provides Jinja template executions that NPCs can use as tool. Importantly, Jinxs are defined and operationalized through a prompt-based flow which allows them to be usable by models even if they don't have built-in tool calling capabilities. Thus, with jinxs, we can get more out of our small models. Jinxs support two execution engines:
+The `Jinx` class provides Jinja template executions that NPCs can use as tool. Importantly, Jinxes are defined and operationalized through a prompt-based flow which allows them to be usable by models even if they don't have built-in tool calling capabilities. Thus, with jinxes, we can get more out of our small models. Jinxes support two execution engines:
 1. `natural` - Uses LLM processing for text generation
 2. `python` - Executes Python code with access to the NPC context and system modules
 
@@ -46,7 +46,7 @@ The `Pipeline` class represents a workflow of NPC interactions:
 
 ## Execution Flow
 
-1. **Initialization**: The system loads NPCs, jinxs, and teams from the filesystem
+1. **Initialization**: The system loads NPCs, jinxes, and teams from the filesystem
 2. **Command Processing**: User input is parsed and routed to appropriate handlers
 3. **Mode-Based Execution**: 
    - `agent` mode: Intelligent routing with pipeline processing

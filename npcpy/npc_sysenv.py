@@ -1115,9 +1115,9 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             if members:
                 system_message += "\nTeam members available for delegation:\n" + "\n".join(members) + "\n"
 
-    if hasattr(npc, 'jinxs_dict') and npc.jinxs_dict:
+    if hasattr(npc, 'jinxes_dict') and npc.jinxes_dict:
         tool_lines = []
-        for jname, jinx in npc.jinxs_dict.items():
+        for jname, jinx in npc.jinxes_dict.items():
             desc = getattr(jinx, 'description', '') or ''
             tool_lines.append(f"  - {jname}: {desc.strip()}")
         if tool_lines:
@@ -1126,11 +1126,11 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             if tool_capable:
                 system_message += "\nUse the provided function calling interface to invoke tools when they are relevant to the request. For multi-step tasks, call one tool at a time and use its result to inform the next step.\n"
             else:
-                jinx_names_str = ", ".join(npc.jinxs_dict.keys())
+                jinx_names_str = ", ".join(npc.jinxes_dict.keys())
                 jinx_instructions = f"""
                 if you are in the [ReAct loop] and you are asked to use jinxes, refer to these guidelines:
               [BEGIN GUIDELINES FOR JINX EXECUTION]
-                  Use jinxs when appropriate. For example:
+                  Use jinxes when appropriate. For example:
                     
                     - If you are asked about something up-to-date or dynamic (e.g., latest exchange rates)
                     - If the user asks you to read or edit a file

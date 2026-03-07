@@ -69,22 +69,22 @@ class TestConversationsEndpoint:
             assert 'conversations' in data
 
 
-class TestJinxsEndpoints:
-    """Test jinxs endpoints."""
+class TestJinxesEndpoints:
+    """Test jinxes endpoints."""
 
-    def test_global_jinxs(self, client):
-        """Test global jinxs endpoint"""
-        response = client.get('/api/jinxs/global')
+    def test_global_jinxes(self, client):
+        """Test global jinxes endpoint"""
+        response = client.get('/api/jinxes/global')
         assert response.status_code == 200
         data = json.loads(response.data)
-        assert 'jinxs' in data
+        assert 'jinxes' in data
 
-    def test_project_jinxs(self, client):
-        """Test project jinxs endpoint"""
-        response = client.get('/api/jinxs/project?currentPath=/tmp')
+    def test_project_jinxes(self, client):
+        """Test project jinxes endpoint"""
+        response = client.get('/api/jinxes/project?currentPath=/tmp')
         assert response.status_code == 200
         data = json.loads(response.data)
-        assert 'jinxs' in data
+        assert 'jinxes' in data
 
 
 class TestNPCEndpoints:

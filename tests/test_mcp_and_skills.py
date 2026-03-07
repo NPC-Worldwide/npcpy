@@ -80,7 +80,7 @@ class TestSkillsWithNPC:
     def test_npc_with_skill_directory(self, tmp_path):
         """Test NPC loading skills from a directory structure."""
         # Create skill directory structure
-        skills_dir = tmp_path / "npc_team" / "jinxs" / "skills" / "code-review"
+        skills_dir = tmp_path / "npc_team" / "jinxes" / "skills" / "code-review"
         skills_dir.mkdir(parents=True)
 
         skill_content = """---
@@ -104,7 +104,7 @@ Focus on OWASP top 10 vulnerabilities.
 primary_directive: You review code for quality and security issues.
 model: llama3.2
 provider: ollama
-jinxs:
+jinxes:
   - skills/code-review
 """
         npc_file = tmp_path / "npc_team" / "reviewer.npc"
@@ -114,8 +114,8 @@ jinxs:
         # Load NPC - skills should be available
         npc = NPC(file=str(npc_file))
         assert npc.name == "reviewer"
-        # The jinxs_spec should include the skill reference
-        assert npc.jinxs_spec is not None
+        # The jinxes_spec should include the skill reference
+        assert npc.jinxes_spec is not None
 
 
 class TestMCPClientNPC:
@@ -250,7 +250,7 @@ class TestReadmeExamples:
     def test_skills_example_structure(self, tmp_path):
         """Test the skills example from README creates valid structure."""
         # Create structure from README example
-        skills_dir = tmp_path / "npc_team" / "jinxs" / "skills" / "code-review"
+        skills_dir = tmp_path / "npc_team" / "jinxes" / "skills" / "code-review"
         skills_dir.mkdir(parents=True)
 
         skill_md = """---
@@ -273,7 +273,7 @@ Focus on OWASP top 10 vulnerabilities...
 primary_directive: You review code for quality and security issues.
 model: llama3.2
 provider: ollama
-jinxs:
+jinxes:
   - skills/code-review
 """
         npc_file = tmp_path / "npc_team" / "reviewer.npc"

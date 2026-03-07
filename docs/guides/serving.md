@@ -75,7 +75,7 @@ This means programmatically registered NPCs always take precedence over file-bas
 | `POST` | `/api/jinx/execute` | Execute a jinx with arguments |
 | `GET` | `/api/models` | List available models |
 | `GET` | `/api/npc_team_global` | List globally registered NPCs |
-| `GET` | `/api/jinxs/global` | List globally available jinxs |
+| `GET` | `/api/jinxes/global` | List globally available jinxes |
 | `GET` | `/api/conversations` | List conversations |
 | `GET` | `/api/conversation/<id>/messages` | Get messages for a conversation |
 | `GET` | `/api/health` | Health check (returns `{"status": "ok"}`) |
@@ -168,10 +168,10 @@ curl http://localhost:5337/api/models?currentPath=/path/to/project
 curl http://localhost:5337/api/npc_team_global
 ```
 
-### List Global Jinxs
+### List Global Jinxes
 
 ```bash
-curl http://localhost:5337/api/jinxs/global
+curl http://localhost:5337/api/jinxes/global
 ```
 
 ### OpenAI-Compatible Completions
@@ -422,11 +422,11 @@ start_flask_server(
 
 When you send a request to `/api/stream` with `"npc": "researcher"`, the researcher NPC can invoke its `web_search` tool during the response. Tool calls and results are tracked and stored alongside the conversation.
 
-## Complex Workflows with Jinxs
+## Complex Workflows with Jinxes
 
-Jinxs are multi-step prompt pipelines defined in YAML. When served through the API, they can chain LLM calls, tool invocations, and template rendering.
+Jinxes are multi-step prompt pipelines defined in YAML. When served through the API, they can chain LLM calls, tool invocations, and template rendering.
 
-First, define a jinx file at `~/.npcsh/npc_team/jinxs/research_report.jinx`:
+First, define a jinx file at `~/.npcsh/npc_team/jinxes/research_report.jinx`:
 
 ```yaml
 jinx_name: research_report

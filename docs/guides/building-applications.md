@@ -326,8 +326,8 @@ primary_directive: >
   insights from structured and unstructured data.
 model: llama3.2
 provider: ollama
-jinxs:
-  - "*"          # inherit all team jinxs
+jinxes:
+  - "*"          # inherit all team jinxes
 tools:
   - statistical_analysis
   - data_visualization
@@ -341,7 +341,7 @@ Key fields:
 | `primary_directive` | System prompt defining persona and behavior |
 | `model` | LLM model (inherits from team if unset) |
 | `provider` | LLM provider (inherits from team if unset) |
-| `jinxs` | `"*"` for all team jinxs, or a list of specific names/paths |
+| `jinxes` | `"*"` for all team jinxes, or a list of specific names/paths |
 | `tools` | List of Python callable names to expose |
 | `api_url` | Custom API endpoint |
 | `api_key` | API credentials |
@@ -387,7 +387,7 @@ npc_team/
 ├── team.ctx                  # Team configuration
 ├── analyst.npc               # NPC definitions
 ├── writer.npc
-├── jinxs/                    # Team-level workflows
+├── jinxes/                    # Team-level workflows
 │   ├── summarize.jinx
 │   └── analyze.jinx
 ├── assembly_lines/           # Batch processing pipelines
@@ -396,7 +396,7 @@ npc_team/
 └── triggers/                 # Event-triggered workflows
 ```
 
-When `Team(team_path="./npc_team")` is called, all `.npc` files are loaded as NPCs, `team.ctx` provides defaults, and jinxs from `jinxs/` are made available to all team members (or selectively via the `jinxs` field in each `.npc` file).
+When `Team(team_path="./npc_team")` is called, all `.npc` files are loaded as NPCs, `team.ctx` provides defaults, and jinxes from `jinxes/` are made available to all team members (or selectively via the `jinxes` field in each `.npc` file).
 
 ### db_conn Flow
 
@@ -416,7 +416,7 @@ The system message sent to the LLM is assembled from multiple sources:
 3. Memory context (recent facts and key concepts from the knowledge graph)
 4. Database information (available tables)
 5. Team context (team description, preferences, member list with directives)
-6. Available tools and jinxs with descriptions
+6. Available tools and jinxes with descriptions
 
 See `npcpy.npc_sysenv.get_system_message()` for the full assembly logic.
 
@@ -730,7 +730,7 @@ npc.shared_context["session_cost_usd"]       # 0.0
 npc.shared_context["turn_count"]             # 0
 ```
 
-Custom keys from `team.ctx` (anything not a reserved field) are merged directly into `shared_context`, making them available to all NPCs and jinxs.
+Custom keys from `team.ctx` (anything not a reserved field) are merged directly into `shared_context`, making them available to all NPCs and jinxes.
 
 ### Querying Execution Stats
 
