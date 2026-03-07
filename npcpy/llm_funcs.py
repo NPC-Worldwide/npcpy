@@ -523,16 +523,16 @@ def handle_request_input(
     )
     return user_input
 
-def _get_jinxs(npc, team):
-    """Get available jinxs from npc (already filtered by jinxs_spec)."""
-    jinxs = {}
-    if npc and hasattr(npc, 'jinxs_dict'):
-        jinxs.update(npc.jinxs_dict)
-    return jinxs
+def _get_jinxes(npc, team):
+    """Get available jinxes from npc (already filtered by jinxes_spec)."""
+    jinxes = {}
+    if npc and hasattr(npc, 'jinxes_dict'):
+        jinxes.update(npc.jinxes_dict)
+    return jinxes
 
-def _jinxs_to_tools(jinxs):
-    """Convert jinxs to OpenAI-style tool definitions."""
-    return [jinx.to_tool_def() for jinx in jinxs.values()]
+def _jinxes_to_tools(jinxes):
+    """Convert jinxes to OpenAI-style tool definitions."""
+    return [jinx.to_tool_def() for jinx in jinxes.values()]
 
 def _execute_jinx(jinx, inputs, npc, team, messages, extra_globals):
     """Execute a jinx and return output."""
@@ -604,7 +604,7 @@ def _build_jinx_schema(jinx_obj):
 def handle_jinx_call(
     command,
     jinx_name,
-    jinxs,
+    jinxes,
     model=None,
     provider=None,
     api_url=None,
@@ -623,10 +623,10 @@ def handle_jinx_call(
     if messages is None:
         messages = []
 
-    jinx = jinxs.get(jinx_name)
+    jinx = jinxes.get(jinx_name)
     if not jinx:
         if attempt < n_attempts:
-            available = ", ".join(jinxs.keys())
+            available = ", ".join(jinxes.keys())
             return check_llm_command(
                 f"""In the previous attempt, the jinx name was: {jinx_name}.
 That jinx was not available. Only select from: {available}.
@@ -706,7 +706,7 @@ The format of the JSON object is:
                 return handle_jinx_call(
                     command, 
                     jinx_name, 
-                    jinxs,
+                    jinxes,
                     model=model, 
                     provider=provider, 
                     api_url=api_url, 
@@ -736,7 +736,7 @@ The format of the JSON object is:
         return handle_jinx_call(
             command + f". Previous attempt missing inputs: {missing}. Values were: {input_values}.",
             jinx_name, 
-            jinxs,
+            jinxes,
             model=model, 
             provider=provider, 
             api_url=api_url, 
@@ -769,7 +769,7 @@ The format of the JSON object is:
         return handle_jinx_call(
             command, 
             jinx_name, 
-            jinxs,
+            jinxes,
             model=model, 
             provider=provider, 
             api_url=api_url, 
@@ -796,7 +796,7 @@ The format of the JSON object is:
 
 def handle_action_choice(command: str,
                          action_data: dict, 
-                         jinxs: list, 
+                         jinxes: list, 
                          model : str = None,
                          provider: str = None, 
                          api_url:str = None, 
@@ -822,7 +822,7 @@ def handle_action_choice(command: str,
         result = handle_jinx_call(
             command, 
             jname, 
-            jinxs,
+            jinxes,
             model=model, 
             provider=provider, 
             api_url=api_url, 
@@ -892,19 +892,19 @@ def check_llm_command(
     actions: Dict[str, Dict] = None,
     extra_globals=None,
     max_iterations: int = 5,
-    jinxs: Dict = None,
+    jinxes: Dict = None,
     tool_capable: bool = None,
 ):
     """Plan and execute: decide whether to answer directly or use jinxes, then do it."""
     if messages is None:
         messages = []
 
-    if jinxs is None:
-        jinxs = _get_jinxs(npc, team)
+    if jinxes is None:
+        jinxes = _get_jinxes(npc, team)
 
     # No jinxes — just answer directly
-    if not jinxs:
-        print('no jinxs detected')
+    if not jinxes:
+        print('no jinxes detected')
         
         response = get_llm_response(
             command,
@@ -940,7 +940,7 @@ def check_llm_command(
               requires information on the web?
       
                         
-              Use jinxs when it is obvious that the answer needs to be as up-to-date as possible. For example,
+              Use jinxes when it is obvious that the answer needs to be as up-to-date as possible. For example,
                   a question about where mount everest is does not necessarily need to be answered by a jinx call or an agent pass.
           
               If a user asks to explain the plot of the aeneid, this can be answered without a jinx call or agent pass.
@@ -999,7 +999,7 @@ def check_llm_command(
         action_result = handle_action_choice(
                      command,
                      action_data,
-                     jinxs,
+                     jinxes,
                      model = model,
                      provider = provider,
                      api_url = api_url,

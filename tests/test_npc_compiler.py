@@ -214,7 +214,7 @@ def test_npc_execute_jinx():
     try:
         npc = NPC(
             name="jinx_executor",
-            primary_directive="Execute jinxs",
+            primary_directive="Execute jinxes",
             model="llama3.2:latest",
             provider="ollama"
         )

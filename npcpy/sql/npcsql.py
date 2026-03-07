@@ -339,7 +339,7 @@ class NativeDatabaseAITransformer:
         return transformer(**kwargs)
 
 class NQLJinjaContext:
-    """Provides Jinja template context for NQL models with access to NPCs, jinxs, and team."""
+    """Provides Jinja template context for NQL models with access to NPCs, jinxes, and team."""
 
     def __init__(self, team=None, npc_operations=None):
         self.team = team
@@ -364,7 +364,7 @@ class NQLJinjaContext:
             'model': getattr(npc_obj, 'model', ''),
             'provider': getattr(npc_obj, 'provider', ''),
             'directive': getattr(npc_obj, 'primary_directive', ''),
-            'jinxs': getattr(npc_obj, 'jinxs', []),
+            'jinxes': getattr(npc_obj, 'jinxes', []),
         }
         self._npc_cache[name] = props
         return props
@@ -375,7 +375,7 @@ class NQLJinjaContext:
             return self._jinx_cache[name]
 
         if not self.npc_operations or not self.npc_operations.jinx_map:
-            return {'name': name, 'error': 'No jinxs loaded'}
+            return {'name': name, 'error': 'No jinxes loaded'}
 
         jinx_info = self.npc_operations.jinx_map.get(name.lower())
         if not jinx_info:
@@ -505,8 +505,8 @@ class NPCSQLOperations:
 
         return function_map
 
-    def load_team_jinxs(self, team):
-        """Load jinxs from team to make them available as NQL functions."""
+    def load_team_jinxes(self, team):
+        """Load jinxes from team to make them available as NQL functions."""
         if not team:
             return
 
@@ -519,7 +519,7 @@ class NPCSQLOperations:
                         self.function_map[jinx_name] = f"__jinx__{jinx_name}"
                         logger.info(f"NQL: Registered team jinx '{jinx_name}' as NQL function")
         except Exception as e:
-            logger.warning(f"Could not load team jinxs: {e}")
+            logger.warning(f"Could not load team jinxes: {e}")
 
     def _resolve_npc_reference(self, npc_ref: str):
         if not npc_ref or not self.npc_loader:
@@ -849,7 +849,7 @@ class ModelCompiler:
         try:
             self.npc_team = Team(team_path=npc_directory)
             self.npc_operations.npc_loader = self.npc_team
-            self.npc_operations.load_team_jinxs(self.npc_team)
+            self.npc_operations.load_team_jinxes(self.npc_team)
         except Exception as e:
             self.npc_team = None
             logger.warning(f"Could not load NPC team from {npc_directory}. AI functions relying on NPC context might fail: {e}")

@@ -22,7 +22,7 @@ Welcome to `npcpy`, the python library for the NPC Toolkit and the home of the c
 - **[Building Agents](guides/agents.md)** - NPC creation, directives, tools
 - **[Multi-Agent Teams](guides/teams.md)** - Team orchestration with forenpc coordination
 - **[Jinx Workflows](guides/jinx-workflows.md)** - Jinja Execution templates for multi-step prompt pipelines
-- **[Skills](guides/skills.md)** - Knowledge-serving jinxs with progressive section disclosure
+- **[Skills](guides/skills.md)** - Knowledge-serving jinxes with progressive section disclosure
 - **[NPCArray - Vectorized AI](guides/npc-array.md)** - NumPy-like operations over model populations
 - **[Image, Audio & Video](guides/image-audio-video.md)** - Generation with Ollama, diffusers, OpenAI, Gemini
 - **[Knowledge Graphs](guides/knowledge-graphs.md)** - Build and evolve knowledge graphs from text

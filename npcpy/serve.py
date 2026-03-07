@@ -75,7 +75,7 @@ from npcpy.memory.command_history import (
     save_conversation_message,
     generate_message_id,
 )
-from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxs_from_directory, build_jinx_tool_catalog, initialize_npc_project, load_yaml_file
+from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxes_from_directory, build_jinx_tool_catalog, initialize_npc_project, load_yaml_file
 
 from npcpy.llm_funcs import (
     get_llm_response, check_llm_command
@@ -1458,8 +1458,8 @@ def _get_jinx_files_recursively(directory):
                     jinx_paths.append(os.path.join(root, filename))
     return jinx_paths
 
-@app.route("/api/jinxs/available", methods=["GET"])
-def get_available_jinxs():
+@app.route("/api/jinxes/available", methods=["GET"])
+def get_available_jinxes():
     try:
         import yaml
         current_path = request.args.get('currentPath')
@@ -1476,31 +1476,31 @@ def get_available_jinxs():
             return os.path.basename(filepath)[:-5]
 
         if current_path:
-            team_jinxs_dir = os.path.join(current_path, 'npc_team', 'jinxs')
-            jinx_paths = _get_jinx_files_recursively(team_jinxs_dir)
+            team_jinxes_dir = os.path.join(current_path, 'npc_team', 'jinxes')
+            jinx_paths = _get_jinx_files_recursively(team_jinxes_dir)
             for path in jinx_paths:
                 jinx_names.add(get_jinx_name_from_file(path))
 
-        global_jinxs_dir = os.path.expanduser('~/.npcsh/npc_team/jinxs')
-        jinx_paths = _get_jinx_files_recursively(global_jinxs_dir)
+        global_jinxes_dir = os.path.expanduser('~/.npcsh/npc_team/jinxes')
+        jinx_paths = _get_jinx_files_recursively(global_jinxes_dir)
         for path in jinx_paths:
             jinx_names.add(get_jinx_name_from_file(path))
 
         try:
             import npcsh
             package_dir = os.path.dirname(npcsh.__file__)
-            package_jinxs_dir = os.path.join(package_dir, 'npc_team', 'jinxs')
-            jinx_paths = _get_jinx_files_recursively(package_jinxs_dir)
+            package_jinxes_dir = os.path.join(package_dir, 'npc_team', 'jinxes')
+            jinx_paths = _get_jinx_files_recursively(package_jinxes_dir)
             for path in jinx_paths:
                 jinx_names.add(get_jinx_name_from_file(path))
         except Exception as pkg_err:
-            print(f"Could not load package jinxs: {pkg_err}")
+            print(f"Could not load package jinxes: {pkg_err}")
 
-        return jsonify({'jinxs': sorted(list(jinx_names)), 'error': None})
+        return jsonify({'jinxes': sorted(list(jinx_names)), 'error': None})
     except Exception as e:
-        print(f"Error getting available jinxs: {str(e)}")
+        print(f"Error getting available jinxes: {str(e)}")
         traceback.print_exc()
-        return jsonify({'jinxs': [], 'error': str(e)}), 500
+        return jsonify({'jinxes': [], 'error': str(e)}), 500
 
 @app.route("/api/jinx/execute", methods=["POST"])
 def execute_jinx():
@@ -1552,14 +1552,14 @@ def execute_jinx():
     else:
         npc_object = None
     
-    if npc_object and hasattr(npc_object, 'jinxs_dict') and jinx_name in npc_object.jinxs_dict:
-        jinx = npc_object.jinxs_dict[jinx_name]
-        print(f"Found jinx in NPC's jinxs_dict", file=sys.stderr)
+    if npc_object and hasattr(npc_object, 'jinxes_dict') and jinx_name in npc_object.jinxes_dict:
+        jinx = npc_object.jinxes_dict[jinx_name]
+        print(f"Found jinx in NPC's jinxes_dict", file=sys.stderr)
     
     if not jinx and current_path:
-        project_jinxs_base = os.path.join(current_path, 'npc_team', 'jinxs')
-        if os.path.exists(project_jinxs_base):
-            for root, dirs, files in os.walk(project_jinxs_base):
+        project_jinxes_base = os.path.join(current_path, 'npc_team', 'jinxes')
+        if os.path.exists(project_jinxes_base):
+            for root, dirs, files in os.walk(project_jinxes_base):
                 if f'{jinx_name}.jinx' in files:
                     project_jinx_path = os.path.join(root, f'{jinx_name}.jinx')
                     jinx = Jinx(jinx_path=project_jinx_path)
@@ -1567,9 +1567,9 @@ def execute_jinx():
                     break
         
     if not jinx:
-        global_jinxs_base = os.path.expanduser('~/.npcsh/npc_team/jinxs')
-        if os.path.exists(global_jinxs_base):
-            for root, dirs, files in os.walk(global_jinxs_base):
+        global_jinxes_base = os.path.expanduser('~/.npcsh/npc_team/jinxes')
+        if os.path.exists(global_jinxes_base):
+            for root, dirs, files in os.walk(global_jinxes_base):
                 if f'{jinx_name}.jinx' in files:
                     global_jinx_path = os.path.join(root, f'{jinx_name}.jinx')
                     jinx = Jinx(jinx_path=global_jinx_path)
@@ -1585,10 +1585,10 @@ def execute_jinx():
         print(f"ERROR: Jinx '{jinx_name}' not found", file=sys.stderr)
         searched_paths = []
         if npc_object:
-            searched_paths.append(f"NPC {npc_name} jinxs_dict")
+            searched_paths.append(f"NPC {npc_name} jinxes_dict")
         if current_path:
-            searched_paths.append(f"Project jinxs at {os.path.join(current_path, 'npc_team', 'jinxs')}")
-        searched_paths.append(f"Global jinxs at {os.path.expanduser('~/.npcsh/npc_team/jinxs')}")
+            searched_paths.append(f"Project jinxes at {os.path.join(current_path, 'npc_team', 'jinxes')}")
+        searched_paths.append(f"Global jinxes at {os.path.expanduser('~/.npcsh/npc_team/jinxes')}")
         print(f"Searched in: {', '.join(searched_paths)}", file=sys.stderr)
         return jsonify({"error": f"Jinx '{jinx_name}' not found"}), 404
     
@@ -1627,9 +1627,9 @@ def execute_jinx():
     command_history = CommandHistory(app.config.get('DB_PATH'))
     messages = fetch_messages_for_conversation(conversation_id)
     
-    all_jinxs = {}
-    if npc_object and hasattr(npc_object, 'jinxs_dict'):
-        all_jinxs.update(npc_object.jinxs_dict)
+    all_jinxes = {}
+    if npc_object and hasattr(npc_object, 'jinxes_dict'):
+        all_jinxes.update(npc_object.jinxes_dict)
     
     if conversation_id not in app.jinx_conversation_contexts:
         app.jinx_conversation_contexts[conversation_id] = {}
@@ -1900,7 +1900,7 @@ def api_command(command):
     except Exception as e:
         return jsonify({"error": str(e)})
 
-@app.route("/api/jinxs/save", methods=["POST"])
+@app.route("/api/jinxes/save", methods=["POST"])
 def save_jinx():
     try:
         data = request.json
@@ -1913,15 +1913,15 @@ def save_jinx():
             return jsonify({"error": "Jinx name is required"}), 400
 
         if is_global:
-            jinxs_dir = os.path.join(
-                os.path.expanduser("~"), ".npcsh", "npc_team", "jinxs"
+            jinxes_dir = os.path.join(
+                os.path.expanduser("~"), ".npcsh", "npc_team", "jinxes"
             )
         else:
             if not current_path.endswith("npc_team"):
                 current_path = os.path.join(current_path, "npc_team")
-            jinxs_dir = os.path.join(current_path, "jinxs")
+            jinxes_dir = os.path.join(current_path, "jinxes")
 
-        os.makedirs(jinxs_dir, exist_ok=True)
+        os.makedirs(jinxes_dir, exist_ok=True)
 
         
         jinx_yaml = {
@@ -1930,7 +1930,7 @@ def save_jinx():
             "steps": jinx_data.get("steps", []),
         }
 
-        file_path = os.path.join(jinxs_dir, f"{jinx_name}.jinx")
+        file_path = os.path.join(jinxes_dir, f"{jinx_name}.jinx")
         with open(file_path, "w") as f:
             yaml.safe_dump(jinx_yaml, f, sort_keys=False)
 
@@ -3072,7 +3072,7 @@ def build_training_dataset():
     
     command_history = CommandHistory(app.config.get('DB_PATH'))
     dataset = command_history.get_training_dataset(
-        include_jinxs=filters.get("jinxs", True),
+        include_jinxes=filters.get("jinxes", True),
         include_npcs=filters.get("npcs", True),
         npc_names=filters.get("npc_names")
     )
@@ -3108,7 +3108,7 @@ primary_directive: "{npc_data['primary_directive']}"
 model: {npc_data['model']}
 provider: {npc_data['provider']}
 api_url: {npc_data.get('api_url', '')}
-use_global_jinxs: {str(npc_data.get('use_global_jinxs', True)).lower()}
+use_global_jinxes: {str(npc_data.get('use_global_jinxes', True)).lower()}
 """
 
         
@@ -3122,13 +3122,13 @@ use_global_jinxs: {str(npc_data.get('use_global_jinxs', True)).lower()}
         print(f"Error saving NPC: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/api/jinxs/global")
-def get_jinxs_global():
-    global_jinx_directory = os.path.expanduser("~/.npcsh/npc_team/jinxs")
+@app.route("/api/jinxes/global")
+def get_jinxes_global():
+    global_jinx_directory = os.path.expanduser("~/.npcsh/npc_team/jinxes")
     jinx_data = []
 
     if not os.path.exists(global_jinx_directory):
-        return jsonify({"jinxs": [], "error": None})
+        return jsonify({"jinxes": [], "error": None})
 
     for root, dirs, files in os.walk(global_jinx_directory):
         for file in files:
@@ -3151,20 +3151,20 @@ def get_jinxs_global():
                     "steps": raw_data.get("steps", [])
                 })
 
-    return jsonify({"jinxs": jinx_data, "error": None})
+    return jsonify({"jinxes": jinx_data, "error": None})
 
-@app.route("/api/jinxs/project", methods=["GET"])
-def get_jinxs_project():
+@app.route("/api/jinxes/project", methods=["GET"])
+def get_jinxes_project():
     project_dir = request.args.get("currentPath")
     if not project_dir:
-        return jsonify({"jinxs": [], "error": "currentPath required"}), 400
+        return jsonify({"jinxes": [], "error": "currentPath required"}), 400
 
-    if not project_dir.endswith("jinxs"):
-        project_dir = os.path.join(project_dir, "jinxs")
+    if not project_dir.endswith("jinxes"):
+        project_dir = os.path.join(project_dir, "jinxes")
 
     jinx_data = []
     if not os.path.exists(project_dir):
-        return jsonify({"jinxs": [], "error": None})
+        return jsonify({"jinxes": [], "error": None})
 
     for root, dirs, files in os.walk(project_dir):
         for file in files:
@@ -3187,7 +3187,7 @@ def get_jinxs_project():
                     "steps": raw_data.get("steps", [])
                 })
     print(jinx_data)
-    return jsonify({"jinxs": jinx_data, "error": None})
+    return jsonify({"jinxes": jinx_data, "error": None})
 
 @app.route("/api/npcsql/run_model", methods=["POST"])
 def run_npcsql_model():
@@ -3466,8 +3466,8 @@ def get_npc_team_global():
                     "model": raw_data.get("model", ""),
                     "provider": raw_data.get("provider", ""),
                     "api_url": raw_data.get("api_url", ""),
-                    "use_global_jinxs": raw_data.get("use_global_jinxs", True),
-                    "jinxs": raw_data.get("jinxs", "*"),
+                    "use_global_jinxes": raw_data.get("use_global_jinxes", True),
+                    "jinxes": raw_data.get("jinxes", "*"),
                 })
 
     return jsonify({"npcs": npc_data, "error": None})
@@ -3502,8 +3502,8 @@ def get_npc_team_project():
                 "model": raw_npc_data.get("model", ""),
                 "provider": raw_npc_data.get("provider", ""),
                 "api_url": raw_npc_data.get("api_url", ""),
-                "use_global_jinxs": raw_npc_data.get("use_global_jinxs", True),
-                "jinxs": raw_npc_data.get("jinxs", "*"),
+                "use_global_jinxes": raw_npc_data.get("use_global_jinxes", True),
+                "jinxes": raw_npc_data.get("jinxes", "*"),
             }
             npc_data.append(serialized_npc)
 
@@ -3748,14 +3748,14 @@ def check_npcsh_folder():
 
 @app.route("/api/npcsh/package-contents", methods=["GET"])
 def get_package_contents():
-    """Get NPCs and jinxs available in the npcsh package for installation."""
+    """Get NPCs and jinxes available in the npcsh package for installation."""
     try:
         from npcsh._state import get_package_dir
         package_dir = get_package_dir()
         package_npc_team_dir = os.path.join(package_dir, "npc_team")
 
         npcs = []
-        jinxs = []
+        jinxes = []
 
         if os.path.exists(package_npc_team_dir):
             for f in os.listdir(package_npc_team_dir):
@@ -3772,16 +3772,16 @@ def get_package_contents():
                     except Exception as e:
                         print(f"Error reading NPC {f}: {e}")
 
-            jinxs_dir = os.path.join(package_npc_team_dir, "jinxs")
-            if os.path.exists(jinxs_dir):
-                for root, dirs, files in os.walk(jinxs_dir):
+            jinxes_dir = os.path.join(package_npc_team_dir, "jinxes")
+            if os.path.exists(jinxes_dir):
+                for root, dirs, files in os.walk(jinxes_dir):
                     for f in files:
                         if f.endswith('.jinx'):
                             jinx_path = os.path.join(root, f)
-                            rel_path = os.path.relpath(jinx_path, jinxs_dir)
+                            rel_path = os.path.relpath(jinx_path, jinxes_dir)
                             try:
                                 jinx_data = load_yaml_file(jinx_path) or {}
-                                jinxs.append({
+                                jinxes.append({
                                     "name": f[:-5],
                                     "path": rel_path[:-5],
                                     "description": jinx_data.get("description", ""),
@@ -3791,7 +3791,7 @@ def get_package_contents():
 
         return jsonify({
             "npcs": npcs,
-            "jinxs": jinxs,
+            "jinxes": jinxes,
             "package_dir": package_dir,
             "error": None
         })
@@ -3799,7 +3799,7 @@ def get_package_contents():
         print(f"Error getting package contents: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({"error": str(e), "npcs": [], "jinxs": []}), 500
+        return jsonify({"error": str(e), "npcs": [], "jinxes": []}), 500
 
 @app.route("/api/npcsh/init", methods=["POST"])
 def init_npcsh_folder():
@@ -4612,17 +4612,17 @@ def get_mcp_tools():
             try:
                 jinx_dirs = []
                 if current_path_arg:
-                    proj_jinx_dir = os.path.join(os.path.abspath(current_path_arg), "npc_team", "jinxs")
+                    proj_jinx_dir = os.path.join(os.path.abspath(current_path_arg), "npc_team", "jinxes")
                     if os.path.isdir(proj_jinx_dir):
                         jinx_dirs.append(proj_jinx_dir)
-                global_jinx_dir = os.path.expanduser("~/.npcsh/npc_team/jinxs")
+                global_jinx_dir = os.path.expanduser("~/.npcsh/npc_team/jinxes")
                 if os.path.isdir(global_jinx_dir):
                     jinx_dirs.append(global_jinx_dir)
-                all_jinxs = []
+                all_jinxes = []
                 for d in jinx_dirs:
-                    all_jinxs.extend(load_jinxs_from_directory(d))
-                if all_jinxs:
-                    jinx_tools = list(build_jinx_tool_catalog({j.jinx_name: j for j in all_jinxs}).values())
+                    all_jinxes.extend(load_jinxes_from_directory(d))
+                if all_jinxes:
+                    jinx_tools = list(build_jinx_tool_catalog({j.jinx_name: j for j in all_jinxes}).values())
                     print(f"[MCP] Discovered {len(jinx_tools)} Jinx tools for listing.")
                     tools = tools + jinx_tools
             except Exception as e:
@@ -5556,8 +5556,8 @@ IMPORTANT AGENT BEHAVIOR:
                     yield {"type": "tool_start", "name": tool_name, "id": tool_id, "args": tool_args}
                     try:
                         tool_content = ""
-                        if npc_object and hasattr(npc_object, "jinxs_dict") and tool_name in npc_object.jinxs_dict:
-                            jinx_obj = npc_object.jinxs_dict[tool_name]
+                        if npc_object and hasattr(npc_object, "jinxes_dict") and tool_name in npc_object.jinxes_dict:
+                            jinx_obj = npc_object.jinxes_dict[tool_name]
                             try:
                                 jinx_ctx = jinx_obj.execute(
                                     input_values=tool_args if isinstance(tool_args, dict) else {},
@@ -5588,7 +5588,7 @@ IMPORTANT AGENT BEHAVIOR:
                                     traceback.print_exc()
                                     tool_content = f"MCP tool error: {str(mcp_e)}"
                             else:
-                                tool_content = f"Tool '{tool_name}' not found in MCP server or Jinxs"
+                                tool_content = f"Tool '{tool_name}' not found in MCP server or Jinxes"
                         
                         messages.append({
                             "role": "tool",

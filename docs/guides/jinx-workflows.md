@@ -1,12 +1,12 @@
 # Jinx Workflows
 
-Jinxs (Jinja Execution templates) are prompt-based workflow templates that chain multiple steps together. Each step can use natural language processing or Python code execution, and steps can reference prior results through Jinja templating. Because jinxs are prompt-driven, they work with any model -- including those without tool-calling support.
+Jinxes (Jinja Execution templates) are prompt-based workflow templates that chain multiple steps together. Each step can use natural language processing or Python code execution, and steps can reference prior results through Jinja templating. Because jinxes are prompt-driven, they work with any model -- including those without tool-calling support.
 
 ## What is a Jinx
 
 A jinx is a YAML-defined workflow with named steps. Each step has an engine (`natural` for LLM processing, `python` for code execution) and a code block that can reference inputs and previous step outputs using `{{ variable }}` syntax.
 
-Jinxs solve the problem of composing multi-step LLM workflows declaratively. Instead of writing procedural code to chain prompts, you define a template that npcpy executes step by step, threading context between stages.
+Jinxes solve the problem of composing multi-step LLM workflows declaratively. Instead of writing procedural code to chain prompts, you define a template that npcpy executes step by step, threading context between stages.
 
 ## Two Engines
 
@@ -200,7 +200,7 @@ steps:
       5. Conclusion
 ```
 
-## Using Jinxs with NPCs
+## Using Jinxes with NPCs
 
 Reference jinx files by name when creating an NPC, then call `execute_jinx()`.
 
@@ -210,7 +210,7 @@ from npcpy.npc_compiler import NPC
 data_scientist = NPC(
     name='Data Scientist',
     primary_directive='You are an expert data scientist specializing in data analysis.',
-    jinxs=['data_analyzer'],  # references the jinx file by name
+    jinxes=['data_analyzer'],  # references the jinx file by name
     model='llama3.2',
     provider='ollama'
 )
@@ -227,7 +227,7 @@ print(result['output'])
 
 ## Creating Jinx Objects Programmatically
 
-Instead of YAML files, you can build jinxs in Python using the `Jinx` class with a `jinx_data` dict.
+Instead of YAML files, you can build jinxes in Python using the `Jinx` class with a `jinx_data` dict.
 
 ```python
 from npcpy.npc_compiler import Jinx
@@ -264,7 +264,7 @@ You can also load from a YAML file path:
 research_jinx = Jinx(jinx_path='./research_pipeline.jinx')
 ```
 
-## Executing Jinxs Directly
+## Executing Jinxes Directly
 
 Call `execute()` on a Jinx object, passing input values and an NPC to handle the natural-language steps.
 
@@ -294,7 +294,7 @@ The `execute()` method returns the full context dict, which includes all step ou
 
 ## Jinx Composition
 
-Jinxs can call other jinxs by referencing them through Jinja templating when used within a team or NPC that has multiple jinxs loaded. Step outputs from one jinx can feed into another through shared context.
+Jinxes can call other jinxes by referencing them through Jinja templating when used within a team or NPC that has multiple jinxes loaded. Step outputs from one jinx can feed into another through shared context.
 
 ```python
 from npcpy.npc_compiler import NPC, Team, Jinx
@@ -332,7 +332,7 @@ summarizer = Jinx(jinx_data={
     ]
 })
 
-# An NPC with both jinxs available
+# An NPC with both jinxes available
 analyst = NPC(
     name='Analyst',
     primary_directive='You analyze and summarize documents.',
@@ -340,29 +340,29 @@ analyst = NPC(
     provider='ollama',
 )
 
-# Create a team with shared jinxs
+# Create a team with shared jinxes
 team = Team(
     npcs=[analyst],
     forenpc=analyst,
-    jinxs=[file_processor, summarizer]
+    jinxes=[file_processor, summarizer]
 )
 
-# Execute individual jinxs through the NPC
+# Execute individual jinxes through the NPC
 result = analyst.execute_jinx('file_processor', {'filepath': './data.txt'})
 print(result['output'])
 ```
 
-Team-level jinxs are rendered during team initialization and distributed to all member NPCs, so any NPC in the team can execute any team jinx. This enables the forenpc to delegate jinx-based workflows to the most appropriate team member.
+Team-level jinxes are rendered during team initialization and distributed to all member NPCs, so any NPC in the team can execute any team jinx. This enables the forenpc to delegate jinx-based workflows to the most appropriate team member.
 
-## Skills: Knowledge-Content Jinxs
+## Skills: Knowledge-Content Jinxes
 
-Skills are jinxs that serve instructional content instead of executing code. They use the `skill.jinx` sub-jinx (just like code jinxs use `python.jinx` or `sh.jinx`) and return sections of knowledge on demand.
+Skills are jinxes that serve instructional content instead of executing code. They use the `skill.jinx` sub-jinx (just like code jinxes use `python.jinx` or `sh.jinx`) and return sections of knowledge on demand.
 
-You can author skills as `SKILL.md` folders or as `.jinx` files with `engine: skill` steps. Either way, they end up in the same `jinxs_dict` and are assigned to agents through the same `jinxs:` list in `.npc` files.
+You can author skills as `SKILL.md` folders or as `.jinx` files with `engine: skill` steps. Either way, they end up in the same `jinxes_dict` and are assigned to agents through the same `jinxes:` list in `.npc` files.
 
 ```yaml
 # reviewer.npc
-jinxs:
+jinxes:
   - lib/core/sh
   - lib/core/python
   - skills/code-review

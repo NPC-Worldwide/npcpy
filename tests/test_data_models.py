@@ -17,17 +17,17 @@ class TestNPCModel:
             model="llama3.2",
             provider="ollama",
             api_url="http://localhost:11434",
-            jinxs=["search", "summarize"]
+            jinxes=["search", "summarize"]
         )
 
         assert npc.name == "assistant"
         assert npc.primary_directive == "Help users with tasks"
         assert npc.model == "llama3.2"
         assert npc.provider == "ollama"
-        assert len(npc.jinxs) == 2
+        assert len(npc.jinxes) == 2
 
-    def test_npc_model_empty_jinxs(self):
-        """Test NPC_Model with empty jinxs list"""
+    def test_npc_model_empty_jinxes(self):
+        """Test NPC_Model with empty jinxes list"""
         from npcpy.data.data_models import NPC_Model
 
         npc = NPC_Model(
@@ -36,10 +36,10 @@ class TestNPCModel:
             model="gpt-4",
             provider="openai",
             api_url="https://api.openai.com",
-            jinxs=[]
+            jinxes=[]
         )
 
-        assert npc.jinxs == []
+        assert npc.jinxes == []
 
     def test_npc_model_missing_field(self):
         """Test NPC_Model validation with missing required field"""
@@ -49,7 +49,7 @@ class TestNPCModel:
             NPC_Model(
                 name="incomplete",
                 primary_directive="Missing fields"
-                # Missing model, provider, api_url, jinxs
+                # Missing model, provider, api_url, jinxes
             )
 
     def test_npc_model_serialization(self):
@@ -62,7 +62,7 @@ class TestNPCModel:
             model="test-model",
             provider="test-provider",
             api_url="http://test.com",
-            jinxs=["jinx1"]
+            jinxes=["jinx1"]
         )
 
         # Test dict conversion

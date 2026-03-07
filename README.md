@@ -139,7 +139,7 @@ print(result['output'])
 
 Installing `npcpy` also installs two command-line tools:
 - **`npc`** — CLI for project management and one-off commands
-- **`npcsh`** — Interactive shell for chatting with agents and running jinxs
+- **`npcsh`** — Interactive shell for chatting with agents and running jinxes
 
 ```bash
 # Using npc CLI
@@ -158,7 +158,7 @@ This creates:
 my_project/
 ├── npc_team/
 │   ├── forenpc.npc      # Default coordinator
-│   ├── jinxs/           # Workflows
+│   ├── jinxes/           # Workflows
 │   │   └── skills/      # Knowledge skills
 │   ├── tools/           # Custom tools
 │   └── triggers/        # Event triggers
@@ -208,7 +208,7 @@ npc_team/
 ├── coordinator.npc    # Coordinator agent
 ├── analyst.npc        # Specialist agent
 ├── writer.npc         # Specialist agent
-└── jinxs/             # Optional workflows
+└── jinxes/             # Optional workflows
     └── research.jinx
 ```
 
@@ -258,9 +258,9 @@ print(result['output'])
 
 ### Agent with skills
 
-Skills are knowledge-content jinxs that provide instructional sections to agents on demand.
+Skills are knowledge-content jinxes that provide instructional sections to agents on demand.
 
-**1. Create a skill file** (`npc_team/jinxs/skills/code-review/SKILL.md`):
+**1. Create a skill file** (`npc_team/jinxes/skills/code-review/SKILL.md`):
 ```markdown
 ---
 name: code-review
@@ -283,7 +283,7 @@ name: reviewer
 primary_directive: You review code for quality and security issues.
 model: llama3.2
 provider: ollama
-jinxs:
+jinxes:
   - skills/code-review
 ```
 
@@ -291,7 +291,7 @@ jinxs:
 ```python
 from npcpy.npc_compiler import NPC
 
-# Load NPC from file - skills are automatically available as callable jinxs
+# Load NPC from file - skills are automatically available as callable jinxes
 reviewer = NPC(file='./npc_team/reviewer.npc')
 response = reviewer.get_llm_response("Review this function: def login(user, pwd): ...")
 print(response['response'])
@@ -371,7 +371,7 @@ images[0].save("sunset.png")
 - **[Agents (NPCs)](https://npcpy.readthedocs.io/en/latest/guides/agents/)** — Agents with personas, directives, and tool calling
 - **[Multi-Agent Teams](https://npcpy.readthedocs.io/en/latest/guides/teams/)** — Team orchestration with a coordinator (forenpc)
 - **[Jinx Workflows](https://npcpy.readthedocs.io/en/latest/guides/jinx-workflows/)** — Jinja Execution templates for multi-step prompt pipelines
-- **[Skills](https://npcpy.readthedocs.io/en/latest/guides/skills/)** — Knowledge-content jinxs that serve instructional sections to agents on demand
+- **[Skills](https://npcpy.readthedocs.io/en/latest/guides/skills/)** — Knowledge-content jinxes that serve instructional sections to agents on demand
 - **[NPCArray](https://npcpy.readthedocs.io/en/latest/guides/npc-array/)** — NumPy-like vectorized operations over model populations
 - **[Image, Audio & Video](https://npcpy.readthedocs.io/en/latest/guides/image-audio-video/)** — Generation via Ollama, diffusers, OpenAI, Gemini
 - **[Knowledge Graphs](https://npcpy.readthedocs.io/en/latest/guides/knowledge-graphs/)** — Build and evolve knowledge graphs from text

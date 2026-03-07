@@ -52,7 +52,7 @@ steps:
     prompt: "Write a summary from these points: {{ extract_key_points }}"
 ```
 
-Jinxs are stored as `.jinx` files or created programmatically via the `Jinx` class.
+Jinxes are stored as `.jinx` files or created programmatically via the `Jinx` class.
 
 ## Providers and Models
 

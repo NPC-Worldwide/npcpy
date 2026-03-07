@@ -7,7 +7,7 @@ class NPC_Model(BaseModel):
     model: str
     provider: str
     api_url: str
-    jinxs: List[str]
+    jinxes: List[str]
 
 class Jinx_Model(BaseModel):
     jinx_name: str
