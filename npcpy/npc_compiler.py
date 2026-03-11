@@ -739,13 +739,13 @@ class Jinx:
                   npc: Optional[Any] = None,
                   messages: Optional[List[Dict[str, str]]] = None,
                   extra_globals: Optional[Dict[str, Any]] = None):
-        
-        code_content = step.get("code") or ""
+
         step_name = step.get("name", "unnamed_step")
         step_npc = step.get("npc")
-        
         active_npc = step_npc if step_npc else npc
-        
+
+        code_content = step.get("code") or ""
+
         try:
             template = jinja_env.from_string(code_content)
             rendered_code = template.render(**context)
@@ -825,7 +825,7 @@ class Jinx:
             context['messages'] = messages
         
         return context
-        
+
     def _parse_file_patterns(self, patterns_config):
         """Parse file patterns configuration and load matching files into KV cache"""
         if not patterns_config:
@@ -1393,7 +1393,7 @@ class NPC:
             self.npc_directory = None
 
         if not hasattr(self, 'jinxes_spec') or jinxes is not None:
-            self.jinxes_spec = jinxes or "*"
+            self.jinxes_spec = jinxes or []
 
         if tools is not None:
             tools_schema, tool_map = auto_tools(tools)
@@ -1566,7 +1566,7 @@ class NPC:
                     print(f"Error performing first-pass rendering for NPC Jinx '{raw_npc_jinx.jinx_name}': {e}")
         
         self.jinx_tool_catalog = build_jinx_tool_catalog(self.jinxes_dict)
-        print(f"NPC {self.name} loaded {len(self.jinxes_dict)} jinxes and built catalog with {len(self.jinx_tool_catalog)} tools.")
+        print(f"NPC {self.name} loaded {len(self.jinxes_dict)} jinxes and built catalog with {len(self.jinx_tool_catalog)} tools.", file=sys.stderr)
 
     def _load_npc_kg(self):
         """Load knowledge graph data for this NPC from database"""
@@ -1827,10 +1827,10 @@ class NPC:
             
         self.primary_directive = npc_data.get("primary_directive")
         
-        jinxes_spec = npc_data.get("jinxes", "*")
-        
+        jinxes_spec = npc_data.get("jinxes", [])
+
         if jinxes_spec == "*":
-            self.jinxes_spec = "*" 
+            self.jinxes_spec = "*"
         else:
             self.jinxes_spec = jinxes_spec
 
@@ -1838,6 +1838,7 @@ class NPC:
         self.provider = npc_data.get("provider")
         self.api_url = npc_data.get("api_url")
         self.api_key = npc_data.get("api_key")
+        self.mcp_servers = npc_data.get("mcp_servers", [])
 
         if self.team:
             if not self.model and hasattr(self.team, 'model'):
@@ -1853,6 +1854,111 @@ class NPC:
 
         self.npc_path = file
         self.npc_jinxes_directory = os.path.join(os.path.dirname(file), "jinxes")
+
+    def resolve_tools(self, mcp_clients_cache: dict = None) -> tuple:
+        """
+        Returns (tools_for_llm, tool_executors) where:
+          - tools_for_llm: list of OpenAI-style tool defs for the LLM
+          - tool_executors: dict mapping tool_name -> {"type": ..., ...} for execution
+
+        Assembles from: jinx_tool_catalog + mcp_servers + python tools
+        """
+        from npcpy.serve import MCPClientNPC
+
+        tools_for_llm = []
+        tool_executors = {}
+        seen = set()
+
+        # 1. Jinx tools
+        catalog = self.jinx_tool_catalog or build_jinx_tool_catalog(self.jinxes_dict)
+        for name, tool_def in catalog.items():
+            if name not in seen:
+                tools_for_llm.append(tool_def)
+                tool_executors[name] = {"type": "jinx", "jinx": self.jinxes_dict.get(name)}
+                seen.add(name)
+
+        # 2. MCP server tools
+        if mcp_clients_cache is None:
+            mcp_clients_cache = {}
+
+        connectable_specs = []
+        nameonly_tools = []
+        for server_spec in (self.mcp_servers or []):
+            if isinstance(server_spec, str):
+                connectable_specs.append({"path": server_spec})
+            elif isinstance(server_spec, dict):
+                if "path" in server_spec or "command" in server_spec or "url" in server_spec:
+                    connectable_specs.append(server_spec)
+                elif "tools" in server_spec:
+                    nameonly_tools.extend(server_spec["tools"])
+
+        def spec_cache_key(spec):
+            if isinstance(spec, str):
+                return os.path.expanduser(spec)
+            if "path" in spec:
+                return os.path.expanduser(spec["path"])
+            if "url" in spec:
+                return spec["url"]
+            if "command" in spec:
+                return f"{spec['command']}:{' '.join(spec.get('args', []))}"
+            return str(spec)
+
+        for spec in connectable_specs:
+            key = spec_cache_key(spec)
+            whitelist = spec.get("tools")
+            client = mcp_clients_cache.get(key)
+            if not client:
+                client = MCPClientNPC()
+                if client.connect_sync(spec):
+                    mcp_clients_cache[key] = client
+                else:
+                    continue
+            for tool_def in client.available_tools_llm:
+                name = tool_def["function"]["name"]
+                if name in seen:
+                    continue
+                if whitelist and name not in whitelist:
+                    continue
+                tools_for_llm.append(tool_def)
+                tool_executors[name] = {
+                    "type": "mcp",
+                    "client": client,
+                    "tool_func": client.tool_map.get(name),
+                }
+                seen.add(name)
+
+        # Resolve tool-name-only specs by searching team MCP servers
+        if nameonly_tools and self.team and hasattr(self.team, "mcp_servers"):
+            for team_server in (self.team.mcp_servers or []):
+                ts = team_server if isinstance(team_server, dict) else {"path": team_server}
+                key = spec_cache_key(ts)
+                client = mcp_clients_cache.get(key)
+                if not client:
+                    client = MCPClientNPC()
+                    if client.connect_sync(ts):
+                        mcp_clients_cache[key] = client
+                    else:
+                        continue
+                for tool_def in client.available_tools_llm:
+                    name = tool_def["function"]["name"]
+                    if name in nameonly_tools and name not in seen:
+                        tools_for_llm.append(tool_def)
+                        tool_executors[name] = {
+                            "type": "mcp",
+                            "client": client,
+                            "tool_func": client.tool_map.get(name),
+                        }
+                        seen.add(name)
+
+        # 3. Python tools (from auto_tools)
+        for tool_def in (self.tools_schema or []):
+            name = tool_def["function"]["name"]
+            if name not in seen:
+                tools_for_llm.append(tool_def)
+                tool_executors[name] = {"type": "python", "func": self.tool_map.get(name)}
+                seen.add(name)
+
+        return tools_for_llm, tool_executors
 
     def get_system_prompt(self, simple=False):
         """Get system prompt for the NPC"""
@@ -2710,7 +2816,7 @@ class Team:
 
         self._perform_first_pass_jinx_rendering()
         self.jinx_tool_catalog = build_jinx_tool_catalog(self.jinxes_dict)
-        print(f"[TEAM] Built Jinx tool catalog with {len(self.jinx_tool_catalog)} entries for team {self.name}")
+        print(f"[TEAM] Built Jinx tool catalog with {len(self.jinx_tool_catalog)} entries for team {self.name}", file=sys.stderr)
 
         for npc_obj in self.npcs.values():
             npc_obj.initialize_jinxes(team_raw_jinxes=self._raw_jinxes_list) 

@@ -150,33 +150,82 @@ class MCPClientNPC:
         if self.debug:
             cprint(f"[MCP Client] {message}", color, file=sys.stderr)
 
-    async def _connect_async(self, server_script_path: str) -> None:
-        self._log(f"Attempting to connect to MCP server: {server_script_path}")
-        self.server_script_path = server_script_path
-        abs_path = os.path.abspath(server_script_path)
-        if not os.path.exists(abs_path):
-            raise FileNotFoundError(f"MCP server script not found: {abs_path}")
+    async def _connect_async(self, server_spec) -> None:
+        """Connect to an MCP server.
 
-        if abs_path.endswith('.py'):
-            cmd_parts = [sys.executable, abs_path]
-        elif os.access(abs_path, os.X_OK):
-            cmd_parts = [abs_path]
-        else:
-            raise ValueError(f"Unsupported MCP server script type or not executable: {abs_path}")
+        server_spec can be:
+          - str: path to a script file (legacy)
+          - str: command string starting with python/npx/uvx/node/docker
+          - dict with 'path': local script file
+          - dict with 'command' + 'args': arbitrary stdio command (npx, docker, uvx, node, etc.)
+          - dict with 'url': SSE/HTTP remote server
+        """
+        if isinstance(server_spec, str):
+            if _is_command_string(server_spec):
+                import shlex
+                parts = shlex.split(server_spec.strip())
+                server_spec = {"command": parts[0], "args": parts[1:]}
+            else:
+                server_spec = {"path": server_spec}
 
-        server_params = StdioServerParameters(
-            command=cmd_parts[0],
-            args=[abs_path],
-            env=os.environ.copy(),
-            cwd=os.path.dirname(abs_path) or "."
-        )
+        self.server_spec = server_spec
+        extra_env = server_spec.get("env", {})
+        env = {**os.environ, **extra_env}
+
         if self.session:
             await self._exit_stack.aclose()
-
         self._exit_stack = AsyncExitStack()
 
-        stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
-        self.session = await self._exit_stack.enter_async_context(ClientSession(*stdio_transport))
+        if "url" in server_spec:
+            # SSE transport
+            from mcp.client.sse import sse_client
+            url = server_spec["url"]
+            self._log(f"Connecting to SSE server: {url}")
+            self.server_script_path = url
+            sse_transport = await self._exit_stack.enter_async_context(sse_client(url))
+            self.session = await self._exit_stack.enter_async_context(ClientSession(*sse_transport))
+
+        elif "command" in server_spec:
+            # Arbitrary command (npx, docker, uvx, node, etc.)
+            command = server_spec["command"]
+            args = server_spec.get("args", [])
+            self._log(f"Connecting via command: {command} {' '.join(str(a) for a in args)}")
+            self.server_script_path = f"{command}:{' '.join(str(a) for a in args)}"
+            server_params = StdioServerParameters(
+                command=command,
+                args=args,
+                env=env,
+            )
+            stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
+            self.session = await self._exit_stack.enter_async_context(ClientSession(*stdio_transport))
+
+        elif "path" in server_spec:
+            # Existing path-based logic (Python script or executable)
+            abs_path = os.path.abspath(os.path.expanduser(server_spec["path"]))
+            if not os.path.exists(abs_path):
+                raise FileNotFoundError(f"MCP server script not found: {abs_path}")
+            self.server_script_path = abs_path
+            self._log(f"Attempting to connect to MCP server: {abs_path}")
+
+            if abs_path.endswith('.py'):
+                cmd_parts = [sys.executable, abs_path]
+            elif os.access(abs_path, os.X_OK):
+                cmd_parts = [abs_path]
+            else:
+                raise ValueError(f"Unsupported MCP server script type or not executable: {abs_path}")
+
+            server_params = StdioServerParameters(
+                command=cmd_parts[0],
+                args=[abs_path],
+                env=env,
+                cwd=os.path.dirname(abs_path) or "."
+            )
+            stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
+            self.session = await self._exit_stack.enter_async_context(ClientSession(*stdio_transport))
+
+        else:
+            raise ValueError(f"Invalid MCP server spec: must have 'path', 'command', or 'url'. Got: {server_spec}")
+
         await self.session.initialize()
 
         response = await self.session.list_tools()
@@ -225,14 +274,15 @@ class MCPClientNPC:
         tool_names = list(self.tool_map.keys())
         self._log(f"Connection successful. Tools: {', '.join(tool_names) if tool_names else 'None'}")
 
-    def connect_sync(self, server_script_path: str) -> bool:
+    def connect_sync(self, server_spec) -> bool:
+        """Connect synchronously. server_spec: str (path) or dict with path/command/url."""
         loop = self._loop
         if loop.is_closed():
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
             loop = self._loop
         try:
-            loop.run_until_complete(self._connect_async(server_script_path))
+            loop.run_until_complete(self._connect_async(server_spec))
             return True
         except Exception as e:
             cprint(f"MCP connection failed: {e}", "red", file=sys.stderr)
@@ -311,8 +361,8 @@ class MCPServerManager:
             proc_env.update(env_vars)
 
         # Detect command type: npx, uvx, node, etc. vs local file path
+        is_command = _is_command_string(server_path)
         stripped = server_path.strip()
-        is_command = stripped.startswith(('npx ', 'uvx ', 'node ', 'python ', 'python3 '))
 
         if is_command:
             # For commands like "npx -y @modelcontextprotocol/server-github"
@@ -345,9 +395,8 @@ class MCPServerManager:
 
     def _resolve_key(self, server_path: str) -> str:
         """Resolve server_path to the key used in _procs."""
-        stripped = server_path.strip()
-        if stripped.startswith(('npx ', 'uvx ', 'node ', 'python ', 'python3 ')):
-            return stripped
+        if _is_command_string(server_path):
+            return server_path.strip()
         return os.path.abspath(os.path.expanduser(server_path))
 
     def stop(self, server_path: str):
@@ -480,6 +529,16 @@ CORS(
     supports_credentials=True,
 )
 
+
+def _is_command_string(s: str) -> bool:
+    """Check if a string is a command (python/npx/uvx/node/docker) vs a file path."""
+    stripped = s.strip()
+    if not stripped or ' ' not in stripped:
+        return False
+    first_word = stripped.split()[0]
+    basename = os.path.basename(first_word)
+    return basename in ('python', 'python3', 'npx', 'uvx', 'node', 'docker') or ' -m ' in stripped
+
 def get_db_connection():
     engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
     return engine
@@ -492,39 +551,42 @@ def get_db_session():
 def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=False):
     """
     Resolve an MCP server path.
-    1. Use explicit_path if provided and exists
-    2. Check if ~/.npcsh/npc_team/mcp_server.py exists
-    3. If not, find mcp_server.py in npcsh package, copy it, and return the path
-    """
-    import shutil
 
+    Supports both file paths and command strings:
+      - Command strings (python -m ..., npx ..., etc.) are passed through as-is
+      - File paths are resolved to absolute paths
+      - Fallback: use `python -m npcpy.mcp_server` (the module, not a deployed script)
+    """
     if explicit_path:
+        # Command strings pass through directly
+        if _is_command_string(explicit_path):
+            return explicit_path.strip()
+
         abs_path = os.path.abspath(os.path.expanduser(explicit_path))
         if os.path.exists(abs_path):
             return abs_path
 
-    global_mcp_path = os.path.expanduser("~/.npcsh/npc_team/mcp_server.py")
-    if os.path.exists(global_mcp_path):
-        return global_mcp_path
-
-    try:
-        import npcsh
-        npcsh_package_dir = os.path.dirname(npcsh.__file__)
-        package_mcp_server = os.path.join(npcsh_package_dir, "mcp_server.py")
-
-        if os.path.exists(package_mcp_server):
-            target_dir = os.path.dirname(global_mcp_path)
-            os.makedirs(target_dir, exist_ok=True)
-
-            shutil.copy2(package_mcp_server, global_mcp_path)
-            print(f"[MCP] Copied mcp_server.py from {package_mcp_server} to {global_mcp_path}")
-            return global_mcp_path
+    # Fallback: use npcpy.mcp_server module directly (no deployed scripts)
+    team_path = None
+    if current_path:
+        candidate = os.path.join(current_path, "npc_team")
+        if os.path.isdir(candidate):
+            team_path = candidate
+    if not team_path:
+        # Prefer incognide team over global team
+        incognide_team = os.path.expanduser("~/.npcsh/incognide/npc_team")
+        if os.path.isdir(incognide_team):
+            team_path = incognide_team
         else:
-            print(f"[MCP] mcp_server.py not found in npcsh package at {package_mcp_server}")
-    except Exception as e:
-        print(f"[MCP] Error finding/copying mcp_server.py from npcsh package: {e}")
+            global_team = os.path.expanduser("~/.npcsh/npc_team")
+            if os.path.isdir(global_team):
+                team_path = global_team
 
-    return global_mcp_path
+    if team_path:
+        return f"{sys.executable} -m npcpy.mcp_server --team {team_path}"
+
+    # Last resort: let the module auto-discover
+    return f"{sys.executable} -m npcpy.mcp_server"
 
 extension_map = {
     "PNG": "images",
@@ -3508,7 +3570,7 @@ def get_npc_team_global():
         if not os.path.exists(team_dir):
             continue
         try:
-            team = Team(team_path=team_dir, db_conn=db_conn)
+            team = Team(team_path=team_dir, db_conn=get_db_connection())
             for name, npc in team.npcs.items():
                 if name not in seen_names:
                     seen_names.add(name)
@@ -3534,7 +3596,7 @@ def get_npc_team_project():
         return jsonify({"npcs": [], "error": None})
 
     try:
-        team = Team(team_path=project_npc_directory, db_conn=db_conn)
+        team = Team(team_path=project_npc_directory, db_conn=get_db_connection())
         npc_data = [npc.to_dict() for npc in team.npcs.values()]
     except Exception as e:
         print(f"Error loading project team from {project_npc_directory}: {e}")
@@ -3891,7 +3953,7 @@ def get_package_contents():
 
         if os.path.exists(package_npc_team_dir):
             try:
-                team = Team(team_path=package_npc_team_dir, db_conn=db_conn)
+                team = Team(team_path=package_npc_team_dir, db_conn=get_db_connection())
                 npcs = [npc.to_dict() for npc in team.npcs.values()]
             except Exception as e:
                 print(f"Error loading package NPCs: {e}")
@@ -4702,7 +4764,11 @@ def get_mcp_tools():
         explicit_path=raw_server_path,
         force_global=False
     )
-    server_path = os.path.abspath(os.path.expanduser(resolved_path))
+    # Command strings should not be resolved as file paths
+    if _is_command_string(resolved_path):
+        server_path = resolved_path.strip()
+    else:
+        server_path = os.path.abspath(os.path.expanduser(resolved_path))
 
     temp_mcp_client = None
     jinx_tools = []
@@ -4725,25 +4791,14 @@ def get_mcp_tools():
         print(f"Creating a temporary MCP client to fetch tools for {server_path}.")
         temp_mcp_client = MCPClientNPC()
         if temp_mcp_client.connect_sync(server_path):
-            tools = temp_mcp_client.available_tools_llm
-            try:
-                jinx_dirs = []
-                if current_path_arg:
-                    proj_jinx_dir = os.path.join(os.path.abspath(current_path_arg), "npc_team", "jinxes")
-                    if os.path.isdir(proj_jinx_dir):
-                        jinx_dirs.append(proj_jinx_dir)
-                global_jinx_dir = os.path.expanduser("~/.npcsh/npc_team/jinxes")
-                if os.path.isdir(global_jinx_dir):
-                    jinx_dirs.append(global_jinx_dir)
-                all_jinxes = []
-                for d in jinx_dirs:
-                    all_jinxes.extend(load_jinxes_from_directory(d))
-                if all_jinxes:
-                    jinx_tools = list(build_jinx_tool_catalog({j.jinx_name: j for j in all_jinxes}).values())
-                    print(f"[MCP] Discovered {len(jinx_tools)} Jinx tools for listing.")
-                    tools = tools + jinx_tools
-            except Exception as e:
-                print(f"[MCP] Error discovering Jinx tools for listing: {e}")
+            server_label = os.path.basename(server_path).replace('.py', '') if server_path else 'mcp'
+            mcp_tools = []
+            for t in temp_mcp_client.available_tools_llm:
+                tagged = dict(t)
+                tagged["_source"] = f"mcp:{server_label}"
+                mcp_tools.append(tagged)
+            tools = mcp_tools
+            # Jinx tools come from the NPC's config via resolve_tools(), not directory scans
             if selected_names:
                 tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
             return jsonify({"tools": tools, "error": None})
@@ -4764,6 +4819,90 @@ def get_mcp_tools():
             print(f"Disconnecting temporary MCP client for {server_path}.")
             temp_mcp_client.disconnect_sync()
 
+@app.route("/api/npc_tools", methods=["GET"])
+def get_npc_tools():
+    """
+    Returns the resolved tool set for an NPC, sourced from its config
+    (jinxes + mcp_servers + python tools). Also returns available team servers.
+    """
+    npc_name_param = request.args.get("npc")
+    team_path_param = request.args.get("team_path")
+    current_path_arg = request.args.get("currentPath")
+
+    try:
+        from npcpy.npc_compiler import NPC, Team, build_jinx_tool_catalog
+
+        # Load team if path provided
+        team_obj = None
+        if team_path_param and os.path.isdir(team_path_param):
+            try:
+                team_obj = Team(team_path=team_path_param)
+            except Exception as e:
+                print(f"[npc_tools] Failed to load team from {team_path_param}: {e}")
+
+        # Load NPC
+        npc_obj = None
+        if npc_name_param and team_obj and npc_name_param in team_obj.npcs:
+            npc_obj = team_obj.npcs[npc_name_param]
+        elif npc_name_param:
+            # Try to find NPC file
+            search_dirs = []
+            if current_path_arg:
+                search_dirs.append(os.path.join(os.path.abspath(current_path_arg), "npc_team", "npcs"))
+            search_dirs.append(os.path.expanduser("~/.npcsh/npc_team/npcs"))
+            search_dirs.append(os.path.expanduser("~/.npcsh/incognide/npc_team/npcs"))
+            for d in search_dirs:
+                npc_file = os.path.join(d, f"{npc_name_param}.npc")
+                if os.path.exists(npc_file):
+                    try:
+                        npc_obj = NPC(npc_file=npc_file, team=team_obj)
+                    except Exception as e:
+                        print(f"[npc_tools] Failed to load NPC {npc_file}: {e}")
+                    break
+
+        npc_tools = []
+        if npc_obj:
+            if not hasattr(app, 'mcp_clients_cache'):
+                app.mcp_clients_cache = {}
+            try:
+                tools_for_llm, tool_executors = npc_obj.resolve_tools(
+                    mcp_clients_cache=app.mcp_clients_cache
+                )
+                for tool_def in tools_for_llm:
+                    name = tool_def["function"]["name"]
+                    executor = tool_executors.get(name, {})
+                    source = executor.get("type", "unknown")
+                    if source == "mcp" and executor.get("client"):
+                        source = f"mcp:{executor['client'].server_script_path or 'unknown'}"
+                    npc_tools.append({
+                        "name": name,
+                        "description": tool_def["function"].get("description", ""),
+                        "source": source,
+                        "enabled": True,
+                    })
+            except Exception as e:
+                print(f"[npc_tools] Error resolving tools: {e}")
+                traceback.print_exc()
+
+        # Team servers (available pool, not auto-enabled)
+        team_servers = []
+        if team_obj and hasattr(team_obj, "mcp_servers"):
+            for srv in (team_obj.mcp_servers or []):
+                if isinstance(srv, str):
+                    team_servers.append({"path": srv, "enabled": False})
+                elif isinstance(srv, dict):
+                    label = srv.get("path") or srv.get("url") or f"{srv.get('command', '')} {' '.join(srv.get('args', []))}"
+                    team_servers.append({**srv, "label": label, "enabled": False})
+
+        return jsonify({
+            "npc_tools": npc_tools,
+            "team_servers": team_servers,
+            "error": None,
+        })
+    except Exception as e:
+        print(f"[npc_tools] Error: {traceback.format_exc()}")
+        return jsonify({"error": str(e), "npc_tools": [], "team_servers": []}), 500
+
 @app.route("/api/mcp/server/resolve", methods=["GET"])
 def api_mcp_resolve():
     current_path = request.args.get("currentPath")
@@ -4781,10 +4920,9 @@ def api_mcp_start():
     explicit = data.get("serverPath")
     env_vars = data.get("envVars")
     try:
-        # For npx/uvx commands, don't resolve as file path
-        stripped = (explicit or "").strip()
-        if stripped.startswith(('npx ', 'uvx ', 'node ')):
-            server_path = stripped
+        # For command strings, don't resolve as file path
+        if _is_command_string(explicit or ""):
+            server_path = (explicit or "").strip()
         else:
             server_path = resolve_mcp_server_path(current_path=current_path, explicit_path=explicit)
         result = mcp_server_manager.start(server_path, env_vars=env_vars)
@@ -4815,10 +4953,9 @@ def api_mcp_status():
     current_path = request.args.get("currentPath")
     try:
         if explicit:
-            # For npx/uvx commands, use directly without resolving as file path
-            stripped = explicit.strip()
-            if stripped.startswith(('npx ', 'uvx ', 'node ')):
-                result = mcp_server_manager.status(stripped)
+            # For command strings, use directly without resolving as file path
+            if _is_command_string(explicit):
+                result = mcp_server_manager.status(explicit.strip())
             else:
                 result = mcp_server_manager.status(explicit)
         else:
@@ -5381,51 +5518,86 @@ def stream():
         )
         messages = stream_response.get('messages', messages)
     elif exe_mode == 'tool_agent':
-        mcp_server_path_from_request = data.get("mcpServerPath")
         selected_mcp_tools_from_request = data.get("selectedMcpTools", [])
 
-        effective_mcp_server_path = mcp_server_path_from_request
-        if not effective_mcp_server_path and team_object and hasattr(team_object, 'team_ctx') and team_object.team_ctx:
-            mcp_servers_list = team_object.team_ctx.get('mcp_servers', [])
-            if mcp_servers_list and isinstance(mcp_servers_list, list):
-                first_server_obj = next((s for s in mcp_servers_list if isinstance(s, dict) and 'value' in s), None)
-                if first_server_obj:
-                    effective_mcp_server_path = first_server_obj['value']
-            elif isinstance(team_object.team_ctx.get('mcp_server'), str):
-                effective_mcp_server_path = team_object.team_ctx.get('mcp_server')
+        # Build tools from NPC config via resolve_tools()
+        if not hasattr(app, 'mcp_clients_cache'):
+            app.mcp_clients_cache = {}
 
-        effective_mcp_server_path = resolve_mcp_server_path(
-            current_path=current_path,
-            explicit_path=effective_mcp_server_path,
-            force_global=False
-        )
-        print(f"[MCP] effective server path: {effective_mcp_server_path}")
+        tools_for_llm = []
+        tool_executors = {}
+        if npc_object and hasattr(npc_object, 'resolve_tools'):
+            tools_for_llm, tool_executors = npc_object.resolve_tools(
+                mcp_clients_cache=app.mcp_clients_cache
+            )
 
+        # If frontend sent an ad-hoc MCP server, add its tools too
+        extra_mcp_path = data.get("mcpServerPath")
+        if extra_mcp_path:
+            extra_mcp_path = resolve_mcp_server_path(current_path, extra_mcp_path, False)
+        elif not tools_for_llm:
+            # Fallback: if NPC has no tools and no ad-hoc server, try team/global server
+            fallback_path = None
+            if team_object and hasattr(team_object, 'team_ctx') and team_object.team_ctx:
+                mcp_servers_list = team_object.team_ctx.get('mcp_servers', [])
+                if mcp_servers_list and isinstance(mcp_servers_list, list):
+                    first_server_obj = next((s for s in mcp_servers_list if isinstance(s, dict) and 'value' in s), None)
+                    if first_server_obj:
+                        fallback_path = first_server_obj['value']
+                elif isinstance(team_object.team_ctx.get('mcp_server'), str):
+                    fallback_path = team_object.team_ctx.get('mcp_server')
+            extra_mcp_path = resolve_mcp_server_path(current_path, fallback_path, False)
+
+        if extra_mcp_path:
+            client = app.mcp_clients_cache.get(extra_mcp_path)
+            if not client:
+                client = MCPClientNPC()
+                if client.connect_sync(extra_mcp_path):
+                    app.mcp_clients_cache[extra_mcp_path] = client
+                else:
+                    client = None
+            if client:
+                existing_names = {td["function"]["name"] for td in tools_for_llm}
+                for t in client.available_tools_llm:
+                    name = t["function"]["name"]
+                    if name not in existing_names:
+                        tools_for_llm.append(t)
+                        tool_executors[name] = {
+                            "type": "mcp",
+                            "client": client,
+                            "tool_func": client.tool_map.get(name),
+                        }
+                        existing_names.add(name)
+
+        # Also add jinx tools if not already included (backward compat for NPCs without resolve_tools)
+        if npc_object and hasattr(npc_object, "jinx_tool_catalog"):
+            jinx_tool_catalog = npc_object.jinx_tool_catalog or {}
+            existing_names = {td["function"]["name"] for td in tools_for_llm}
+            for t in jinx_tool_catalog.values():
+                name = t["function"]["name"]
+                if name not in existing_names:
+                    tools_for_llm.append(t)
+                    tool_executors[name] = {
+                        "type": "jinx",
+                        "jinx": npc_object.jinxes_dict.get(name),
+                    }
+                    existing_names.add(name)
+
+        # Apply frontend tool filter if set
+        if selected_mcp_tools_from_request:
+            tools_for_llm = [t for t in tools_for_llm if t["function"]["name"] in selected_mcp_tools_from_request]
+            # Also filter executors
+            allowed = set(selected_mcp_tools_from_request)
+            tool_executors = {k: v for k, v in tool_executors.items() if k in allowed}
+
+        print(f"[MCP] resolved {len(tools_for_llm)} tools: {[t['function']['name'] for t in tools_for_llm]}")
+
+        # Legacy mcp_client reference for backward compat with message storage
         if not hasattr(app, 'mcp_clients'):
             app.mcp_clients = {}
-
         state_key = f"{conversation_id}_{npc_name or 'default'}"
-        client_entry = app.mcp_clients.get(state_key)
-
-        if not client_entry or not client_entry.get("client") or not client_entry["client"].session \
-           or client_entry.get("server_path") != effective_mcp_server_path:
-            mcp_client = MCPClientNPC()
-            if effective_mcp_server_path and mcp_client.connect_sync(effective_mcp_server_path):
-                print(f"[MCP] connected client for {state_key} to {effective_mcp_server_path}")
-                app.mcp_clients[state_key] = {
-                    "client": mcp_client,
-                    "server_path": effective_mcp_server_path,
-                    "messages": messages
-                }
-            else:
-                print(f"[MCP] Failed to connect client for {state_key} to {effective_mcp_server_path}")
-                app.mcp_clients[state_key] = {
-                    "client": None,
-                    "server_path": effective_mcp_server_path,
-                    "messages": messages
-                }
-
-        mcp_client = app.mcp_clients[state_key]["client"]
+        if state_key not in app.mcp_clients:
+            app.mcp_clients[state_key] = {"client": None, "server_path": None, "messages": messages}
         messages = app.mcp_clients[state_key].get("messages", messages)
 
         def sanitize_mcp_messages(msgs):
@@ -5463,24 +5635,7 @@ def stream():
             while iteration < 10:
                 iteration += 1
                 print(f"[MCP] iteration {iteration} prompt len={len(prompt)}")
-                jinx_tool_catalog = {}
-                if npc_object and hasattr(npc_object, "jinx_tool_catalog"):
-                    jinx_tool_catalog = npc_object.jinx_tool_catalog or {}
-                tools_for_llm = []
-                seen_names = set()
-                if mcp_client:
-                    for t in mcp_client.available_tools_llm:
-                        name = t["function"]["name"]
-                        if name not in seen_names:
-                            tools_for_llm.append(t)
-                            seen_names.add(name)
-                for t in jinx_tool_catalog.values():
-                    name = t["function"]["name"]
-                    if name not in seen_names:
-                        tools_for_llm.append(t)
-                        seen_names.add(name)
-                if selected_mcp_tools_from_request:
-                    tools_for_llm = [t for t in tools_for_llm if t["function"]["name"] in selected_mcp_tools_from_request]
+                # tools_for_llm and tool_executors are pre-built above
                 print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
 
                 agent_context = f'''The user's working directory is {current_path}
@@ -5668,25 +5823,25 @@ IMPORTANT AGENT BEHAVIOR:
                     yield {"type": "tool_start", "name": tool_name, "id": tool_id, "args": tool_args}
                     try:
                         tool_content = ""
-                        if npc_object and hasattr(npc_object, "jinxes_dict") and tool_name in npc_object.jinxes_dict:
-                            jinx_obj = npc_object.jinxes_dict[tool_name]
-                            try:
-                                jinx_ctx = jinx_obj.execute(
-                                    input_values=tool_args if isinstance(tool_args, dict) else {},
-                                    npc=npc_object
-                                )
-                                tool_content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
-                            except Exception as e:
-                                tool_content = f"Jinx execution error: {str(e)}"
-                        else:
-                            if mcp_client and tool_name in mcp_client.tool_map:
+                        executor = tool_executors.get(tool_name)
+                        if executor:
+                            if executor["type"] == "jinx":
+                                jinx_obj = executor["jinx"]
                                 try:
-                                    tool_func = mcp_client.tool_map[tool_name]
+                                    jinx_ctx = jinx_obj.execute(
+                                        input_values=tool_args if isinstance(tool_args, dict) else {},
+                                        npc=npc_object
+                                    )
+                                    tool_content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
+                                except Exception as e:
+                                    tool_content = f"Jinx execution error: {str(e)}"
+                            elif executor["type"] == "mcp":
+                                try:
+                                    tool_func = executor["tool_func"]
                                     print(f"[MCP] Calling tool_func for {tool_name}")
                                     result = tool_func(**(tool_args if isinstance(tool_args, dict) else {}))
                                     print(f"[MCP] Raw result type: {type(result)}, value: {result}")
                                     if hasattr(result, 'content'):
-                                        print(f"[MCP] Result has content attr, content={result.content}")
                                         if result.content and len(result.content) > 0:
                                             tool_content = str(result.content[0].text)
                                         else:
@@ -5695,12 +5850,16 @@ IMPORTANT AGENT BEHAVIOR:
                                         tool_content = str(result) if result is not None else "Tool returned no result"
                                     print(f"[MCP] Final tool_content: {tool_content}")
                                 except Exception as mcp_e:
-                                    import traceback
                                     print(f"[MCP] Tool exception: {mcp_e}")
                                     traceback.print_exc()
                                     tool_content = f"MCP tool error: {str(mcp_e)}"
-                            else:
-                                tool_content = f"Tool '{tool_name}' not found in MCP server or Jinxs"
+                            elif executor["type"] == "python":
+                                try:
+                                    tool_content = str(executor["func"](**(tool_args if isinstance(tool_args, dict) else {})))
+                                except Exception as py_e:
+                                    tool_content = f"Python tool error: {str(py_e)}"
+                        else:
+                            tool_content = f"Tool '{tool_name}' not found in resolved tools"
                         
                         messages.append({
                             "role": "tool",
