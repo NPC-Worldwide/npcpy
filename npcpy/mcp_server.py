@@ -1,8 +1,8 @@
 """
 NPC-governed MCP server.
 
-Any NPC team can be served as an MCP server — it's just the data layer.
-Point it at a team directory, pick an NPC, and go.
+Only jinxes are exposed as tools. NPC switching happens via MCP prompts,
+which swap the tool list and notify the client.
 
 Usage:
     python -m npcpy.mcp_server                        # auto-discover team
@@ -13,6 +13,7 @@ Usage:
 import os
 import sys
 import json
+import time
 import argparse
 from typing import Optional
 
@@ -44,8 +45,9 @@ class NPCServerState:
         from npcpy.memory.command_history import CommandHistory
 
         self.team_path = team_path
+        self.mcp = None  # set by build_server
 
-        # Resolve DB path — try npcsh first, fall back to default
+        # Resolve DB path
         if db_path is None:
             try:
                 from npcsh._state import NPCSH_DB_PATH
@@ -61,82 +63,195 @@ class NPCServerState:
             db_conn=self.command_history.engine,
         )
 
-        # Resolve active NPC
+        # Resolve active NPC: explicit arg > state file > forenpc > first
         if npc_name and npc_name in self.team.npcs:
             self.active_npc = self.team.npcs[npc_name]
-        elif self.team.forenpc:
-            self.active_npc = self.team.forenpc
-        elif self.team.npcs:
-            self.active_npc = next(iter(self.team.npcs.values()))
         else:
-            self.active_npc = None
+            # Check state file (written by claude_launcher)
+            state_npc = self._read_npc_from_state()
+            if state_npc and state_npc in self.team.npcs:
+                self.active_npc = self.team.npcs[state_npc]
+            elif self.team.forenpc:
+                self.active_npc = self.team.forenpc
+            elif self.team.npcs:
+                self.active_npc = next(iter(self.team.npcs.values()))
+            else:
+                self.active_npc = None
+
+        # Track which jinx tool names are currently registered
+        self._registered_jinx_names = set()
+
+        # State file for hooks to read active NPC directive
+        self._state_dir = os.path.expanduser("~/.npcsh")
+        os.makedirs(self._state_dir, exist_ok=True)
+        self._state_file = os.path.join(self._state_dir, ".active_npc_state.json")
 
         if self.active_npc:
             print(f"[npc-mcp] Active NPC: {self.active_npc.name}", file=sys.stderr)
-            print(f"[npc-mcp] Jinxes: {list(self.active_npc.jinxes_dict.keys())}", file=sys.stderr)
+            self._write_npc_state()
         else:
             print("[npc-mcp] WARNING: No NPC loaded", file=sys.stderr)
 
-        # Only register the active NPC's jinxes — not the union of all NPCs
-        self.all_jinxes = {}
-        if self.active_npc:
-            self.all_jinxes = dict(self.active_npc.jinxes_dict)
-
-        print(f"[npc-mcp] Total jinxes: {len(self.all_jinxes)}", file=sys.stderr)
         print(f"[npc-mcp] NPCs: {list(self.team.npcs.keys())}", file=sys.stderr)
 
-    def is_authorized(self, tool_name: str, npc_name: Optional[str] = None) -> bool:
-        npc = self._resolve_npc(npc_name)
+    def get_system_prompt_text(self) -> str:
+        """Build the personality prompt for the active NPC."""
+        npc = self.active_npc
         if not npc:
-            return False
-        if tool_name in ("set_npc", "list_npcs", "whoami",
-                         "add_memory", "search_memory",
-                         "query_npcsh_database"):
-            return True
-        return tool_name in npc.jinxes_dict
+            return "No active NPC"
+        directive = npc.primary_directive or ""
+        tools = list(npc.jinxes_dict.keys())
+        other_npcs = {
+            n: list(obj.jinxes_dict.keys())
+            for n, obj in self.team.npcs.items()
+            if n != npc.name
+        }
+        prompt = f"You are {npc.name}.\n\n{directive}\n\n"
+        prompt += f"Your tools: {tools}\n"
+        if "delegate" in npc.jinxes_dict:
+            prompt += "Use 'delegate' for tools you don't have.\n"
+        prompt += "\nOther NPCs:\n"
+        for n, t in other_npcs.items():
+            prompt += f"  @{n}: {t}\n"
+        return prompt
 
-    def get_rejection_message(self, tool_name: str, npc_name: Optional[str] = None) -> str:
-        npc = self._resolve_npc(npc_name)
+    def is_authorized(self, tool_name: str) -> bool:
+        if not self.active_npc:
+            return False
+        return tool_name in self.active_npc.jinxes_dict
+
+    def get_rejection_message(self, tool_name: str) -> str:
+        npc = self.active_npc
         name = npc.name if npc else "unknown"
-        available = list(npc.jinxes_dict.keys()) if npc else []
         capable_npcs = [
             n for n, obj in self.team.npcs.items()
             if tool_name in obj.jinxes_dict
         ]
         msg = f"Tool '{tool_name}' not permitted for NPC '{name}'. "
-        msg += f"Available: {available}. "
         if capable_npcs:
             msg += f"NPCs with '{tool_name}': {capable_npcs}. "
-            if "delegate" in (npc.jinxes_dict if npc else {}):
+            if npc and "delegate" in npc.jinxes_dict:
                 msg += "Use 'delegate' to have one of them run it."
         return msg
 
-    def execute_jinx(self, tool_name: str, args: dict, npc_name: Optional[str] = None) -> str:
-        npc = self._resolve_npc(npc_name)
-        if not self.is_authorized(tool_name, npc_name):
-            return self.get_rejection_message(tool_name, npc_name)
+    def execute_jinx(self, tool_name: str, args: dict) -> str:
+        npc = self.active_npc
+        if not self.is_authorized(tool_name):
+            return self.get_rejection_message(tool_name)
 
-        jinx = self.all_jinxes.get(tool_name)
+        jinx = npc.jinxes_dict.get(tool_name) if npc else None
         if not jinx:
-            return f"Jinx '{tool_name}' not found in team."
+            # Check team-level jinxes as fallback
+            jinx = self.team.jinxes_dict.get(tool_name)
+        if not jinx:
+            return f"Jinx '{tool_name}' not found."
 
         try:
+            start = time.time()
             result = jinx.execute(
                 input_values=args,
                 npc=npc,
                 jinja_env=getattr(npc, 'jinja_env', None),
             )
+            duration_ms = int((time.time() - start) * 1000)
+
             if isinstance(result, dict):
-                return str(result.get("output", "")) or json.dumps(result, default=str)
-            return str(result)
+                output = str(result.get("output", "")) or json.dumps(result, default=str)
+            else:
+                output = str(result)
+
+            try:
+                from npcpy.memory.command_history import generate_message_id
+                self.command_history.save_jinx_execution(
+                    triggering_message_id=generate_message_id(),
+                    conversation_id="mcp",
+                    npc_name=npc.name if npc else None,
+                    jinx_name=tool_name,
+                    jinx_inputs=args,
+                    jinx_output=output,
+                    status="success",
+                    team_name=getattr(self.team, "name", None),
+                    duration_ms=duration_ms,
+                )
+            except Exception as log_err:
+                print(f"[npc-mcp] History log error: {log_err}", file=sys.stderr)
+
+            return output
         except Exception as e:
+            try:
+                from npcpy.memory.command_history import generate_message_id
+                self.command_history.save_jinx_execution(
+                    triggering_message_id=generate_message_id(),
+                    conversation_id="mcp",
+                    npc_name=npc.name if npc else None,
+                    jinx_name=tool_name,
+                    jinx_inputs=args,
+                    jinx_output=None,
+                    status="error",
+                    team_name=getattr(self.team, "name", None),
+                    error_message=str(e),
+                )
+            except Exception:
+                pass
             return f"Jinx execution error: {e}"
 
-    def switch_npc(self, npc_name: str) -> str:
+    async def switch_npc(self, npc_name: str, ctx=None) -> str:
+        """Switch active NPC, swap tools, notify client."""
         if npc_name not in self.team.npcs:
             return f"NPC '{npc_name}' not found. Available: {list(self.team.npcs.keys())}"
+
         self.active_npc = self.team.npcs[npc_name]
-        return f"Switched to {npc_name}. Tools: {list(self.active_npc.jinxes_dict.keys())}"
+
+        # Swap jinx tools
+        if self.mcp:
+            # Remove old jinx tools
+            for name in list(self._registered_jinx_names):
+                try:
+                    self.mcp.remove_tool(name)
+                except Exception:
+                    pass
+            self._registered_jinx_names.clear()
+
+            # Register new NPC's jinxes
+            _register_jinxes(self.mcp, self)
+
+            # Notify client to re-fetch tool list
+            if ctx:
+                try:
+                    session = ctx.request_context.session
+                    await session.send_tool_list_changed()
+                except Exception as e:
+                    print(f"[npc-mcp] tool list notify error: {e}", file=sys.stderr)
+
+        self._write_npc_state()
+        print(f"[npc-mcp] Switched to {npc_name}", file=sys.stderr)
+        return self.get_system_prompt_text()
+
+    def _read_npc_from_state(self) -> Optional[str]:
+        """Read NPC name from state file (written by claude_launcher)."""
+        state_file = os.path.join(os.path.expanduser("~/.npcsh"), ".active_npc_state.json")
+        try:
+            with open(state_file, "r") as f:
+                return json.load(f).get("name")
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            return None
+
+    def _write_npc_state(self):
+        """Write active NPC state to file for hooks to read."""
+        npc = self.active_npc
+        if not npc:
+            return
+        state = {
+            "name": npc.name,
+            "directive": npc.primary_directive or "",
+            "tools": list(npc.jinxes_dict.keys()),
+            "team_npcs": list(self.team.npcs.keys()),
+        }
+        try:
+            with open(self._state_file, "w") as f:
+                json.dump(state, f)
+        except Exception as e:
+            print(f"[npc-mcp] state write error: {e}", file=sys.stderr)
 
     def _resolve_npc(self, npc_name: Optional[str] = None):
         if npc_name and npc_name in self.team.npcs:
@@ -144,115 +259,36 @@ class NPCServerState:
         return self.active_npc
 
 
-def build_server(state: NPCServerState):
-    """Build and return a FastMCP server from an NPCServerState."""
-    from mcp.server.fastmcp import FastMCP
-    from sqlalchemy import text
+def _make_jinx_handler(state, jname, params, desc):
+    """Create an async handler function for a jinx."""
+    if not params:
+        async def handler(input: str = "") -> str:
+            return state.execute_jinx(jname, {"input": input})
+    elif len(params) == 1:
+        pname = list(params.keys())[0]
+        async def handler(input: str = "") -> str:
+            return state.execute_jinx(jname, {pname: input})
+        desc = f"{desc}\n\nArgs:\n    input: {params[pname]}"
+    else:
+        param_doc = "\n".join(f"    {k}: {v}" for k, v in params.items())
+        async def handler(kwargs_json: str = "{}") -> str:
+            try:
+                args = json.loads(kwargs_json) if kwargs_json else {}
+            except json.JSONDecodeError:
+                args = {"input": kwargs_json}
+            return state.execute_jinx(jname, args)
+        desc = f"{desc}\n\nPass arguments as JSON:\n{param_doc}"
+    handler.__name__ = jname
+    handler.__doc__ = desc
+    return handler
 
-    mcp = FastMCP("npcsh_mcp")
 
-    # -- Core governance tools --
+def _register_jinxes(mcp, state):
+    """Register the active NPC's jinxes as MCP tools."""
+    if not state.active_npc:
+        return
 
-    @mcp.tool()
-    async def set_npc(npc_name: str) -> str:
-        """Switch the active NPC. Changes which tools are available."""
-        return state.switch_npc(npc_name)
-
-    @mcp.tool()
-    async def list_npcs() -> str:
-        """List all available NPCs and their permitted tools."""
-        result = {}
-        for name, npc_obj in state.team.npcs.items():
-            jinxes = list(npc_obj.jinxes_dict.keys())
-            result[name] = {
-                "tools": jinxes,
-                "active": (npc_obj == state.active_npc),
-                "directive": (npc_obj.primary_directive or "")[:200],
-            }
-        return json.dumps(result, indent=2)
-
-    @mcp.tool()
-    async def whoami() -> str:
-        """Show the active NPC, its tools, and its directive."""
-        npc = state.active_npc
-        if not npc:
-            return "No active NPC"
-        return json.dumps({
-            "name": npc.name,
-            "tools": list(npc.jinxes_dict.keys()),
-            "directive": npc.primary_directive or "",
-        }, indent=2)
-
-    # -- Data-layer tools --
-
-    @mcp.tool()
-    async def add_memory(
-        content: str,
-        memory_type: str = "observation",
-        npc_name: str = None,
-        directory_path: str = None,
-    ) -> str:
-        """Add a memory for the active NPC."""
-        npc = state._resolve_npc(npc_name)
-        npc_label = npc.name if npc else "unknown"
-        team_label = getattr(state.team, "name", "default_team")
-        if directory_path is None:
-            directory_path = os.getcwd()
-        try:
-            from npcpy.memory.command_history import generate_message_id
-            mid = generate_message_id()
-            memory_id = state.command_history.add_memory_to_database(
-                message_id=mid, conversation_id="mcp_direct",
-                npc=npc_label, team=team_label,
-                directory_path=directory_path,
-                initial_memory=content, status="active",
-                model=None, provider=None,
-            )
-            return f"Memory created: {memory_id}"
-        except Exception as e:
-            return f"Error: {e}"
-
-    @mcp.tool()
-    async def search_memory(
-        query: str, npc_name: str = None,
-        directory_path: str = None, limit: int = 10,
-    ) -> str:
-        """Search memories. Scoped to the active NPC by default."""
-        npc = state._resolve_npc(npc_name)
-        try:
-            results = state.command_history.search_memory(
-                query=query, npc=npc.name if npc else None,
-                team=getattr(state.team, "name", None),
-                directory_path=directory_path or os.getcwd(),
-                limit=limit,
-            )
-            return json.dumps(results, indent=2)
-        except Exception as e:
-            return f"Error: {e}"
-
-    @mcp.tool()
-    async def query_npcsh_database(sql_query: str) -> str:
-        """Execute a read-only SQL query against npcsh_history.db."""
-        if not sql_query.strip().upper().startswith("SELECT"):
-            return "Error: Only SELECT queries allowed"
-        try:
-            with state.command_history.engine.connect() as conn:
-                result = conn.execute(text(sql_query))
-                rows = result.fetchall()
-                if not rows:
-                    return "No results"
-                columns = result.keys()
-                return json.dumps(
-                    [dict(zip(columns, row)) for row in rows],
-                    indent=2, default=str,
-                )
-        except Exception as e:
-            return f"Database error: {e}"
-
-    # -- Register jinxes as tools --
-
-    for jinx_name, jinx_obj in state.all_jinxes.items():
-        _name = jinx_name
+    for jinx_name, jinx_obj in state.active_npc.jinxes_dict.items():
         _desc = jinx_obj.description or f"Jinx: {jinx_name}"
 
         params = {}
@@ -264,60 +300,65 @@ def build_server(state: NPCServerState):
                 default = inp.get(pname, "")
                 params[pname] = f"Parameter: {pname} (default: {default})"
 
-        def make_handler(jname, params, desc):
-            if not params:
-                async def handler(input: str = "") -> str:
-                    return state.execute_jinx(jname, {"input": input})
-            elif len(params) == 1:
-                pname = list(params.keys())[0]
-                async def handler(input: str = "") -> str:
-                    return state.execute_jinx(jname, {pname: input})
-                desc = f"{desc}\n\nArgs:\n    input: {params[pname]}"
-            else:
-                param_doc = "\n".join(f"    {k}: {v}" for k, v in params.items())
-                async def handler(kwargs_json: str = "{}") -> str:
-                    try:
-                        args = json.loads(kwargs_json) if kwargs_json else {}
-                    except json.JSONDecodeError:
-                        args = {"input": kwargs_json}
-                    return state.execute_jinx(jname, args)
-                desc = f"{desc}\n\nPass arguments as JSON:\n{param_doc}"
-            handler.__name__ = jname
-            handler.__doc__ = desc
-            return handler
-
-        handler = make_handler(_name, params, _desc)
+        handler = _make_jinx_handler(state, jinx_name, params, _desc)
         try:
-            mcp.tool()(handler)
+            mcp.add_tool(handler)
+            state._registered_jinx_names.add(jinx_name)
         except Exception as e:
-            print(f"[npc-mcp] Failed to register {_name}: {e}", file=sys.stderr)
+            print(f"[npc-mcp] Failed to register {jinx_name}: {e}", file=sys.stderr)
+
+
+def build_server(state: NPCServerState):
+    """Build and return a FastMCP server from an NPCServerState."""
+    from mcp.server.fastmcp import FastMCP, Context
+
+    mcp = FastMCP("npcsh_mcp")
+    state.mcp = mcp
+
+    # Register active NPC's jinxes
+    _register_jinxes(mcp, state)
+
+    # -- MCP Prompts --
+
+    # Per-NPC prompts — selecting one switches NPC and swaps tools
+    for npc_name in state.team.npcs:
+        def make_npc_prompt(name):
+            @mcp.prompt(name=f"npc_{name}")
+            async def npc_prompt(ctx: Context) -> str:
+                result = await state.switch_npc(name, ctx=ctx)
+                return result
+            npc_prompt.__name__ = f"npc_{name}_prompt"
+            npc_prompt.__doc__ = f"Switch to {name} and adopt their personality and tools."
+            return npc_prompt
+        make_npc_prompt(npc_name)
+
+    @mcp.prompt(name="npc_team")
+    async def team_prompt() -> str:
+        """Overview of all NPCs in the team."""
+        lines = []
+        for name, npc_obj in state.team.npcs.items():
+            active = " (active)" if npc_obj == state.active_npc else ""
+            directive = (npc_obj.primary_directive or "").strip().split("\n")[0][:120]
+            tools = list(npc_obj.jinxes_dict.keys())
+            lines.append(f"@{name}{active}: {directive}\n  tools: {tools}")
+        return "\n\n".join(lines)
+
+    @mcp.prompt(name="npc_bootstrap")
+    async def bootstrap_prompt() -> str:
+        """Active NPC personality and team roster."""
+        parts = [state.get_system_prompt_text()]
+        parts.append("\n--- Team Roster ---")
+        for name, npc_obj in state.team.npcs.items():
+            active = " (active)" if npc_obj == state.active_npc else ""
+            directive = (npc_obj.primary_directive or "").strip().split("\n")[0][:120]
+            parts.append(f"  @{name}{active}: {directive}")
+        return "\n".join(parts)
 
     # -- Resources --
 
     @mcp.resource("npc://system_prompt")
     async def get_system_prompt() -> str:
-        npc = state.active_npc
-        if not npc:
-            return "No active NPC"
-        directive = npc.primary_directive or ""
-        tools = list(npc.jinxes_dict.keys())
-        other_npcs = {
-            n: list(obj.jinxes_dict.keys())
-            for n, obj in state.team.npcs.items()
-            if n != npc.name
-        }
-        prompt = f"You are {npc.name}.\n\n{directive}\n\n"
-        prompt += f"Your tools: {tools}\n"
-        prompt += "You can ONLY use these tools. "
-        if "delegate" in npc.jinxes_dict:
-            prompt += "Use 'delegate' for tools you don't have.\n"
-        else:
-            prompt += "Tell the user which NPC can handle tools you don't have.\n"
-        prompt += "\nOther NPCs:\n"
-        for n, t in other_npcs.items():
-            prompt += f"  @{n}: {t}\n"
-        prompt += "\nAlways available: set_npc, list_npcs, whoami, add_memory, search_memory, query_npcsh_database\n"
-        return prompt
+        return state.get_system_prompt_text()
 
     @mcp.resource("npc://team_context")
     async def get_team_context() -> str:
@@ -341,7 +382,7 @@ def main():
 
     npc_label = state.active_npc.name if state.active_npc else "none"
     print(f"[npc-mcp] Starting as '{npc_label}' from {team_path}", file=sys.stderr)
-    print(f"[npc-mcp] Tools: {list(state.all_jinxes.keys())}", file=sys.stderr)
+    print(f"[npc-mcp] Tools: {list(state._registered_jinx_names)}", file=sys.stderr)
     mcp.run(transport="stdio")
 
 
