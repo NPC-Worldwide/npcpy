@@ -73,26 +73,36 @@ for result in response.get('tool_results', []):
 from npcpy import Agent, ToolAgent, CodingAgent
 
 # Agent — comes with default tools (sh, python, edit_file, web_search, etc.)
-agent = Agent(name='assistant', model='qwen3.5:2b', provider='ollama')
-print(agent.run("What files are in the current directory?"))
+agent = Agent(name='ops', model='qwen3.5:2b', provider='ollama')
+print(agent.run("Find all Python files over 500 lines in this repo and list them"))
 
 # ToolAgent — add your own tools alongside defaults
-def get_weather(city: str) -> str:
-    """Get the current weather for a city."""
-    return f"72F and sunny in {city}"
+import subprocess
 
-tool_agent = ToolAgent(
-    name='weather_bot',
-    tool_functions=[get_weather],
+def run_tests(test_path: str = "tests/") -> str:
+    """Run pytest on the given path and return results."""
+    result = subprocess.run(["python3", "-m", "pytest", test_path, "-v", "--tb=short"],
+                            capture_output=True, text=True, timeout=120)
+    return result.stdout + result.stderr
+
+def git_diff(branch: str = "main") -> str:
+    """Show the git diff against a branch."""
+    result = subprocess.run(["git", "diff", branch, "--stat"], capture_output=True, text=True)
+    return result.stdout
+
+reviewer = ToolAgent(
+    name='code_reviewer',
+    primary_directive='You review code changes, run tests, and report issues.',
+    tool_functions=[run_tests, git_diff],
     model='qwen3.5:2b', provider='ollama'
 )
-print(tool_agent.run("What's the weather in Portland?"))
+print(reviewer.run("Run the tests and summarize any failures"))
 
 # CodingAgent — auto-executes code blocks from LLM responses
 coder = CodingAgent(name='coder', language='python', model='qwen3.5:2b', provider='ollama')
-print(coder.run("Write a function that computes fibonacci numbers and test it"))
+print(coder.run("Read setup.py and list all the entry_points"))
 
-# Agent with skills directory and agents.md
+# Agent with skills directory and MCP servers
 agent = Agent(
     name='researcher',
     skills_dir='./my_skills/',

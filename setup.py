@@ -93,6 +93,11 @@ setup(
         "yap": voice_requirements,  
         "all": api_requirements + local_requirements + voice_requirements,
     },
+    entry_points={
+        "console_scripts": [
+            "npc-init=npcpy.init:main",
+        ],
+    },
     author="Christopher Agostino",
     author_email="info@npcworldwi.de",
     description="npcpy is the premier open-source library for integrating LLMs and Agents into python systems.",
