@@ -55,7 +55,7 @@ def read_file(filepath: str) -> str:
 assistant = NPC(
     name='File Assistant',
     primary_directive='You help users explore files.',
-    model='llama3.2',
+    model='qwen3.5:2b',
     provider='ollama',
     tools=[list_files, read_file],
 )
@@ -67,6 +67,40 @@ for result in response.get('tool_results', []):
     print(f"{result['tool_name']}: {result['result']}")
 ```
 
+### Agent subclasses
+
+```python
+from npcpy import Agent, ToolAgent, CodingAgent
+
+# Agent — comes with default tools (sh, python, edit_file, web_search, etc.)
+agent = Agent(name='assistant', model='qwen3.5:2b', provider='ollama')
+print(agent.run("What files are in the current directory?"))
+
+# ToolAgent — add your own tools alongside defaults
+def get_weather(city: str) -> str:
+    """Get the current weather for a city."""
+    return f"72F and sunny in {city}"
+
+tool_agent = ToolAgent(
+    name='weather_bot',
+    tool_functions=[get_weather],
+    model='qwen3.5:2b', provider='ollama'
+)
+print(tool_agent.run("What's the weather in Portland?"))
+
+# CodingAgent — auto-executes code blocks from LLM responses
+coder = CodingAgent(name='coder', language='python', model='qwen3.5:2b', provider='ollama')
+print(coder.run("Write a function that computes fibonacci numbers and test it"))
+
+# Agent with skills directory and agents.md
+agent = Agent(
+    name='researcher',
+    skills_dir='./my_skills/',
+    agents_md='./agents.md',
+    mcp_servers=[{"path": "~/.npcsh/mcp_server.py"}],
+)
+```
+
 ### Streaming responses
 
 ```python
@@ -74,7 +108,7 @@ from npcpy.llm_funcs import get_llm_response
 
 response = get_llm_response(
     "Tell me about the history of the Inca Empire.",
-    model='llama3.2',
+    model='qwen3.5:2b',
     provider='ollama',
     stream=True
 )
@@ -91,7 +125,7 @@ from npcpy.llm_funcs import get_llm_response
 
 response = get_llm_response(
     "List 3 planets with their distances from the sun in AU.",
-    model='llama3.2',
+    model='qwen3.5:2b',
     provider='ollama',
     format='json'
 )
@@ -109,7 +143,7 @@ coordinator = NPC(
     primary_directive='''You coordinate a team of specialists.
     Delegate tasks by mentioning @analyst for data questions or @writer for content.
     Synthesize their responses into a final answer.''',
-    model='llama3.2',
+    model='qwen3.5:2b',
     provider='ollama'
 )
 
@@ -315,7 +349,7 @@ mcp.connect_sync('./my_mcp_server.py')
 assistant = NPC(
     name='Assistant',
     primary_directive='You help users with tasks using available tools.',
-    model='llama3.2',
+    model='qwen3.5:2b',
     provider='ollama'
 )
 
@@ -368,7 +402,7 @@ images[0].save("sunset.png")
 
 ## Features
 
-- **[Agents (NPCs)](https://npcpy.readthedocs.io/en/latest/guides/agents/)** — Agents with personas, directives, and tool calling
+- **[Agents (NPCs)](https://npcpy.readthedocs.io/en/latest/guides/agents/)** — Agents with personas, directives, and tool calling. Subclasses: `Agent` (default tools), `ToolAgent` (custom tools + MCP), `CodingAgent` (auto-execute code blocks)
 - **[Multi-Agent Teams](https://npcpy.readthedocs.io/en/latest/guides/teams/)** — Team orchestration with a coordinator (forenpc)
 - **[Jinx Workflows](https://npcpy.readthedocs.io/en/latest/guides/jinx-workflows/)** — Jinja Execution templates for multi-step prompt pipelines
 - **[Skills](https://npcpy.readthedocs.io/en/latest/guides/skills/)** — Knowledge-content jinxes that serve instructional sections to agents on demand

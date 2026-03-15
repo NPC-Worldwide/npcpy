@@ -3380,3 +3380,439 @@ class Team:
             context_parts.append("")
         
         return "\n".join(context_parts)
+
+
+# ── Shebang support for .npc and .jinx files ──
+
+NPC_SHEBANG = "#!/usr/bin/env npc"
+JINX_SHEBANG = "#!/usr/bin/env npc-jinx"
+
+
+def ensure_shebang(file_path: str, shebang: str = None) -> str:
+    """Add a shebang to a .npc/.jinx file so it can run as an executable.
+
+    Returns the file path.
+    """
+    if shebang is None:
+        if file_path.endswith('.npc'):
+            shebang = NPC_SHEBANG
+        elif file_path.endswith('.jinx'):
+            shebang = JINX_SHEBANG
+        else:
+            return file_path
+
+    with open(file_path, 'r') as f:
+        content = f.read()
+
+    if content.startswith('#!'):
+        return file_path
+
+    with open(file_path, 'w') as f:
+        f.write(shebang + '\n' + content)
+
+    current = os.stat(file_path).st_mode
+    os.chmod(file_path, current | 0o111)
+    return file_path
+
+
+def strip_shebang(content: str) -> str:
+    """Strip shebang line from file content before YAML parsing."""
+    if content.startswith('#!'):
+        newline = content.find('\n')
+        if newline >= 0:
+            return content[newline + 1:]
+    return content
+
+
+# ── Default tool functions for Agent subclasses ──
+
+def _tool_sh(bash_command: str) -> str:
+    """Execute a bash/shell command and return stdout+stderr."""
+    try:
+        result = subprocess.run(
+            bash_command, shell=True, capture_output=True, text=True, timeout=120
+        )
+        out = result.stdout
+        if result.returncode != 0 and result.stderr:
+            out += f"\nSTDERR:\n{result.stderr}"
+        return out or "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Command timed out after 120s"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def _tool_python(code: str) -> str:
+    """Execute Python code and return stdout+stderr."""
+    try:
+        result = subprocess.run(
+            ["python3", "-c", code], capture_output=True, text=True, timeout=120
+        )
+        out = result.stdout
+        if result.returncode != 0 and result.stderr:
+            out += f"\nSTDERR:\n{result.stderr}"
+        return out or "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Code execution timed out after 120s"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def _tool_edit_file(path: str, action: str = "create", new_text: str = "", old_text: str = "") -> str:
+    """Edit a file. Actions: create/write, append, replace.
+
+    Args:
+        path: File path to edit.
+        action: One of 'create', 'write', 'append', 'replace'.
+        new_text: Text to write/append, or replacement text.
+        old_text: Text to find (for replace action).
+    """
+    path = os.path.expanduser(path)
+    try:
+        if action in ("create", "write"):
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w") as f:
+                f.write(new_text)
+            return f"Created/wrote {path} ({len(new_text)} bytes)"
+        elif action == "append":
+            with open(path, "a") as f:
+                f.write(new_text)
+            return f"Appended to {path}"
+        elif action == "replace":
+            with open(path, "r") as f:
+                content = f.read()
+            updated = content.replace(old_text, new_text)
+            with open(path, "w") as f:
+                f.write(updated)
+            return f"Replaced text in {path}"
+        else:
+            return f"Unknown action: {action}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def _tool_load_file(path: str) -> str:
+    """Read and return the contents of a file.
+
+    Args:
+        path: File path to read.
+    """
+    path = os.path.expanduser(path)
+    try:
+        with open(path, "r") as f:
+            content = f.read()
+        lines = content.count("\n") + 1
+        if len(content) > 10000:
+            return f"File: {path} ({lines} lines, {len(content)} bytes)\n---\n{content[:10000]}...\n[truncated]"
+        return f"File: {path} ({lines} lines, {len(content)} bytes)\n---\n{content}"
+    except Exception as e:
+        return f"Error reading {path}: {e}"
+
+
+def _tool_web_search(query: str) -> str:
+    """Search the web using DuckDuckGo and return results.
+
+    Args:
+        query: Search query string.
+    """
+    try:
+        from npcpy.data.web import search_web
+        results = search_web(query)
+        if isinstance(results, list):
+            return "\n".join(str(r) for r in results[:5])
+        return str(results)
+    except ImportError:
+        cmd = f"curl -sL 'https://lite.duckduckgo.com/lite/?q={query.replace(' ', '+')}' | head -100"
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+            return result.stdout or "No results"
+        except Exception as e:
+            return f"Search failed: {e}"
+
+
+def _tool_file_search(query: str, path: str = ".") -> str:
+    """Search for files containing a query string.
+
+    Args:
+        query: Text pattern to search for.
+        path: Directory to search in.
+    """
+    path = os.path.expanduser(path)
+    cmd = f"grep -rn --include='*.{{py,rs,js,ts,md,txt,yaml,yml,toml,json,sh}}' -l '{query}' '{path}' 2>/dev/null | head -20"
+    try:
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+        return result.stdout or f"No files found matching '{query}' in {path}"
+    except Exception as e:
+        return f"Search error: {e}"
+
+
+def _tool_stop(reason: str = "") -> str:
+    """Signal that the task is complete.
+
+    Args:
+        reason: Optional reason for stopping.
+    """
+    return f"STOP: {reason}" if reason else "STOP"
+
+
+def _tool_chat(message: str) -> str:
+    """Respond directly to the user without taking any action.
+
+    Args:
+        message: The message to send.
+    """
+    return message
+
+
+_DEFAULT_AGENT_TOOLS = [
+    _tool_sh, _tool_python, _tool_edit_file, _tool_load_file,
+    _tool_web_search, _tool_file_search, _tool_stop, _tool_chat,
+]
+
+
+class Agent(NPC):
+    """NPC with a default tool set (sh, python, edit_file, load_file, web_search, file_search, stop, chat).
+
+    Can also load agent definitions from:
+    - agents.md files (markdown with agent specs)
+    - skills directories (each skill is a jinx)
+    - MCP servers (external tool providers)
+    """
+
+    def __init__(
+        self,
+        name: str = "agent",
+        primary_directive: str = "You are a helpful AI agent with access to tools.",
+        model: str = None,
+        provider: str = None,
+        tools: list = None,
+        extra_tools: list = None,
+        agents_md: str = None,
+        skills_dir: str = None,
+        mcp_servers: list = None,
+        **kwargs,
+    ):
+        all_tools = list(_DEFAULT_AGENT_TOOLS)
+        if extra_tools:
+            all_tools.extend(extra_tools)
+        if tools is not None:
+            all_tools = tools
+
+        super().__init__(
+            name=name,
+            primary_directive=primary_directive,
+            model=model,
+            provider=provider,
+            tools=all_tools,
+            **kwargs,
+        )
+
+        if mcp_servers:
+            self.mcp_servers = mcp_servers
+
+        if agents_md:
+            self._load_agents_md(agents_md)
+
+        if skills_dir:
+            self._load_skills_dir(skills_dir)
+
+    def _load_agents_md(self, path: str):
+        """Load agent definitions from an agents.md file.
+
+        Format: markdown with H2 headings as agent names, body as directives.
+        """
+        path = os.path.expanduser(path)
+        if not os.path.exists(path):
+            return
+
+        with open(path, 'r') as f:
+            content = f.read()
+
+        current_name = None
+        current_body = []
+        agents = {}
+
+        for line in content.split('\n'):
+            if line.startswith('## '):
+                if current_name:
+                    agents[current_name] = '\n'.join(current_body).strip()
+                current_name = line[3:].strip()
+                current_body = []
+            elif current_name is not None:
+                current_body.append(line)
+
+        if current_name:
+            agents[current_name] = '\n'.join(current_body).strip()
+
+        self._sub_agents = agents
+
+    def _load_skills_dir(self, path: str):
+        """Load skills (jinxes) from a directory and add them as tools."""
+        path = os.path.expanduser(path)
+        if not os.path.isdir(path):
+            return
+
+        for fname in os.listdir(path):
+            if fname.endswith('.jinx'):
+                fpath = os.path.join(path, fname)
+                try:
+                    jinx = Jinx(jinx_path=fpath)
+                    self.jinxes_dict[jinx.jinx_name] = jinx
+                except Exception as e:
+                    print(f"Warning: Failed to load skill {fname}: {e}")
+
+    def run(self, input_text: str, **kwargs):
+        """Run the agent on an input and return the response string."""
+        from npcpy.llm_funcs import get_llm_response
+
+        result = get_llm_response(
+            input_text,
+            npc=self,
+            model=self.model,
+            provider=self.provider,
+            tools=self.tools,
+            tool_map=self.tool_map,
+            messages=kwargs.get("messages", []),
+            stream=kwargs.get("stream", False),
+        )
+        if isinstance(result, dict):
+            return result.get("output", result.get("response", str(result)))
+        return str(result)
+
+
+class ToolAgent(Agent):
+    """Agent with user-provided tool functions and/or MCP servers."""
+
+    def __init__(
+        self,
+        name: str = "tool_agent",
+        primary_directive: str = "You are an AI agent with specialized tools.",
+        tool_functions: List[Callable] = None,
+        mcp_servers: list = None,
+        include_defaults: bool = True,
+        model: str = None,
+        provider: str = None,
+        **kwargs,
+    ):
+        all_tools = []
+        if include_defaults:
+            all_tools.extend(_DEFAULT_AGENT_TOOLS)
+        if tool_functions:
+            all_tools.extend(tool_functions)
+
+        super().__init__(
+            name=name,
+            primary_directive=primary_directive,
+            model=model,
+            provider=provider,
+            tools=all_tools,
+            mcp_servers=mcp_servers,
+            **kwargs,
+        )
+
+
+class CodingAgent(Agent):
+    """Agent that auto-detects + executes code blocks in LLM responses."""
+
+    def __init__(
+        self,
+        name: str = "coding_agent",
+        primary_directive: str = None,
+        language: str = "python",
+        auto_execute: bool = True,
+        model: str = None,
+        provider: str = None,
+        **kwargs,
+    ):
+        if primary_directive is None:
+            primary_directive = (
+                f"You are a coding agent specialized in {language}. "
+                f"Write {language} code in fenced code blocks (```{language}). "
+                "The code will be automatically executed and the output fed back to you."
+            )
+
+        super().__init__(
+            name=name,
+            primary_directive=primary_directive,
+            model=model,
+            provider=provider,
+            **kwargs,
+        )
+
+        self.language = language
+        self.auto_execute = auto_execute
+
+    def extract_code_blocks(self, text: str) -> list:
+        """Extract code blocks matching this agent's language."""
+        pattern = re.compile(r"```(\w+)?\s*\n(.*?)```", re.DOTALL)
+        blocks = []
+        for match in pattern.finditer(text):
+            lang = (match.group(1) or "").lower()
+            code = match.group(2).strip()
+            if lang == self.language.lower() or (not lang and self.language == "python"):
+                blocks.append(code)
+        return blocks
+
+    def execute_code(self, code: str) -> str:
+        """Execute a code block and return the output."""
+        lang = self.language.lower()
+        if lang == "python":
+            return _tool_python(code)
+        elif lang in ("bash", "sh", "shell"):
+            return _tool_sh(code)
+        elif lang in ("javascript", "js", "node"):
+            try:
+                result = subprocess.run(
+                    ["node", "-e", code], capture_output=True, text=True, timeout=120
+                )
+                out = result.stdout
+                if result.returncode != 0 and result.stderr:
+                    out += f"\nSTDERR:\n{result.stderr}"
+                return out or "(no output)"
+            except Exception as e:
+                return f"Error: {e}"
+        else:
+            return f"Execution not supported for language: {lang}"
+
+    def run(self, input_text: str, **kwargs):
+        """Run with auto-execution of code blocks."""
+        from npcpy.llm_funcs import get_llm_response
+
+        messages = kwargs.get("messages", [])
+        max_rounds = kwargs.get("max_rounds", 5)
+        current_input = input_text
+        response_text = ""
+
+        for _ in range(max_rounds):
+            result = get_llm_response(
+                current_input,
+                npc=self,
+                model=self.model,
+                provider=self.provider,
+                tools=self.tools,
+                tool_map=self.tool_map,
+                messages=messages,
+                stream=kwargs.get("stream", False),
+            )
+
+            if isinstance(result, dict):
+                response_text = result.get("output", result.get("response", str(result)))
+                messages = result.get("messages", messages)
+            else:
+                response_text = str(result)
+
+            if not self.auto_execute:
+                return response_text
+
+            code_blocks = self.extract_code_blocks(response_text)
+            if not code_blocks:
+                return response_text
+
+            execution_results = []
+            for i, code in enumerate(code_blocks, 1):
+                output = self.execute_code(code)
+                execution_results.append(f"[Block {i} output]:\n{output}")
+
+            current_input = "Code execution results:\n" + "\n\n".join(execution_results)
+
+        return response_text
