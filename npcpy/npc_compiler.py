@@ -2945,6 +2945,16 @@ class Team:
                 npc = NPC(npc_path, db_conn=self.db_conn, team=self)
                 self.npcs[npc.name] = npc
 
+        # Load agents from agents.md (## headings = agent names, body = directives)
+        agents_md_path = os.path.join(self.team_path, "agents.md")
+        if os.path.exists(agents_md_path):
+            self._load_agents_from_md(agents_md_path)
+
+        # Load agents from agents/ directory (.md files, each defines an agent)
+        agents_dir = os.path.join(self.team_path, "agents")
+        if os.path.isdir(agents_dir):
+            self._load_agents_from_dir(agents_dir)
+
         if self.forenpc_name and self.forenpc_name in self.npcs:
             self.forenpc = self.npcs[self.forenpc_name]
         elif self.npcs:
@@ -3141,15 +3151,91 @@ class Team:
         """Load sub-teams from subdirectories"""
         for item in os.listdir(self.team_path):
             item_path = os.path.join(self.team_path, item)
-            if (os.path.isdir(item_path) and 
-                not item.startswith('.') and 
-                item != "jinxes"):
+            if (os.path.isdir(item_path) and
+                not item.startswith('.') and
+                item not in ("jinxes", "agents")):
                 
                 if any(f.endswith(".npc") for f in os.listdir(item_path) 
                         if os.path.isfile(os.path.join(item_path, f))):
                     sub_team = Team(team_path=item_path, db_conn=self.db_conn, team_jinxes=self._raw_jinxes_list)
                     self.sub_teams[item] = sub_team
         
+    def _load_agents_from_md(self, path: str):
+        """Load agents from an agents.md file.
+
+        Format:
+            ## agent_name
+            directive body text...
+
+        Each H2 heading becomes an NPC with that name and the body as its directive.
+        Agents loaded this way get the team's default model/provider and all jinxes.
+        """
+        with open(path, 'r') as f:
+            content = f.read()
+
+        current_name = None
+        current_body = []
+
+        for line in content.split('\n'):
+            if line.startswith('## '):
+                if current_name and current_name not in self.npcs:
+                    self._register_md_agent(current_name, '\n'.join(current_body).strip())
+                current_name = line[3:].strip()
+                current_body = []
+            elif current_name is not None:
+                current_body.append(line)
+
+        if current_name and current_name not in self.npcs:
+            self._register_md_agent(current_name, '\n'.join(current_body).strip())
+
+    def _load_agents_from_dir(self, agents_dir: str):
+        """Load agents from an agents/ directory.
+
+        Each .md file defines an agent:
+        - Filename (without extension) = agent name
+        - File content = directive (optionally with YAML frontmatter for model/provider)
+        """
+        for fname in os.listdir(agents_dir):
+            if not fname.endswith('.md'):
+                continue
+            name = fname[:-3]  # strip .md
+            if name in self.npcs:
+                continue
+            fpath = os.path.join(agents_dir, fname)
+            with open(fpath, 'r') as f:
+                content = f.read()
+
+            # Check for YAML frontmatter
+            model = self.model
+            provider = self.provider
+            directive = content
+            if content.startswith('---'):
+                parts = content.split('---', 2)
+                if len(parts) >= 3:
+                    try:
+                        fm = yaml.safe_load(parts[1])
+                        if isinstance(fm, dict):
+                            model = fm.get('model', model)
+                            provider = fm.get('provider', provider)
+                            name = fm.get('name', name)
+                        directive = parts[2].strip()
+                    except Exception:
+                        directive = content
+
+            self._register_md_agent(name, directive, model=model, provider=provider)
+
+    def _register_md_agent(self, name: str, directive: str, model=None, provider=None):
+        """Create an NPC from a markdown agent definition and add to team."""
+        npc = NPC(
+            name=name,
+            primary_directive=directive,
+            model=model or self.model,
+            provider=provider or self.provider,
+            db_conn=self.db_conn,
+        )
+        npc.team = self
+        self.npcs[name] = npc
+
     def get_forenpc(self) -> Optional['NPC']:
         """
         Returns the forenpc (coordinator) for this team.

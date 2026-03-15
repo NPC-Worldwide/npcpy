@@ -181,20 +181,77 @@ print(result['output'])
 
 ### Initialize a team
 
-Installing `npcpy` also installs two command-line tools:
-- **`npc`** — CLI for project management and one-off commands
-- **`npcsh`** — Interactive shell for chatting with agents and running jinxes
+Installing `npcpy` gives you these CLI tools:
+- **`npc-init`** — Scaffold a new team project
+- **`npc-claude`** — Launch Claude Code as an NPC
+- **`npc-codex`** / **`npc-gemini`** / **`npc-opencode`** / **`npc-aider`** / **`npc-amp`** — Same for other AI coding tools
+- **`npc-plugin`** — Register MCP server + hooks with Claude Code, Codex, or Gemini
 
 ```bash
-# Using npc CLI
-npc init ./my_project
+# Scaffold a team
+npc-init ./my_project
 
-# Using npcsh (interactive)
-npcsh
-📁 ~/projects
-🤖 npcsh | llama3.2
-> /init directory=./my_project
-> what files are in the current directory?
+# Launch Claude Code as an NPC from your team
+npc-claude --npc corca
+
+# Or pick interactively
+npc-gemini
+
+# .npc and .jinx files are directly executable
+./npc_team/coder.npc "refactor this function"
+./npc_team/jinxes/lib/sh.jinx bash_command="echo hello"
+```
+
+### Launching AI coding tools with NPC teams
+
+npcpy can launch any major AI coding tool — Claude Code, Codex, Gemini CLI, OpenCode, Aider, or Amp — as an NPC from your team. The launcher loads your `npc_team/` directory, lets you pick (or specify) an NPC, and starts the tool with that NPC's persona and access to the rest of the team.
+
+```bash
+# Launch Claude Code — pick an NPC interactively (uses fzf if available)
+npc-claude
+
+# Launch as a specific NPC
+npc-claude --npc lorenzava
+
+# Point to a team directory explicitly
+npc-claude --team ./my_project/npc_team
+
+# Launch other coding tools the same way
+npc-codex --npc researcher
+npc-gemini --npc analyst
+npc-opencode --npc coder
+npc-aider --npc reviewer
+npc-amp --npc writer
+
+# Pass extra flags through to the underlying tool
+npc-claude --npc corca --model sonnet
+npc-aider --npc coder --auto-commits
+```
+
+**What happens under the hood:**
+
+1. **Team discovery** — looks for `./npc_team`, then `~/.npcsh/npc_team`
+2. **NPC selection** — interactive picker (with fzf support) or `--npc <name>`
+3. **Tool launch** — each tool gets the NPC's directive passed in its native format:
+   - **Claude Code**: `--system-prompt` + `--agents` (team members as sub-agents)
+   - **Codex**: `--system-prompt`
+   - **Gemini CLI**: `GEMINI_SYSTEM_MD` env var pointing to a temp file
+   - **OpenCode / Amp**: writes `AGENT.md` in the current directory
+   - **Aider**: `--read` with a temp context file
+4. **State file** — writes `~/.npcsh/.active_npc_state.json` so MCP servers and hooks know which NPC is active
+
+**MCP plugin integration** — for deeper integration (jinxes as tools, team switching mid-conversation):
+
+```bash
+# Register the NPC MCP server + hooks with Claude Code
+npc-plugin claude
+
+# Or with other tools
+npc-plugin codex
+npc-plugin gemini
+
+# Uninstall
+npc-plugin claude --uninstall
 ```
 
 This creates:
@@ -217,12 +274,13 @@ Then add your agents:
 cat > my_project/npc_team/team.ctx << 'EOF'
 context: Research and analysis team
 forenpc: lead
-model: llama3.2
+model: qwen3.5:2b
 provider: ollama
 EOF
 
 # Add agents
 cat > my_project/npc_team/lead.npc << 'EOF'
+#!/usr/bin/env npc
 name: lead
 primary_directive: |
   You lead the team. Delegate to @researcher for data
@@ -230,6 +288,7 @@ primary_directive: |
 EOF
 
 cat > my_project/npc_team/researcher.npc << 'EOF'
+#!/usr/bin/env npc
 name: researcher
 primary_directive: You research topics and provide detailed findings.
 model: gemini-2.5-flash
@@ -237,6 +296,7 @@ provider: gemini
 EOF
 
 cat > my_project/npc_team/writer.npc << 'EOF'
+#!/usr/bin/env npc
 name: writer
 primary_directive: You write clear, engaging content.
 model: qwen3:8b
@@ -252,9 +312,16 @@ npc_team/
 ├── coordinator.npc    # Coordinator agent
 ├── analyst.npc        # Specialist agent
 ├── writer.npc         # Specialist agent
-└── jinxes/             # Optional workflows
-    └── research.jinx
+├── agents.md          # Optional: define agents in markdown
+├── agents/            # Optional: one .md file per agent
+│   └── helper.md
+├── jinxes/            # Optional workflows
+│   ├── research.jinx
+│   └── skills/        # Knowledge-content skills
+└── tools/             # Custom tool functions
 ```
+
+Teams support **multiple agent formats** that can be mixed freely. `.npc` files take precedence — agents defined in `agents.md` or `agents/` won't overwrite an `.npc` with the same name.
 
 **team.ctx** - Team configuration:
 ```yaml
@@ -262,7 +329,7 @@ context: |
   A research team that analyzes topics and produces reports.
   The coordinator delegates to specialists as needed.
 forenpc: coordinator
-model: llama3.2
+model: qwen3.5:2b
 provider: ollama
 mcp_servers:
   - ~/.npcsh/mcp_server.py
@@ -270,22 +337,46 @@ mcp_servers:
 
 **coordinator.npc** - Agent definition:
 ```yaml
+#!/usr/bin/env npc
 name: coordinator
 primary_directive: |
   You coordinate research tasks. Delegate to @analyst for data
   analysis and @writer for content creation. Synthesize results.
-model: llama3.2
+model: qwen3.5:2b
 provider: ollama
 ```
 
 **analyst.npc** - Specialist agent:
 ```yaml
+#!/usr/bin/env npc
 name: analyst
 primary_directive: |
   You analyze data and provide insights with specific numbers and trends.
 model: qwen3:8b
 provider: ollama
 ```
+
+**agents.md** — Define multiple agents in a single markdown file. Each `## heading` becomes an agent name, the body becomes its directive:
+
+```markdown
+## summarizer
+You summarize long documents into concise bullet points.
+
+## fact_checker
+You verify claims against reliable sources and flag inaccuracies.
+```
+
+**agents/ directory** — One `.md` file per agent. The filename (minus `.md`) becomes the agent name. Supports optional YAML frontmatter for model/provider overrides:
+
+```markdown
+---
+model: gemini-2.5-flash
+provider: gemini
+---
+You translate content between languages while preserving tone and idiom.
+```
+
+These formats are supported by both the Python (`npcpy`) and Rust (`npcsh`) implementations, so you can define agents however fits your workflow — YAML `.npc` files for full control, `agents.md` for quick prototyping, or `agents/` for markdown-native projects.
 
 ### Team from directory
 
@@ -325,7 +416,7 @@ Focus on OWASP top 10 vulnerabilities...
 ```yaml
 name: reviewer
 primary_directive: You review code for quality and security issues.
-model: llama3.2
+model: qwen3.5:2b
 provider: ollama
 jinxes:
   - skills/code-review
@@ -444,17 +535,17 @@ pip install npcpy[all]         # everything
 ```bash
 sudo apt-get install espeak portaudio19-dev python3-pyaudio ffmpeg libcairo2-dev libgirepository1.0-dev
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3.2
+ollama pull qwen3.5:2b
 ```
 
 **macOS:**
 ```bash
 brew install portaudio ffmpeg pygobject3 ollama
 brew services start ollama
-ollama pull llama3.2
+ollama pull qwen3.5:2b
 ```
 
-**Windows:** Install [Ollama](https://ollama.com) and [ffmpeg](https://ffmpeg.org), then `ollama pull llama3.2`.
+**Windows:** Install [Ollama](https://ollama.com) and [ffmpeg](https://ffmpeg.org), then `ollama pull qwen3.5:2b`.
 
 </details>
 
