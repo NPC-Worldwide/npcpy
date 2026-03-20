@@ -1381,9 +1381,9 @@ class NPC:
         else:
             self.name = name            
             self.primary_directive = primary_directive
-            self.model = model 
-            self.provider = provider 
-            self.api_url = api_url 
+            self.model = model
+            self.provider = provider
+            self.api_url = api_url
             self.api_key = api_key
             
             if use_global_jinxes:
@@ -1849,6 +1849,7 @@ class NPC:
                 self.api_url = self.team.api_url
             if not self.api_key and hasattr(self.team, 'api_key'):
                 self.api_key = self.team.api_key
+
 
         self.name = npc_data.get("name", self.name)
 

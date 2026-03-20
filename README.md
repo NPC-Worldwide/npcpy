@@ -26,6 +26,7 @@ simon = NPC(
 )
 response = simon.get_llm_response("What is the most important territory to retain in the Andes?")
 print(response['response'])
+
 ```
 
 ### Direct LLM call
@@ -35,6 +36,11 @@ from npcpy import get_llm_response
 
 response = get_llm_response("Who was the celtic messenger god?", model='qwen3:4b', provider='ollama')
 print(response['response'])
+# or use ollama's cloud models
+
+test = get_llm_response('who is john wick', model='minimax-m2.7:cloud', provider='ollama',)
+
+print(test['response'])
 ```
 
 ### Agent with tools
