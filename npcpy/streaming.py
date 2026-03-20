@@ -1,0 +1,866 @@
+"""
+npcpy.streaming — Reusable streaming core for NPC chat and tool-agent flows.
+
+Extracts the duplicated SSE streaming, chunk parsing, message cleaning,
+tool resolution, and tool execution logic that was copy-pasted between
+npcpy/serve.py and app-specific server wrappers (e.g. Lavanzaro).
+
+Usage:
+    from npcpy.streaming import (
+        StreamConfig, StreamEvent,
+        clean_messages_for_llm,
+        ensure_system_prompt,
+        parse_stream_chunk,
+        format_sse_event,
+        resolve_npc_tools,
+        execute_tool,
+        create_chat_stream,
+        create_tool_agent_stream,
+    )
+"""
+
+import json
+import time
+import traceback
+import datetime
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
+
+from npcpy.llm_funcs import get_llm_response, check_llm_command
+from npcpy.npc_compiler import NPC, Team
+
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StreamConfig:
+    """Configuration for a streaming request."""
+    npc: Optional[Any] = None
+    team: Optional[Any] = None
+    model: str = ""
+    provider: str = ""
+    messages: List[dict] = field(default_factory=list)
+    commandstr: str = ""
+    temperature: float = 0.7
+    params: Optional[dict] = None
+    attachments: List = field(default_factory=list)
+    images: List = field(default_factory=list)
+    disable_thinking: bool = False
+    max_tool_iterations: int = 10
+    current_path: Optional[str] = None
+    context: Optional[str] = None
+    stream: bool = True
+    api_url: Optional[str] = None
+
+
+@dataclass
+class StreamEvent:
+    """A typed event emitted by the streaming generators.
+
+    Types:
+        content_delta   — a chunk of assistant text
+        reasoning_delta — a chunk of reasoning/thinking text
+        tool_execution_start — signals tool calls are about to run
+        tool_start      — a single tool is starting
+        tool_result     — a single tool finished successfully
+        tool_error      — a single tool errored
+        usage           — token usage data
+        message_stop    — stream is done
+        interrupt       — stream was cancelled
+        thinking        — status message for the frontend
+    """
+    type: str
+    data: dict = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Message cleaning
+# ---------------------------------------------------------------------------
+
+def clean_messages_for_llm(messages: List[dict]) -> List[dict]:
+    """Remove orphaned tool_calls and tool results from message history.
+
+    Tool call messages without matching tool results (and vice versa) cause
+    API errors with OpenAI-compatible providers.  This function strips them.
+    """
+    tool_call_ids_with_results = set()
+    all_tool_call_ids = set()
+
+    for msg in messages:
+        if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+            for tc in msg['tool_calls']:
+                if isinstance(tc, dict) and tc.get('id'):
+                    all_tool_call_ids.add(tc['id'])
+        if msg.get('role') == 'tool' and msg.get('tool_call_id'):
+            tool_call_ids_with_results.add(msg['tool_call_id'])
+
+    valid_tool_call_ids = all_tool_call_ids & tool_call_ids_with_results
+
+    cleaned = []
+    for msg in messages:
+        if msg.get('role') == 'tool':
+            tool_call_id = msg.get('tool_call_id')
+            if not tool_call_id or tool_call_id not in valid_tool_call_ids:
+                continue
+        if msg.get('role') == 'assistant':
+            clean_msg = dict(msg)
+            if 'tool_calls' in msg and msg['tool_calls']:
+                valid_tcs = [
+                    tc for tc in msg['tool_calls']
+                    if isinstance(tc, dict) and tc.get('id') in valid_tool_call_ids
+                ]
+                if valid_tcs:
+                    clean_msg['tool_calls'] = valid_tcs
+                else:
+                    clean_msg.pop('tool_calls', None)
+            cleaned.append(clean_msg)
+            continue
+        cleaned.append(msg)
+    return cleaned
+
+
+# ---------------------------------------------------------------------------
+# System prompt management
+# ---------------------------------------------------------------------------
+
+def ensure_system_prompt(messages: List[dict], npc=None, system_prompt: str = None) -> List[dict]:
+    """Ensure messages start with a system prompt.
+
+    If *system_prompt* is given it takes precedence; otherwise falls back to
+    ``npc.get_system_prompt()``.  Returns the (possibly modified) list.
+    """
+    prompt = system_prompt
+    if prompt is None and npc is not None and hasattr(npc, 'get_system_prompt'):
+        prompt = npc.get_system_prompt()
+
+    if not prompt:
+        return messages
+
+    if not messages:
+        messages.insert(0, {'role': 'system', 'content': prompt})
+    elif messages[0]['role'] != 'system':
+        messages.insert(0, {'role': 'system', 'content': prompt})
+    else:
+        messages[0]['content'] = prompt
+
+    return messages
+
+
+# ---------------------------------------------------------------------------
+# Chunk parsing — provider-agnostic
+# ---------------------------------------------------------------------------
+
+def parse_stream_chunk(response_chunk, model: str = "", provider: str = "") -> Tuple[str, str, list]:
+    """Normalize a streaming chunk from any provider into (content, reasoning, tool_call_deltas).
+
+    Handles:
+      - OpenAI / litellm SDK objects (choices[].delta.content / .tool_calls)
+      - Ollama / HuggingFace dicts     (message.content / .tool_calls)
+      - llamacpp dicts                  (choices[].delta.content)
+      - Plain dicts with 'content' key
+    """
+    content = ""
+    reasoning = ""
+    tool_call_deltas = []
+
+    # --- Ollama / HF style (message-based) ---
+    if provider == 'ollama' or (isinstance(model, str) and 'hf.co' in model):
+        msg = getattr(response_chunk, 'message', None)
+        if msg is None and hasattr(response_chunk, 'get'):
+            msg = response_chunk.get('message', {})
+        if msg is None:
+            msg = {}
+
+        content = getattr(msg, 'content', None) or (msg.get('content') if isinstance(msg, dict) else '') or ''
+        reasoning = getattr(msg, 'thinking', None) or (msg.get('thinking') if isinstance(msg, dict) else None) or ''
+
+        tool_calls = getattr(msg, 'tool_calls', None) or (msg.get('tool_calls') if isinstance(msg, dict) else None)
+        if tool_calls:
+            for tc in tool_calls:
+                tc_id = getattr(tc, 'id', None) or (tc.get('id') if isinstance(tc, dict) else None)
+                tc_func = getattr(tc, 'function', None) or (tc.get('function') if isinstance(tc, dict) else None)
+                if tc_func:
+                    tc_name = getattr(tc_func, 'name', None) or (tc_func.get('name') if isinstance(tc_func, dict) else None)
+                    tc_args = getattr(tc_func, 'arguments', None) or (tc_func.get('arguments') if isinstance(tc_func, dict) else None)
+                    if tc_name:
+                        arg_str = tc_args
+                        if isinstance(arg_str, dict):
+                            arg_str = json.dumps(arg_str)
+                        elif arg_str is None:
+                            arg_str = "{}"
+                        tool_call_deltas.append({
+                            'id': tc_id or '',
+                            'type': 'function',
+                            'function': {'name': tc_name, 'arguments': arg_str}
+                        })
+        return content, reasoning, tool_call_deltas
+
+    # --- llamacpp style (raw dict with choices) ---
+    if provider == 'llamacpp':
+        if isinstance(response_chunk, dict) and response_chunk.get('choices'):
+            delta = response_chunk['choices'][0].get('delta', {})
+            content = delta.get('content', '') or ''
+            reasoning = delta.get('reasoning_content', '') or ''
+        return content, reasoning, tool_call_deltas
+
+    # --- OpenAI / litellm SDK objects ---
+    if hasattr(response_chunk, 'choices') and response_chunk.choices:
+        for choice in response_chunk.choices:
+            delta = getattr(choice, 'delta', None)
+            if delta is None:
+                continue
+            if hasattr(delta, 'content') and delta.content:
+                content += delta.content
+            if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                reasoning += delta.reasoning_content
+            if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    tool_call_deltas.append(tc_delta)
+        return content, reasoning, tool_call_deltas
+
+    # --- Plain dict fallback ---
+    if isinstance(response_chunk, dict):
+        content = response_chunk.get('content', '') or response_chunk.get('response', '') or ''
+
+    return content, reasoning, tool_call_deltas
+
+
+def _build_sse_chunk(content: str, model: str, reasoning: str = None,
+                     chunk_id=None, chunk_obj=None, created=None, finish_reason=None) -> dict:
+    """Build a normalized SSE chunk dict in OpenAI format."""
+    return {
+        "id": chunk_id,
+        "object": chunk_obj or "chat.completion.chunk",
+        "created": created or int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "content": content,
+                "role": "assistant",
+                "reasoning_content": reasoning,
+            },
+            "finish_reason": finish_reason,
+        }]
+    }
+
+
+# ---------------------------------------------------------------------------
+# SSE formatting
+# ---------------------------------------------------------------------------
+
+def format_sse_event(event: StreamEvent) -> str:
+    """Convert a StreamEvent to an SSE ``data: ...`` line."""
+    if event.type == 'content_delta':
+        chunk = _build_sse_chunk(
+            event.data.get('content', ''),
+            event.data.get('model', ''),
+            reasoning=event.data.get('reasoning'),
+        )
+        return "data: {}\n\n".format(json.dumps(chunk))
+
+    if event.type == 'reasoning_delta':
+        chunk = _build_sse_chunk(
+            '',
+            event.data.get('model', ''),
+            reasoning=event.data.get('reasoning', ''),
+        )
+        return "data: {}\n\n".format(json.dumps(chunk))
+
+    # All other event types just serialize data with the type field
+    payload = dict(event.data)
+    payload['type'] = event.type
+    return "data: {}\n\n".format(json.dumps(payload))
+
+
+def format_sse_raw(data: dict) -> str:
+    """Format a raw dict as an SSE data line."""
+    return "data: {}\n\n".format(json.dumps(data))
+
+
+# ---------------------------------------------------------------------------
+# Tool resolution
+# ---------------------------------------------------------------------------
+
+def resolve_npc_tools(npc, mcp_clients_cache: dict = None,
+                      selected_tools: List[str] = None) -> Tuple[list, dict]:
+    """Resolve all tools available to an NPC: jinx catalog + MCP + python funcs.
+
+    Returns (tools_for_llm, tool_executors) where:
+      - tools_for_llm: list of OpenAI-format tool schemas
+      - tool_executors: dict mapping tool_name -> executor info
+    """
+    from npcpy.tools import auto_tools
+
+    tools_for_llm = []
+    tool_executors = {}
+
+    if npc is None:
+        return tools_for_llm, tool_executors
+
+    # 1. NPC.resolve_tools() — covers MCP + python tools
+    if hasattr(npc, 'resolve_tools'):
+        tools_for_llm, tool_executors = npc.resolve_tools(
+            mcp_clients_cache=mcp_clients_cache or {}
+        )
+
+    # 2. Jinx tool catalog (backward compat for NPCs without resolve_tools)
+    if hasattr(npc, 'jinx_tool_catalog') and npc.jinx_tool_catalog:
+        existing_names = {td['function']['name'] for td in tools_for_llm}
+        jinxes_dict = getattr(npc, 'jinxes_dict', {}) or getattr(npc, 'jinxs_dict', {}) or {}
+        for t in npc.jinx_tool_catalog.values():
+            name = t['function']['name']
+            if name not in existing_names:
+                tools_for_llm.append(t)
+                tool_executors[name] = {
+                    'type': 'jinx',
+                    'jinx': jinxes_dict.get(name),
+                }
+                existing_names.add(name)
+
+    # 3. auto_tools for plain callable tools
+    if not tools_for_llm and hasattr(npc, 'tools') and npc.tools:
+        if isinstance(npc.tools, list) and npc.tools and callable(npc.tools[0]):
+            tools_schema, tool_map = auto_tools(npc.tools)
+            tools_for_llm = tools_schema
+            for name, func in tool_map.items():
+                tool_executors[name] = {'type': 'python', 'func': func}
+
+    # 4. Filter by selected tools
+    if selected_tools:
+        allowed = set(selected_tools)
+        tools_for_llm = [t for t in tools_for_llm if t['function']['name'] in allowed]
+        tool_executors = {k: v for k, v in tool_executors.items() if k in allowed}
+
+    return tools_for_llm, tool_executors
+
+
+# ---------------------------------------------------------------------------
+# Tool execution
+# ---------------------------------------------------------------------------
+
+def execute_tool(tool_name: str, tool_args: dict, tool_id: str,
+                 tool_executors: dict, npc=None) -> StreamEvent:
+    """Execute a single tool and return a StreamEvent (tool_result or tool_error)."""
+    try:
+        executor = tool_executors.get(tool_name)
+        if not executor:
+            return StreamEvent('tool_error', {
+                'name': tool_name, 'id': tool_id,
+                'error': "Tool '{}' not found in resolved tools".format(tool_name)
+            })
+
+        tool_content = ""
+        if executor['type'] == 'jinx':
+            jinx_obj = executor['jinx']
+            try:
+                jinx_ctx = jinx_obj.execute(
+                    input_values=tool_args if isinstance(tool_args, dict) else {},
+                    npc=npc,
+                )
+                tool_content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
+            except Exception as e:
+                tool_content = "Jinx execution error: {}".format(str(e))
+
+        elif executor['type'] == 'mcp':
+            tool_func = executor.get('tool_func')
+            result = tool_func(**(tool_args if isinstance(tool_args, dict) else {}))
+            if hasattr(result, 'content') and result.content and len(result.content) > 0:
+                tool_content = str(result.content[0].text)
+            else:
+                tool_content = str(result) if result is not None else "Tool returned no result"
+
+        elif executor['type'] == 'python':
+            func = executor.get('func')
+            tool_content = str(func(**(tool_args if isinstance(tool_args, dict) else {})))
+
+        else:
+            tool_content = "Unknown executor type: {}".format(executor['type'])
+
+        return StreamEvent('tool_result', {
+            'name': tool_name, 'id': tool_id, 'result': tool_content, 'args': tool_args
+        })
+
+    except Exception as e:
+        return StreamEvent('tool_error', {
+            'name': tool_name, 'id': tool_id,
+            'error': "Tool execution error: {}".format(str(e))
+        })
+
+
+# ---------------------------------------------------------------------------
+# Accumulate tool call deltas into complete calls
+# ---------------------------------------------------------------------------
+
+def _accumulate_tool_call_deltas(collected: list, deltas) -> list:
+    """Merge streaming tool_call deltas into collected list."""
+    for tc_delta in deltas:
+        # Raw SDK delta objects
+        idx = getattr(tc_delta, 'index', len(collected))
+        while len(collected) <= idx:
+            collected.append({
+                'id': '',
+                'type': 'function',
+                'function': {'name': '', 'arguments': ''}
+            })
+        if getattr(tc_delta, 'id', None):
+            collected[idx]['id'] = tc_delta.id
+        fn = getattr(tc_delta, 'function', None)
+        if fn:
+            if getattr(fn, 'name', None):
+                collected[idx]['function']['name'] = fn.name
+            if getattr(fn, 'arguments', None):
+                collected[idx]['function']['arguments'] += fn.arguments
+    return collected
+
+
+# ---------------------------------------------------------------------------
+# Chat stream (no tool execution)
+# ---------------------------------------------------------------------------
+
+def create_chat_stream(config: StreamConfig,
+                       cancellation_check: Callable[[], bool] = None,
+                       ) -> Generator[StreamEvent, None, None]:
+    """Stream an LLM response without tool execution.
+
+    Yields StreamEvent objects.  The caller is responsible for SSE formatting
+    and persistence.
+    """
+    messages = config.messages
+    npc = config.npc
+    model = config.model
+    provider = config.provider
+
+    kwargs = {}
+    if config.params:
+        kwargs.update(config.params)
+    if config.temperature and 'temperature' not in kwargs:
+        kwargs['temperature'] = config.temperature
+
+    thinking_kwargs = {}
+    if not config.disable_thinking and provider in ('anthropic',):
+        thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
+        kwargs.pop('temperature', None)
+
+    try:
+        if npc and hasattr(npc, 'get_llm_response'):
+            response = npc.get_llm_response(
+                config.commandstr,
+                messages=messages,
+                stream=True,
+                attachments=config.attachments if config.attachments else None,
+                auto_process_tool_calls=False,
+                **kwargs,
+                **thinking_kwargs,
+            )
+        else:
+            response = get_llm_response(
+                config.commandstr,
+                messages=messages,
+                model=model,
+                provider=provider,
+                npc=npc,
+                team=config.team,
+                stream=True,
+                images=config.images if config.images else None,
+                attachments=config.attachments if config.attachments else None,
+                api_url=config.api_url,
+                include_usage=True,
+                **kwargs,
+                **thinking_kwargs,
+            )
+    except Exception as e:
+        yield StreamEvent('tool_error', {'error': "LLM call failed: {}".format(str(e))})
+        return
+
+    # Unwrap: response might be a dict with 'response' key containing the iterator
+    stream_iter = response
+    if isinstance(response, dict):
+        # Check for non-streaming response with direct content
+        for key in ('content', 'text', 'message', 'output'):
+            if key in response:
+                val = response[key]
+                if isinstance(val, dict) and 'content' in val:
+                    val = val['content']
+                yield StreamEvent('content_delta', {'content': str(val), 'model': model})
+                yield StreamEvent('message_stop', {})
+                return
+        stream_iter = response.get('response', response)
+        if isinstance(stream_iter, str):
+            yield StreamEvent('content_delta', {'content': stream_iter, 'model': model})
+            yield StreamEvent('message_stop', {})
+            return
+        if isinstance(stream_iter, dict):
+            content = stream_iter.get('content', stream_iter.get('output', str(stream_iter)))
+            yield StreamEvent('content_delta', {'content': str(content), 'model': model})
+            yield StreamEvent('message_stop', {})
+            return
+
+    # Stream chunks
+    try:
+        for chunk in stream_iter:
+            if cancellation_check and cancellation_check():
+                yield StreamEvent('interrupt', {})
+                return
+
+            content, reasoning, tool_call_deltas = parse_stream_chunk(chunk, model, provider)
+
+            if content:
+                yield StreamEvent('content_delta', {'content': content, 'model': model})
+            if reasoning:
+                yield StreamEvent('reasoning_delta', {'reasoning': reasoning, 'model': model})
+    except Exception as e:
+        print("Error during chat stream: {}".format(e))
+        traceback.print_exc()
+
+    yield StreamEvent('message_stop', {})
+
+
+# ---------------------------------------------------------------------------
+# Tool-agent stream (with tool-calling loop)
+# ---------------------------------------------------------------------------
+
+def create_tool_agent_stream(config: StreamConfig,
+                             tools_for_llm: list,
+                             tool_executors: dict,
+                             cancellation_check: Callable[[], bool] = None,
+                             ) -> Generator[StreamEvent, None, None]:
+    """Agentic streaming loop: call LLM → stream content → execute tool calls → repeat.
+
+    Uses the OpenAI-style tool_calls mechanism (not check_llm_command).
+    Mutates config.messages in place so the caller can read final state.
+    """
+    messages = config.messages
+    npc = config.npc
+    model = config.model
+    provider = config.provider
+    prompt = config.commandstr
+    total_input_tokens = 0
+    total_output_tokens = 0
+
+    kwargs = {}
+    if config.params:
+        kwargs.update(config.params)
+    if config.temperature and 'temperature' not in kwargs:
+        kwargs['temperature'] = config.temperature
+
+    thinking_kwargs = {}
+    if not config.disable_thinking and provider in ('anthropic',):
+        thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
+        kwargs.pop('temperature', None)
+
+    agent_context = ''
+    if config.current_path:
+        agent_context = "The user's working directory is {}".format(config.current_path)
+
+    iteration = 0
+    while iteration < config.max_tool_iterations:
+        iteration += 1
+
+        try:
+            llm_response = get_llm_response(
+                prompt=prompt,
+                npc=npc,
+                model=model,
+                provider=provider,
+                messages=messages,
+                tools=tools_for_llm,
+                stream=True,
+                team=config.team,
+                context=agent_context if agent_context else config.context,
+                api_url=config.api_url,
+                include_usage=True,
+                **kwargs,
+                **thinking_kwargs,
+            )
+        except Exception as e:
+            yield StreamEvent('tool_error', {'error': "LLM call failed: {}".format(str(e))})
+            break
+
+        stream_iter = llm_response.get('response', llm_response) if isinstance(llm_response, dict) else llm_response
+        usage = llm_response.get('usage', {}) if isinstance(llm_response, dict) else {}
+        total_input_tokens += usage.get('input_tokens', 0) or 0
+        total_output_tokens += usage.get('output_tokens', 0) or 0
+
+        collected_content = ""
+        collected_tool_calls = []
+
+        # Stream response chunks
+        if hasattr(stream_iter, '__iter__') and not isinstance(stream_iter, (str, dict)):
+            for chunk in stream_iter:
+                if cancellation_check and cancellation_check():
+                    yield StreamEvent('interrupt', {})
+                    return
+
+                content, reasoning, tc_deltas = parse_stream_chunk(chunk, model, provider)
+
+                if content:
+                    collected_content += content
+                    yield StreamEvent('content_delta', {'content': content, 'model': model})
+                if reasoning:
+                    yield StreamEvent('reasoning_delta', {'reasoning': reasoning, 'model': model})
+
+                # Accumulate tool call deltas
+                if tc_deltas:
+                    _accumulate_tool_call_deltas(collected_tool_calls, tc_deltas)
+
+                # Extract usage from streaming chunks
+                chunk_usage = getattr(chunk, 'usage', None)
+                if chunk_usage is None and isinstance(chunk, dict):
+                    chunk_usage = chunk.get('usage')
+                if chunk_usage:
+                    inp = getattr(chunk_usage, 'prompt_tokens', None) or (chunk_usage.get('prompt_tokens', 0) if isinstance(chunk_usage, dict) else 0)
+                    out = getattr(chunk_usage, 'completion_tokens', None) or (chunk_usage.get('completion_tokens', 0) if isinstance(chunk_usage, dict) else 0)
+                    if inp:
+                        total_input_tokens = inp
+                    if out:
+                        total_output_tokens = out
+                # Ollama-style usage
+                prompt_eval = getattr(chunk, 'prompt_eval_count', None)
+                eval_count = getattr(chunk, 'eval_count', None)
+                if prompt_eval:
+                    total_input_tokens = prompt_eval
+                if eval_count:
+                    total_output_tokens = eval_count
+
+        elif isinstance(stream_iter, str):
+            collected_content = stream_iter
+            yield StreamEvent('content_delta', {'content': stream_iter, 'model': model})
+        elif isinstance(stream_iter, dict):
+            val = stream_iter.get('content', stream_iter.get('output', str(stream_iter)))
+            collected_content = str(val)
+            yield StreamEvent('content_delta', {'content': collected_content, 'model': model})
+
+        # No tool calls — we're done
+        if not collected_tool_calls:
+            break
+
+        # Serialize tool calls for message history
+        serialized_tool_calls = []
+        for tc in collected_tool_calls:
+            parsed_args = tc['function']['arguments']
+            if isinstance(parsed_args, dict):
+                args_for_message = json.dumps(parsed_args)
+            else:
+                args_for_message = str(parsed_args)
+            serialized_tool_calls.append({
+                'id': tc['id'],
+                'type': tc.get('type', 'function'),
+                'function': {
+                    'name': tc['function']['name'],
+                    'arguments': args_for_message,
+                }
+            })
+
+        messages.append({
+            'role': 'assistant',
+            'content': collected_content,
+            'tool_calls': serialized_tool_calls,
+        })
+
+        # Signal tool execution start
+        yield StreamEvent('tool_execution_start', {
+            'tool_calls': [
+                {'name': tc['function']['name'], 'id': tc['id'],
+                 'function': {'name': tc['function']['name'], 'arguments': tc['function'].get('arguments', '')}}
+                for tc in collected_tool_calls
+            ]
+        })
+
+        # Execute each tool
+        for tc in collected_tool_calls:
+            tool_name = tc['function']['name']
+            tool_args = tc['function']['arguments']
+            tool_id = tc['id']
+
+            if isinstance(tool_args, str):
+                try:
+                    tool_args = json.loads(tool_args) if tool_args.strip() else {}
+                except json.JSONDecodeError:
+                    tool_args = {}
+
+            yield StreamEvent('tool_start', {'name': tool_name, 'id': tool_id, 'args': tool_args})
+
+            result_event = execute_tool(tool_name, tool_args, tool_id, tool_executors, npc=npc)
+            yield result_event
+
+            # Add to messages for next iteration
+            tool_content = result_event.data.get('result', result_event.data.get('error', ''))
+            messages.append({
+                'role': 'tool',
+                'tool_call_id': tool_id,
+                'name': tool_name,
+                'content': tool_content,
+            })
+
+        prompt = ""  # Next iteration uses tool results in messages, no new prompt
+
+    # Emit usage
+    if total_input_tokens or total_output_tokens:
+        try:
+            from npcpy.gen.response import calculate_cost
+            cost = calculate_cost(model, total_input_tokens, total_output_tokens)
+        except Exception:
+            cost = 0
+        yield StreamEvent('usage', {
+            'input_tokens': total_input_tokens,
+            'output_tokens': total_output_tokens,
+            'cost': cost or 0,
+        })
+
+    yield StreamEvent('message_stop', {})
+
+
+# ---------------------------------------------------------------------------
+# check_llm_command stream (jinx-based, used by npcsh)
+# ---------------------------------------------------------------------------
+
+def create_jinx_stream(config: StreamConfig,
+                       cancellation_check: Callable[[], bool] = None,
+                       followup_model: str = None,
+                       followup_provider: str = None,
+                       max_followups: int = 3,
+                       ) -> Generator[StreamEvent, None, None]:
+    """Two-phase streaming: Phase 1 streams a chat response, Phase 2 uses
+    check_llm_command to execute jinxes if the model indicated it would act.
+
+    This is the pattern used by npcsh and Lavanzaro's server_wrapper — the
+    model generates natural text first, then a separate LLM call decides
+    whether jinxes should fire.
+
+    Args:
+        config: Stream configuration
+        cancellation_check: Optional cancellation callback
+        followup_model: Model for the followup decision call (default: config.model)
+        followup_provider: Provider for the followup decision call (default: config.provider)
+        max_followups: Max number of followup/jinx iterations
+    """
+    npc = config.npc
+    model = config.model
+    provider = config.provider
+    messages = config.messages
+
+    # Phase 1: stream natural response
+    collected_content = ""
+    for event in create_chat_stream(config, cancellation_check):
+        if event.type == 'content_delta':
+            collected_content += event.data.get('content', '')
+        if event.type == 'message_stop':
+            # Don't yield message_stop yet — we might have Phase 2
+            continue
+        yield event
+
+    if not collected_content.strip():
+        yield StreamEvent('message_stop', {})
+        return
+
+    # Add assistant response to messages
+    messages.append({'role': 'assistant', 'content': collected_content})
+
+    # Phase 2: check if jinxes should fire
+    jinxes_dict = None
+    if npc:
+        jinxes_dict = getattr(npc, 'jinxes_dict', None) or getattr(npc, 'jinxs_dict', None)
+
+    if not jinxes_dict:
+        yield StreamEvent('message_stop', {})
+        return
+
+    fm = followup_model or model
+    fp = followup_provider or provider
+
+    for followup_iter in range(max_followups):
+        # Ask LLM if followup is needed
+        try:
+            followup_check = get_llm_response(
+                '''Analyze the assistant's last response. Did the assistant SAY they would search/delegate/execute something but NOT actually do it yet?
+
+Rules:
+- followup=1 if assistant SAID "let me search", "I'll search", "I will delegate", "let me look that up" or similar BUT no actual search results appear in the response
+- followup=0 if assistant already provided search results, factual answers, or completed the task
+- followup=0 if assistant is asking the user a clarifying question
+- followup=0 if the response contains actual search findings, citations, or data
+- followup=0 if the response contains "[Jinx executed:" indicating a jinx already ran
+
+Return JSON: {"followup": 0} or {"followup": 1}''',
+                format='json',
+                model=fm,
+                provider=fp,
+                messages=messages[-10:],
+            )
+            needs_followup = followup_check.get('response', {}).get('followup', 0)
+        except Exception:
+            needs_followup = 0
+
+        if not needs_followup:
+            break
+
+        # Execute check_llm_command
+        yield StreamEvent('thinking', {'message': 'Processing...'})
+
+        continue_prompt = """[INTERNAL SYSTEM - NO SPOKEN RESPONSE]
+
+Based on your response above, you must now invoke a tool:
+1. USE A JINX to complete the task (python, search, vixynt, edit_document, delegate, etc.)
+2. OR provide your final answer if no jinx is needed
+
+IMPORTANT: If the user asked for code execution, data visualization, simulation, image generation, document editing, or search - you MUST use the appropriate jinx. Do not just describe what you would do - actually do it.
+
+IMPORTANT: If you mentioned delegating to another team member, you MUST actually call the delegate jinx with npc_name and task parameters.
+
+Do NOT provide an empty response unless you have already executed all necessary jinxes.
+"""
+
+        try:
+            result = npc.check_llm_command(
+                continue_prompt,
+                messages=messages,
+                stream=False,
+            )
+        except Exception as e:
+            print("check_llm_command error: {}".format(e))
+            break
+
+        if not isinstance(result, dict):
+            break
+
+        # Process jinx executions
+        jinx_execs = result.get('jinx_executions', [])
+        jinx_calls = result.get('jinx_calls', [])
+        all_execs = jinx_execs or jinx_calls
+
+        if all_execs:
+            tool_names = [j.get('name', 'unknown') for j in all_execs]
+            yield StreamEvent('tool_execution_start', {
+                'tool_calls': [{'name': n} for n in tool_names],
+            })
+
+            for jexec in all_execs:
+                jname = jexec.get('name', 'unknown')
+                jinputs = jexec.get('inputs', jexec.get('args', {}))
+                joutput = jexec.get('output', jexec.get('result', ''))
+
+                yield StreamEvent('tool_start', {
+                    'name': jname, 'id': 'jinx-{}'.format(jname), 'args': jinputs,
+                })
+                yield StreamEvent('tool_result', {
+                    'name': jname, 'id': 'jinx-{}'.format(jname),
+                    'result': joutput, 'args': jinputs,
+                })
+
+        output = result.get('output', '')
+        if output and output != collected_content:
+            yield StreamEvent('content_delta', {'content': str(output), 'model': model})
+            collected_content = str(output)
+
+        # Update messages so next followup check sees the completed work
+        if all_execs or output:
+            exec_names = ', '.join(j.get('name', '') for j in all_execs) if all_execs else ''
+            messages.append({
+                'role': 'assistant',
+                'content': "[Jinx executed: {}] {}".format(exec_names, str(output)[:1000])
+            })
+
+    yield StreamEvent('message_stop', {})

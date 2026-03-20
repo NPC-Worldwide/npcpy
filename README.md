@@ -13,10 +13,10 @@ pip install npcpy
 
 ## Quick Examples
 
-### Agent with persona
+### Create and use personas
 
 ```python
-from npcpy.npc_compiler import NPC
+from npcpy import NPC
 
 simon = NPC(
     name='Simon Bolivar',
@@ -31,43 +31,13 @@ print(response['response'])
 ### Direct LLM call
 
 ```python
-from npcpy.llm_funcs import get_llm_response
+from npcpy import get_llm_response
 
 response = get_llm_response("Who was the celtic messenger god?", model='qwen3:4b', provider='ollama')
 print(response['response'])
 ```
 
 ### Agent with tools
-
-```python
-import os
-from npcpy.npc_compiler import NPC
-
-def list_files(directory: str = ".") -> list:
-    """List all files in a directory."""
-    return os.listdir(directory)
-
-def read_file(filepath: str) -> str:
-    """Read and return the contents of a file."""
-    with open(filepath, 'r') as f:
-        return f.read()
-
-assistant = NPC(
-    name='File Assistant',
-    primary_directive='You help users explore files.',
-    model='qwen3.5:2b',
-    provider='ollama',
-    tools=[list_files, read_file],
-)
-response = assistant.get_llm_response("List the files in the current directory.")
-print(response['response'])
-
-# Access individual tool results
-for result in response.get('tool_results', []):
-    print(f"{result['tool_name']}: {result['result']}")
-```
-
-### Agent subclasses
 
 ```python
 from npcpy import Agent, ToolAgent, CodingAgent
@@ -93,281 +63,235 @@ def git_diff(branch: str = "main") -> str:
 reviewer = ToolAgent(
     name='code_reviewer',
     primary_directive='You review code changes, run tests, and report issues.',
-    tool_functions=[run_tests, git_diff],
+    tools=[run_tests, git_diff],
     model='qwen3.5:2b', provider='ollama'
 )
 print(reviewer.run("Run the tests and summarize any failures"))
 
 # CodingAgent — auto-executes code blocks from LLM responses
 coder = CodingAgent(name='coder', language='python', model='qwen3.5:2b', provider='ollama')
-print(coder.run("Read setup.py and list all the entry_points"))
-
-# Agent with skills directory and MCP servers
-agent = Agent(
-    name='researcher',
-    skills_dir='./my_skills/',
-    agents_md='./agents.md',
-    mcp_servers=[{"path": "~/.npcsh/mcp_server.py"}],
-)
+print(coder.run("Write a script that finds duplicate files by hash in the current directory"))
 ```
 
-### Streaming responses
+### Streaming
 
 ```python
-from npcpy.llm_funcs import get_llm_response
+from npcpy import get_llm_response
 
-response = get_llm_response(
-    "Tell me about the history of the Inca Empire.",
-    model='qwen3.5:2b',
-    provider='ollama',
-    stream=True
-)
-
+response = get_llm_response("Explain quantum entanglement.", model='qwen3.5:2b', provider='ollama', stream=True)
 for chunk in response['response']:
-    msg = chunk.get('message', {})
-    print(msg.get('content', ''), end='', flush=True)
+    print(chunk.get('message', {}).get('content', ''), end='', flush=True)
 ```
 
 ### JSON output
 
+Include the expected JSON structure in your prompt. With `format='json'`, the response is auto-parsed — `response['response']` is already a dict or list.
+
 ```python
-from npcpy.llm_funcs import get_llm_response
+from npcpy import get_llm_response
 
 response = get_llm_response(
-    "List 3 planets with their distances from the sun in AU.",
-    model='qwen3.5:2b',
-    provider='ollama',
+    '''List 3 planets from the sun.
+    Return JSON: {"planets": [{"name": "planet name", "distance_au": 0.0, "num_moons": 0}]}''',
+    model='qwen3.5:2b', provider='ollama',
     format='json'
 )
-print(response['response'])
+for planet in response['response']['planets']:
+    print(f"{planet['name']}: {planet['distance_au']} AU, {planet['num_moons']} moons")
+
+response = get_llm_response(
+    '''Analyze this review: 'The battery life is amazing but the screen is too dim.'
+    Return JSON: {"tone": "positive/negative/mixed", "key_phrases": ["phrase1", "phrase2"], "confidence": 0.0}''',
+    model='qwen3.5:2b', provider='ollama',
+    format='json'
+)
+result = response['response']
+print(result['tone'], result['key_phrases'])
 ```
 
-### Multi-agent team orchestration
+### Pydantic structured output
+
+Pass a Pydantic model and the JSON schema is sent to the LLM directly.
 
 ```python
-from npcpy.npc_compiler import NPC, Team
+from npcpy import get_llm_response
+from pydantic import BaseModel
+from typing import List
 
-# Create specialist agents
-coordinator = NPC(
-    name='coordinator',
-    primary_directive='''You coordinate a team of specialists.
-    Delegate tasks by mentioning @analyst for data questions or @writer for content.
-    Synthesize their responses into a final answer.''',
-    model='qwen3.5:2b',
-    provider='ollama'
+class Planet(BaseModel):
+    name: str
+    distance_au: float
+    num_moons: int
+
+class SolarSystem(BaseModel):
+    planets: List[Planet]
+
+response = get_llm_response(
+    "List the first 4 planets from the sun.",
+    model='qwen3.5:2b', provider='ollama',
+    format=SolarSystem
 )
+for p in response['response']['planets']:
+    print(f"{p['name']}: {p['distance_au']} AU, {p['num_moons']} moons")
+```
 
-analyst = NPC(
-    name='analyst',
-    primary_directive='You analyze data and provide insights with specific numbers.',
-    model='~/models/mistral-7b-instruct-v0.2.Q4_K_M.gguf',
-    provider='llamacpp'
-)
+### Image, audio, and video generation
 
-writer = NPC(
-    name='writer',
-    primary_directive='You write clear, engaging summaries and reports.',
-    model='gemini-2.5-flash',
-    provider='gemini'
-)
+```python
+from npcpy.llm_funcs import gen_image, gen_video
+from npcpy.gen.audio_gen import text_to_speech
 
-# Create team - coordinator (forenpc) automatically delegates via @mentions
-team = Team(npcs=[coordinator, analyst, writer], forenpc='coordinator')
+# Image — OpenAI, Gemini, Ollama, or diffusers
+images = gen_image("A sunset over the mountains", model='gpt-image-1', provider='openai')
+images[0].save("sunset.png")
 
-# Orchestrate a request - coordinator decides who to involve
+# Audio — OpenAI, Gemini, ElevenLabs, Kokoro, gTTS
+audio_bytes = text_to_speech("Hello from npcpy!", engine="openai", voice="alloy")
+with open("hello.wav", "wb") as f:
+    f.write(audio_bytes)
+
+# Video — Gemini Veo
+result = gen_video("A cat riding a skateboard", model='veo-3.1-fast-generate-preview', provider='gemini')
+print(result['output'])
+```
+
+### Multi-agent team
+
+```python
+from npcpy import NPC, Team
+
+team = Team(team_path='./npc_team')
+result = team.orchestrate("Analyze the latest sales data and draft a report")
+print(result['output'])
+```
+
+Or define a team in code:
+
+```python
+from npcpy import NPC, Team
+
+coordinator = NPC(name='lead', primary_directive='Coordinate the team. Delegate to @analyst and @writer.')
+analyst = NPC(name='analyst', primary_directive='Analyze data. Provide numbers and trends.', model='gemini-2.5-flash', provider='gemini')
+writer = NPC(name='writer', primary_directive='Write clear reports from analysis.', model='qwen3:8b', provider='ollama')
+
+team = Team(npcs=[coordinator, analyst, writer], forenpc='lead')
 result = team.orchestrate("What are the trends in renewable energy adoption?")
 print(result['output'])
 ```
 
-### Initialize a team
+### Team from files
 
-Installing `npcpy` gives you these CLI tools:
-- **`npc-init`** — Scaffold a new team project
-- **`npc-claude`** — Launch Claude Code as an NPC
-- **`npc-codex`** / **`npc-gemini`** / **`npc-opencode`** / **`npc-aider`** / **`npc-amp`** — Same for other AI coding tools
-- **`npc-plugin`** — Register MCP server + hooks with Claude Code, Codex, or Gemini
-
-```bash
-# Scaffold a team
-npc-init ./my_project
-
-# Launch Claude Code as an NPC from your team
-npc-claude --npc corca
-
-# Or pick interactively
-npc-gemini
-
-# .npc and .jinx files are directly executable
-./npc_team/coder.npc "refactor this function"
-./npc_team/jinxes/lib/sh.jinx bash_command="echo hello"
-```
-
-### Launching AI coding tools with NPC teams
-
-npcpy can launch any major AI coding tool — Claude Code, Codex, Gemini CLI, OpenCode, Aider, or Amp — as an NPC from your team. The launcher loads your `npc_team/` directory, lets you pick (or specify) an NPC, and starts the tool with that NPC's persona and access to the rest of the team.
-
-```bash
-# Launch Claude Code — pick an NPC interactively (uses fzf if available)
-npc-claude
-
-# Launch as a specific NPC
-npc-claude --npc lorenzava
-
-# Point to a team directory explicitly
-npc-claude --team ./my_project/npc_team
-
-# Launch other coding tools the same way
-npc-codex --npc researcher
-npc-gemini --npc analyst
-npc-opencode --npc coder
-npc-aider --npc reviewer
-npc-amp --npc writer
-
-# Pass extra flags through to the underlying tool
-npc-claude --npc corca --model sonnet
-npc-aider --npc coder --auto-commits
-```
-
-**What happens under the hood:**
-
-1. **Team discovery** — looks for `./npc_team`, then `~/.npcsh/npc_team`
-2. **NPC selection** — interactive picker (with fzf support) or `--npc <name>`
-3. **Tool launch** — each tool gets the NPC's directive passed in its native format:
-   - **Claude Code**: `--system-prompt` + `--agents` (team members as sub-agents)
-   - **Codex**: `--system-prompt`
-   - **Gemini CLI**: `GEMINI_SYSTEM_MD` env var pointing to a temp file
-   - **OpenCode / Amp**: writes `AGENT.md` in the current directory
-   - **Aider**: `--read` with a temp context file
-4. **State file** — writes `~/.npcsh/.active_npc_state.json` so MCP servers and hooks know which NPC is active
-
-**MCP plugin integration** — for deeper integration (jinxes as tools, team switching mid-conversation):
-
-```bash
-# Register the NPC MCP server + hooks with Claude Code
-npc-plugin claude
-
-# Or with other tools
-npc-plugin codex
-npc-plugin gemini
-
-# Uninstall
-npc-plugin claude --uninstall
-```
-
-This creates:
-```
-my_project/
-├── npc_team/
-│   ├── forenpc.npc      # Default coordinator
-│   ├── jinxes/           # Workflows
-│   │   └── skills/      # Knowledge skills
-│   ├── tools/           # Custom tools
-│   └── triggers/        # Event triggers
-├── images/
-├── models/
-└── mcp_servers/
-```
-
-Then add your agents:
-```bash
-# Add team context
-cat > my_project/npc_team/team.ctx << 'EOF'
-context: Research and analysis team
+**team.ctx:**
+```yaml
+context: |
+  Research team for analyzing scientific literature.
+  The lead delegates to specialists as needed.
 forenpc: lead
 model: qwen3.5:2b
 provider: ollama
-EOF
+mcp_servers:
+  - path: ~/.npcsh/mcp_server.py
+```
 
-# Add agents
-cat > my_project/npc_team/lead.npc << 'EOF'
+**lead.npc:**
+```yaml
 #!/usr/bin/env npc
 name: lead
 primary_directive: |
-  You lead the team. Delegate to @researcher for data
-  and @writer for content. Synthesize their output.
-EOF
+  You lead the research team. Delegate literature searches to @searcher,
+  data analysis to @analyst. Synthesize their findings into a coherent summary.
+jinxes:
+  - sh
+  - python
+  - delegate
+  - web_search
+```
 
-cat > my_project/npc_team/researcher.npc << 'EOF'
+**searcher.npc:**
+```yaml
 #!/usr/bin/env npc
-name: researcher
-primary_directive: You research topics and provide detailed findings.
+name: searcher
+primary_directive: |
+  You search for scientific papers and extract key findings.
+  Use web_search and load_file to find and read papers.
 model: gemini-2.5-flash
 provider: gemini
-EOF
-
-cat > my_project/npc_team/writer.npc << 'EOF'
-#!/usr/bin/env npc
-name: writer
-primary_directive: You write clear, engaging content.
-model: qwen3:8b
-provider: ollama
-EOF
+jinxes:
+  - web_search
+  - load_file
+  - sh
 ```
 
-### Team directory structure
-
 ```
-npc_team/
-├── team.ctx           # Team configuration
-├── coordinator.npc    # Coordinator agent
-├── analyst.npc        # Specialist agent
-├── writer.npc         # Specialist agent
-├── agents.md          # Optional: define agents in markdown
-├── agents/            # Optional: one .md file per agent
-│   └── helper.md
-├── jinxes/            # Optional workflows
-│   ├── research.jinx
-│   └── skills/        # Knowledge-content skills
-└── tools/             # Custom tool functions
+my_project/
+├── npc_team/
+│   ├── team.ctx
+│   ├── lead.npc
+│   ├── searcher.npc
+│   ├── analyst.npc
+│   ├── jinxes/
+│   │   └── skills/
+│   └── models/
+├── agents.md             # Optional: define agents in markdown
+└── agents/               # Optional: one .md file per agent
+    └── translator.md
 ```
 
-Teams support **multiple agent formats** that can be mixed freely. `.npc` files take precedence — agents defined in `agents.md` or `agents/` won't overwrite an `.npc` with the same name.
+`.npc` and `.jinx` files are directly executable:
+```bash
+./npc_team/lead.npc "summarize the latest arxiv papers on transformers"
+./npc_team/jinxes/lib/sh.jinx bash_command="echo hello"
+```
 
-**team.ctx** - Team configuration:
+### MCP server integration
+
+Add MCP servers to your team for external tool access:
+
+**team.ctx:**
 ```yaml
-context: |
-  A research team that analyzes topics and produces reports.
-  The coordinator delegates to specialists as needed.
-forenpc: coordinator
-model: qwen3.5:2b
-provider: ollama
+forenpc: assistant
 mcp_servers:
-  - ~/.npcsh/mcp_server.py
+  - path: ./tools/db_server.py
+  - path: ./tools/api_server.py
 ```
 
-**coordinator.npc** - Agent definition:
-```yaml
-#!/usr/bin/env npc
-name: coordinator
-primary_directive: |
-  You coordinate research tasks. Delegate to @analyst for data
-  analysis and @writer for content creation. Synthesize results.
-model: qwen3.5:2b
-provider: ollama
+**db_server.py:**
+```python
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("Database Tools")
+
+@mcp.tool()
+def query_orders(customer_id: str, limit: int = 10) -> str:
+    """Query recent orders for a customer."""
+    # Your database logic here
+    return f"Found {limit} orders for customer {customer_id}"
+
+@mcp.tool()
+def search_products(query: str) -> str:
+    """Search the product catalog."""
+    return f"Products matching: {query}"
+
+if __name__ == "__main__":
+    mcp.run()
 ```
 
-**analyst.npc** - Specialist agent:
-```yaml
-#!/usr/bin/env npc
-name: analyst
-primary_directive: |
-  You analyze data and provide insights with specific numbers and trends.
-model: qwen3:8b
-provider: ollama
-```
+The team's NPCs automatically get access to MCP tools alongside their jinxes.
 
-**agents.md** — Define multiple agents in a single markdown file. Each `## heading` becomes an agent name, the body becomes its directive:
+### Agent definitions in markdown
 
+**agents.md** — multiple agents in one file:
 ```markdown
 ## summarizer
 You summarize long documents into concise bullet points.
+Focus on key findings, methodology, and conclusions.
 
 ## fact_checker
 You verify claims against reliable sources and flag inaccuracies.
+Always cite your sources.
 ```
 
-**agents/ directory** — One `.md` file per agent. The filename (minus `.md`) becomes the agent name. Supports optional YAML frontmatter for model/provider overrides:
-
+**agents/translator.md** — one file per agent with optional frontmatter:
 ```markdown
 ---
 model: gemini-2.5-flash
@@ -376,26 +300,11 @@ provider: gemini
 You translate content between languages while preserving tone and idiom.
 ```
 
-These formats are supported by both the Python (`npcpy`) and Rust (`npcsh`) implementations, so you can define agents however fits your workflow — YAML `.npc` files for full control, `agents.md` for quick prototyping, or `agents/` for markdown-native projects.
-
-### Team from directory
-
-```python
-from npcpy.npc_compiler import Team
-
-# Load team from directory with .npc files and team.ctx
-team = Team(team_path='./npc_team')
-
-# Orchestrate through the forenpc (set in team.ctx)
-result = team.orchestrate("Analyze the sales data and write a summary")
-print(result['output'])
-```
-
-### Agent with skills
+### Skills
 
 Skills are knowledge-content jinxes that provide instructional sections to agents on demand.
 
-**1. Create a skill file** (`npc_team/jinxes/skills/code-review/SKILL.md`):
+**npc_team/jinxes/skills/code-review/SKILL.md:**
 ```markdown
 ---
 name: code-review
@@ -412,93 +321,29 @@ description: Use when reviewing code for quality, security, and best practices.
 Focus on OWASP top 10 vulnerabilities...
 ```
 
-**2. Reference it in your NPC** (`npc_team/reviewer.npc`):
+Reference in your NPC:
 ```yaml
-name: reviewer
-primary_directive: You review code for quality and security issues.
-model: qwen3.5:2b
-provider: ollama
 jinxes:
   - skills/code-review
 ```
 
-**3. Use the NPC:**
-```python
-from npcpy.npc_compiler import NPC
+### CLI tools
 
-# Load NPC from file - skills are automatically available as callable jinxes
-reviewer = NPC(file='./npc_team/reviewer.npc')
-response = reviewer.get_llm_response("Review this function: def login(user, pwd): ...")
-print(response['response'])
-```
+```bash
+# The NPC shell — the recommended way to use NPC teams
+npcsh                        # Interactive shell with agents, tools, and jinxes
 
-Skills let the agent request specific knowledge sections (like `checklist` or `security`) as needed during responses.
+# Scaffold a new team
+npc-init
 
-### Agent with MCP server
+# Launch AI coding tools as an NPC from your team
+npc-claude --npc corca       # Claude Code
+npc-codex --npc analyst      # Codex
+npc-gemini                   # Gemini CLI (interactive picker)
+npc-opencode / npc-aider / npc-amp
 
-Connect any MCP server to an NPC and its tools become available for agentic tool calling:
-
-```python
-from npcpy.npc_compiler import NPC
-from npcpy.serve import MCPClientNPC
-
-# Connect to your MCP server
-mcp = MCPClientNPC()
-mcp.connect_sync('./my_mcp_server.py')
-
-# Create an NPC
-assistant = NPC(
-    name='Assistant',
-    primary_directive='You help users with tasks using available tools.',
-    model='qwen3.5:2b',
-    provider='ollama'
-)
-
-# Pass MCP tools to get_llm_response - the agent handles tool calls automatically
-response = assistant.get_llm_response(
-    "Search the database for recent orders",
-    tools=mcp.available_tools_llm,
-    tool_map=mcp.tool_map
-)
-print(response['response'])
-
-# Clean up when done
-mcp.disconnect_sync()
-```
-
-Example MCP server (`my_mcp_server.py`):
-```python
-from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("My Tools")
-
-@mcp.tool()
-def search_database(query: str) -> str:
-    """Search the database for records matching the query."""
-    return f"Found results for: {query}"
-
-@mcp.tool()
-def send_notification(message: str, channel: str = "general") -> str:
-    """Send a notification to a channel."""
-    return f"Sent '{message}' to #{channel}"
-
-if __name__ == "__main__":
-    mcp.run()
-```
-
-**MCPClientNPC methods:**
-- `connect_sync(server_path)` — Connect to an MCP server script
-- `disconnect_sync()` — Disconnect from the server
-- `available_tools_llm` — Tool schemas for LLM consumption
-- `tool_map` — Dict mapping tool names to callable functions
-
-### Image generation
-
-```python
-from npcpy.llm_funcs import gen_image
-
-images = gen_image("A sunset over the mountains", model='sdxl', provider='diffusers')
-images[0].save("sunset.png")
+# Register MCP server + hooks for deeper integration
+npc-plugin claude
 ```
 
 ## Features
@@ -508,7 +353,7 @@ images[0].save("sunset.png")
 - **[Jinx Workflows](https://npcpy.readthedocs.io/en/latest/guides/jinx-workflows/)** — Jinja Execution templates for multi-step prompt pipelines
 - **[Skills](https://npcpy.readthedocs.io/en/latest/guides/skills/)** — Knowledge-content jinxes that serve instructional sections to agents on demand
 - **[NPCArray](https://npcpy.readthedocs.io/en/latest/guides/npc-array/)** — NumPy-like vectorized operations over model populations
-- **[Image, Audio & Video](https://npcpy.readthedocs.io/en/latest/guides/image-audio-video/)** — Generation via Ollama, diffusers, OpenAI, Gemini
+- **[Image, Audio & Video](https://npcpy.readthedocs.io/en/latest/guides/image-audio-video/)** — Generation via Ollama, diffusers, OpenAI, Gemini, ElevenLabs
 - **[Knowledge Graphs](https://npcpy.readthedocs.io/en/latest/guides/knowledge-graphs/)** — Build and evolve knowledge graphs from text
 - **[Fine-Tuning & Evolution](https://npcpy.readthedocs.io/en/latest/guides/fine-tuning/)** — SFT, RL, diffusion, genetic algorithms
 - **[Serving](https://npcpy.readthedocs.io/en/latest/guides/serving/)** — Flask server for deploying teams via REST API
@@ -560,13 +405,9 @@ export GEMINI_API_KEY="your_key"
 
 Full documentation, guides, and API reference at [npcpy.readthedocs.io](https://npcpy.readthedocs.io/en/latest/).
 
-## Inference Capabilities
-
-Works with local and cloud providers through LiteLLM (Ollama, OpenAI, Anthropic, Gemini, Deepseek, and more) with support for text, image, audio, and video generation.
-
 ## Links
 
-- **[Incognide](https://github.com/cagostino/incognide)** — GUI for the NPC Toolkit ([download](https://enpisi.com/incognide))
+- **[Incognide](https://github.com/npc-worldwide/incognide)** — Desktop environment with AI chat, browser, file viewers, code editor, terminal, knowledge graphs, team management, and more ([download](https://enpisi.com/incognide))
 - **[NPC Shell](https://github.com/npc-worldwide/npcsh)** — Command-line shell for interacting with NPCs
 - **[Newsletter](https://forms.gle/n1NzQmwjsV4xv1B2A)** — Stay in the loop
 

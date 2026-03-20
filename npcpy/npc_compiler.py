@@ -2945,13 +2945,13 @@ class Team:
                 npc = NPC(npc_path, db_conn=self.db_conn, team=self)
                 self.npcs[npc.name] = npc
 
-        # Load agents from agents.md (## headings = agent names, body = directives)
-        agents_md_path = os.path.join(self.team_path, "agents.md")
+        # Load agents from agents.md and agents/ at the project root (parent of npc_team/)
+        project_root = os.path.dirname(os.path.abspath(self.team_path))
+        agents_md_path = os.path.join(project_root, "agents.md")
         if os.path.exists(agents_md_path):
             self._load_agents_from_md(agents_md_path)
 
-        # Load agents from agents/ directory (.md files, each defines an agent)
-        agents_dir = os.path.join(self.team_path, "agents")
+        agents_dir = os.path.join(project_root, "agents")
         if os.path.isdir(agents_dir):
             self._load_agents_from_dir(agents_dir)
 
@@ -3178,15 +3178,15 @@ class Team:
 
         for line in content.split('\n'):
             if line.startswith('## '):
-                if current_name and current_name not in self.npcs:
-                    self._register_md_agent(current_name, '\n'.join(current_body).strip())
+                if current_name:
+                    self._register_or_prompt_agent(current_name, '\n'.join(current_body).strip(), path)
                 current_name = line[3:].strip()
                 current_body = []
             elif current_name is not None:
                 current_body.append(line)
 
-        if current_name and current_name not in self.npcs:
-            self._register_md_agent(current_name, '\n'.join(current_body).strip())
+        if current_name:
+            self._register_or_prompt_agent(current_name, '\n'.join(current_body).strip(), path)
 
     def _load_agents_from_dir(self, agents_dir: str):
         """Load agents from an agents/ directory.
@@ -3773,7 +3773,7 @@ class ToolAgent(Agent):
         self,
         name: str = "tool_agent",
         primary_directive: str = "You are an AI agent with specialized tools.",
-        tool_functions: List[Callable] = None,
+        tools: list = None,
         mcp_servers: list = None,
         include_defaults: bool = True,
         model: str = None,
@@ -3783,8 +3783,8 @@ class ToolAgent(Agent):
         all_tools = []
         if include_defaults:
             all_tools.extend(_DEFAULT_AGENT_TOOLS)
-        if tool_functions:
-            all_tools.extend(tool_functions)
+        if tools:
+            all_tools.extend(tools)
 
         super().__init__(
             name=name,

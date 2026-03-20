@@ -87,6 +87,19 @@ from termcolor import cprint
 
 from npcpy.tools import auto_tools
 from npcpy.work.plan import schedule_job, unschedule_job, list_jobs, job_status
+from npcpy.streaming import (
+    StreamConfig, StreamEvent,
+    clean_messages_for_llm,
+    ensure_system_prompt,
+    parse_stream_chunk,
+    format_sse_event,
+    format_sse_raw,
+    resolve_npc_tools,
+    execute_tool,
+    create_chat_stream,
+    create_tool_agent_stream,
+    create_jinx_stream,
+)
 
 import json
 import os
@@ -5423,50 +5436,11 @@ def stream():
     print(f"[DEBUG] After processing - images: {images}, attachment_paths_for_llm: {attachment_paths_for_llm}")
     messages = fetch_messages_for_conversation(conversation_id)
 
-    def clean_messages_for_llm(msgs):
-        cleaned = []
-        tool_call_ids_with_results = set()
-        all_tool_call_ids = set()
-        for msg in msgs:
-            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
-                for tc in msg['tool_calls']:
-                    if isinstance(tc, dict) and tc.get('id'):
-                        all_tool_call_ids.add(tc['id'])
-            if msg.get('role') == 'tool' and msg.get('tool_call_id'):
-                tool_call_ids_with_results.add(msg['tool_call_id'])
-
-        valid_tool_call_ids = all_tool_call_ids & tool_call_ids_with_results
-
-        for msg in msgs:
-            if msg.get('role') == 'tool':
-                tool_call_id = msg.get('tool_call_id')
-                if not tool_call_id or tool_call_id not in valid_tool_call_ids:
-                    continue
-            if msg.get('role') == 'assistant':
-                clean_msg = dict(msg)
-                if 'tool_calls' in msg and msg['tool_calls']:
-                    valid_tcs = [tc for tc in msg['tool_calls'] if isinstance(tc, dict) and tc.get('id') in valid_tool_call_ids]
-                    if valid_tcs:
-                        clean_msg['tool_calls'] = valid_tcs
-                    else:
-                        clean_msg.pop('tool_calls', None)
-                cleaned.append(clean_msg)
-                continue
-            cleaned.append(msg)
-        return cleaned
-
+    # clean_messages_for_llm imported from npcpy.streaming
     messages = clean_messages_for_llm(messages)
 
-    if len(messages) == 0 and npc_object is not None:
-        messages = [{'role': 'system',
-                     'content': npc_object.get_system_prompt()}]
-    elif len(messages) > 0 and messages[0]['role'] != 'system' and npc_object is not None:
-        messages.insert(0, {'role': 'system',
-                            'content': npc_object.get_system_prompt()})
-    elif len(messages) > 0 and npc_object is not None:
-        messages[0]['content'] = npc_object.get_system_prompt()
-    if npc_object is not None and messages and messages[0]['role'] == 'system':
-        messages[0]['content'] = npc_object.get_system_prompt()
+    # ensure_system_prompt imported from npcpy.streaming
+    messages = ensure_system_prompt(messages, npc=npc_object)
     tool_args = {}
     if npc_object is not None:
         if hasattr(npc_object, 'tools') and npc_object.tools:
@@ -5600,25 +5574,8 @@ def stream():
             app.mcp_clients[state_key] = {"client": None, "server_path": None, "messages": messages}
         messages = app.mcp_clients[state_key].get("messages", messages)
 
-        def sanitize_mcp_messages(msgs):
-            ids_with_results = {m.get('tool_call_id') for m in msgs if m.get('role') == 'tool' and m.get('tool_call_id')}
-            sanitized = []
-            for m in msgs:
-                if m.get('role') == 'assistant' and m.get('tool_calls'):
-                    valid_tcs = [tc for tc in m['tool_calls'] if isinstance(tc, dict) and tc.get('id') in ids_with_results]
-                    clean = dict(m)
-                    if valid_tcs:
-                        clean['tool_calls'] = valid_tcs
-                    else:
-                        clean.pop('tool_calls', None)
-                    sanitized.append(clean)
-                elif m.get('role') == 'tool':
-                    if m.get('tool_call_id') and m['tool_call_id'] in ids_with_results:
-                        sanitized.append(m)
-                else:
-                    sanitized.append(m)
-            return sanitized
-        messages = sanitize_mcp_messages(messages)
+        # sanitize_mcp_messages replaced by clean_messages_for_llm from npcpy.streaming
+        messages = clean_messages_for_llm(messages)
 
         if not messages:
             messages = []
