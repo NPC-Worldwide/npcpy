@@ -87,21 +87,6 @@ def _pick_npc(npcs: dict) -> str:
             sys.exit(0)
 
 
-def _write_npc_state(npc_name: str, selected: dict, npcs: dict):
-    """Write state file so MCP server and hooks know the active NPC."""
-    state_dir = os.path.expanduser("~/.npcsh")
-    os.makedirs(state_dir, exist_ok=True)
-    try:
-        with open(os.path.join(state_dir, ".active_npc_state.json"), "w") as f:
-            json.dump({
-                "name": npc_name,
-                "directive": selected["directive"],
-                "tools": selected["tools"],
-                "team_npcs": list(npcs.keys()),
-            }, f)
-    except Exception:
-        pass
-
 
 def _build_system_prompt(npc_name: str, selected: dict, npcs: dict) -> str:
     """Build the full system prompt for the NPC."""
@@ -233,7 +218,6 @@ def launch(tool: str = "claude", team_path: Optional[str] = None,
         sys.exit(1)
 
     selected = npcs[npc_name]
-    _write_npc_state(npc_name, selected, npcs)
 
     launcher = TOOLS.get(tool)
     if not launcher:

@@ -28,16 +28,6 @@ HOOK_SCRIPT = '''#!/usr/bin/env python3
 import sys, json, os
 from datetime import datetime
 
-NPC_STATE_FILE = os.path.expanduser("~/.npcsh/.active_npc_state.json")
-
-def _get_active_npc():
-    try:
-        with open(NPC_STATE_FILE) as f:
-            state = json.load(f)
-        return state.get("name", ""), state.get("directive", "")
-    except Exception:
-        return "", ""
-
 def main():
     raw = sys.stdin.read().strip()
     if not raw:
@@ -51,14 +41,6 @@ def main():
     session_id = event.get("session_id", "unknown")
     cwd = event.get("cwd", os.getcwd())
     conversation_id = f"claude_code_{session_id}"
-
-    if event_name == "UserPromptSubmit":
-        npc_name, directive = _get_active_npc()
-        if directive:
-            print(json.dumps({"systemMessage":
-                f"You are {npc_name}. {directive.strip()}\\n"
-                f"Only use the MCP tools available to you — these are your jinxes."
-            }))
 
     role = content = tool_calls = tool_results = None
     if event_name == "UserPromptSubmit":

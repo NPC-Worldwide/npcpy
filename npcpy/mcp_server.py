@@ -67,11 +67,7 @@ class NPCServerState:
         if npc_name and npc_name in self.team.npcs:
             self.active_npc = self.team.npcs[npc_name]
         else:
-            # Check state file (written by claude_launcher)
-            state_npc = self._read_npc_from_state()
-            if state_npc and state_npc in self.team.npcs:
-                self.active_npc = self.team.npcs[state_npc]
-            elif self.team.forenpc:
+            if self.team.forenpc:
                 self.active_npc = self.team.forenpc
             elif self.team.npcs:
                 self.active_npc = next(iter(self.team.npcs.values()))
@@ -81,14 +77,8 @@ class NPCServerState:
         # Track which jinx tool names are currently registered
         self._registered_jinx_names = set()
 
-        # State file for hooks to read active NPC directive
-        self._state_dir = os.path.expanduser("~/.npcsh")
-        os.makedirs(self._state_dir, exist_ok=True)
-        self._state_file = os.path.join(self._state_dir, ".active_npc_state.json")
-
         if self.active_npc:
             print(f"[npc-mcp] Active NPC: {self.active_npc.name}", file=sys.stderr)
-            self._write_npc_state()
         else:
             print("[npc-mcp] WARNING: No NPC loaded", file=sys.stderr)
 
@@ -223,35 +213,8 @@ class NPCServerState:
                 except Exception as e:
                     print(f"[npc-mcp] tool list notify error: {e}", file=sys.stderr)
 
-        self._write_npc_state()
         print(f"[npc-mcp] Switched to {npc_name}", file=sys.stderr)
         return self.get_system_prompt_text()
-
-    def _read_npc_from_state(self) -> Optional[str]:
-        """Read NPC name from state file (written by claude_launcher)."""
-        state_file = os.path.join(os.path.expanduser("~/.npcsh"), ".active_npc_state.json")
-        try:
-            with open(state_file, "r") as f:
-                return json.load(f).get("name")
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
-            return None
-
-    def _write_npc_state(self):
-        """Write active NPC state to file for hooks to read."""
-        npc = self.active_npc
-        if not npc:
-            return
-        state = {
-            "name": npc.name,
-            "directive": npc.primary_directive or "",
-            "tools": list(npc.jinxes_dict.keys()),
-            "team_npcs": list(self.team.npcs.keys()),
-        }
-        try:
-            with open(self._state_file, "w") as f:
-                json.dump(state, f)
-        except Exception as e:
-            print(f"[npc-mcp] state write error: {e}", file=sys.stderr)
 
     def _resolve_npc(self, npc_name: Optional[str] = None):
         if npc_name and npc_name in self.team.npcs:
