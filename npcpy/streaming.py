@@ -721,34 +721,34 @@ def create_jinx_stream(config: StreamConfig,
                        cancellation_check: Callable[[], bool] = None,
                        followup_model: str = None,
                        followup_provider: str = None,
-                       max_followups: int = 3,
+                       max_followups: int = 10,
                        ) -> Generator[StreamEvent, None, None]:
-    """Two-phase streaming: Phase 1 streams a chat response, Phase 2 uses
-    check_llm_command to execute jinxes if the model indicated it would act.
+    """Agentic jinx streaming loop: stream a response, execute jinxes via
+    check_llm_command, feed results back, and keep looping until the agent
+    decides to stop (no more jinxes called, or explicit 'stop' jinx).
 
-    This is the pattern used by npcsh and Lavanzaro's server_wrapper — the
-    model generates natural text first, then a separate LLM call decides
-    whether jinxes should fire.
+    This mirrors the npcsh agentic loop where the agent keeps autonomously
+    acting until it's satisfied the task is complete.
 
     Args:
         config: Stream configuration
         cancellation_check: Optional cancellation callback
-        followup_model: Model for the followup decision call (default: config.model)
-        followup_provider: Provider for the followup decision call (default: config.provider)
-        max_followups: Max number of followup/jinx iterations
+        followup_model: Model for check_llm_command calls (default: config.model)
+        followup_provider: Provider for check_llm_command calls (default: config.provider)
+        max_followups: Max number of agentic iterations (safety cap)
     """
     npc = config.npc
     model = config.model
     provider = config.provider
     messages = config.messages
 
-    # Phase 1: stream natural response
+    # Phase 1: stream the initial natural response
     collected_content = ""
     for event in create_chat_stream(config, cancellation_check):
         if event.type == 'content_delta':
             collected_content += event.data.get('content', '')
         if event.type == 'message_stop':
-            # Don't yield message_stop yet — we might have Phase 2
+            # Don't yield message_stop yet — we may loop
             continue
         yield event
 
@@ -759,7 +759,7 @@ def create_jinx_stream(config: StreamConfig,
     # Add assistant response to messages
     messages.append({'role': 'assistant', 'content': collected_content})
 
-    # Phase 2: check if jinxes should fire
+    # Check if we even have jinxes
     jinxes_dict = None
     if npc:
         jinxes_dict = getattr(npc, 'jinxes_dict', None) or getattr(npc, 'jinxs_dict', None)
@@ -771,46 +771,22 @@ def create_jinx_stream(config: StreamConfig,
     fm = followup_model or model
     fp = followup_provider or provider
 
-    for followup_iter in range(max_followups):
-        # Ask LLM if followup is needed
-        try:
-            followup_check = get_llm_response(
-                '''Analyze the assistant's last response. Did the assistant SAY they would search/delegate/execute something but NOT actually do it yet?
+    # --- Agentic loop: keep going until the agent stops ---
+    for iteration in range(max_followups):
+        if cancellation_check and cancellation_check():
+            yield StreamEvent('interrupt', {})
+            return
 
-Rules:
-- followup=1 if assistant SAID "let me search", "I'll search", "I will delegate", "let me look that up" or similar BUT no actual search results appear in the response
-- followup=0 if assistant already provided search results, factual answers, or completed the task
-- followup=0 if assistant is asking the user a clarifying question
-- followup=0 if the response contains actual search findings, citations, or data
-- followup=0 if the response contains "[Jinx executed:" indicating a jinx already ran
-
-Return JSON: {"followup": 0} or {"followup": 1}''',
-                format='json',
-                model=fm,
-                provider=fp,
-                messages=messages[-10:],
-            )
-            needs_followup = followup_check.get('response', {}).get('followup', 0)
-        except Exception:
-            needs_followup = 0
-
-        if not needs_followup:
-            break
-
-        # Execute check_llm_command
+        # Call check_llm_command — let the LLM plan and execute jinxes
         yield StreamEvent('thinking', {'message': 'Processing...'})
 
-        continue_prompt = """[INTERNAL SYSTEM - NO SPOKEN RESPONSE]
+        continue_prompt = """Based on your response and the conversation so far, decide what to do next.
 
-Based on your response above, you must now invoke a tool:
-1. USE A JINX to complete the task (python, search, vixynt, edit_document, delegate, etc.)
-2. OR provide your final answer if no jinx is needed
+If you said you would search, delegate, execute code, generate an image, edit a document, or perform any action — you MUST now invoke the appropriate jinx to do it. Do not describe what you would do, actually do it.
 
-IMPORTANT: If the user asked for code execution, data visualization, simulation, image generation, document editing, or search - you MUST use the appropriate jinx. Do not just describe what you would do - actually do it.
+If you have already completed everything the user asked for and there is nothing more to do, respond naturally with your final answer. Do NOT invoke any jinx if the task is done.
 
-IMPORTANT: If you mentioned delegating to another team member, you MUST actually call the delegate jinx with npc_name and task parameters.
-
-Do NOT provide an empty response unless you have already executed all necessary jinxes.
+If you mentioned delegating to a team member, invoke the delegate jinx with npc_name and task.
 """
 
         try:
@@ -820,17 +796,24 @@ Do NOT provide an empty response unless you have already executed all necessary 
                 stream=False,
             )
         except Exception as e:
-            print("check_llm_command error: {}".format(e))
+            print("check_llm_command error (iter {}): {}".format(iteration, e))
             break
 
         if not isinstance(result, dict):
             break
 
-        # Process jinx executions
+        # Extract jinx executions
         jinx_execs = result.get('jinx_executions', [])
         jinx_calls = result.get('jinx_calls', [])
         all_execs = jinx_execs or jinx_calls
 
+        # Check for explicit stop
+        stop_called = any(
+            j.get('name', '') in ('stop', 'done', 'finish')
+            for j in all_execs
+        ) if all_execs else False
+
+        # Yield tool events
         if all_execs:
             tool_names = [j.get('name', 'unknown') for j in all_execs]
             yield StreamEvent('tool_execution_start', {
@@ -850,17 +833,39 @@ Do NOT provide an empty response unless you have already executed all necessary 
                     'result': joutput, 'args': jinputs,
                 })
 
+        # Yield any new content from the check_llm_command result
         output = result.get('output', '')
         if output and output != collected_content:
             yield StreamEvent('content_delta', {'content': str(output), 'model': model})
             collected_content = str(output)
 
-        # Update messages so next followup check sees the completed work
+        # Update messages with what happened
         if all_execs or output:
-            exec_names = ', '.join(j.get('name', '') for j in all_execs) if all_execs else ''
+            exec_summary = ', '.join(j.get('name', '') for j in all_execs) if all_execs else ''
+            exec_results = []
+            for j in (all_execs or []):
+                jout = j.get('output', j.get('result', ''))
+                if jout:
+                    exec_results.append("{}: {}".format(j.get('name', ''), str(jout)[:500]))
+
             messages.append({
                 'role': 'assistant',
-                'content': "[Jinx executed: {}] {}".format(exec_names, str(output)[:1000])
+                'content': "[Jinx executed: {}]\n{}\n{}".format(
+                    exec_summary,
+                    '\n'.join(exec_results),
+                    str(output)[:1000] if output else ''
+                ).strip()
             })
+
+        # Stop conditions:
+        # 1. Agent explicitly called stop
+        if stop_called:
+            break
+        # 2. No jinxes were called — agent responded naturally (task complete)
+        if not all_execs:
+            break
+
+        # Otherwise, loop: the agent executed jinxes, so give it another turn
+        # to either act more or wrap up with a final response
 
     yield StreamEvent('message_stop', {})

@@ -4907,6 +4907,24 @@ def get_npc_tools():
                     label = srv.get("path") or srv.get("url") or f"{srv.get('command', '')} {' '.join(srv.get('args', []))}"
                     team_servers.append({**srv, "label": label, "enabled": False})
 
+        # Auto-discover NPC team folders as startable MCP servers
+        npcsh_dir = os.path.expanduser("~/.npcsh")
+        team_candidates = [
+            os.path.join(npcsh_dir, "incognide", "npc_team"),
+            os.path.join(npcsh_dir, "npc_team"),
+        ]
+        if current_path_arg:
+            team_candidates.append(os.path.join(os.path.abspath(current_path_arg), "npc_team"))
+        seen = {s.get("path", "") for s in team_servers}
+        for tdir in team_candidates:
+            if os.path.isdir(tdir):
+                ctx_files = [f for f in os.listdir(tdir) if f.endswith(".ctx")]
+                tlabel = ctx_files[0].replace(".ctx", "") if ctx_files else os.path.basename(os.path.dirname(tdir))
+                cmd = f"python -m npcpy.mcp_server --team {tdir}"
+                if cmd not in seen:
+                    team_servers.append({"path": cmd, "label": f"{tlabel} NPC Team", "enabled": False})
+                    seen.add(cmd)
+
         return jsonify({
             "npc_tools": npc_tools,
             "team_servers": team_servers,
