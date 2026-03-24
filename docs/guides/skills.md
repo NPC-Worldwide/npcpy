@@ -92,8 +92,8 @@ primary_directive: You review code for quality and security issues.
 model: llama3.2
 provider: ollama
 jinxes:
-  - skills/code-review
-  - skills/debugging
+  - {{ Jinx('skills/code-review') }}
+  - {{ Jinx('skills/debugging') }}
 ```
 
 The skill becomes available as a callable jinx. The agent's system prompt includes the skill description so it knows when to use it.
@@ -280,7 +280,7 @@ primary_directive: You help debug code issues and errors.
 model: llama3.2
 provider: ollama
 jinxes:
-  - skills/debugging
+  - {{ Jinx('skills/debugging') }}
 ```
 
 ```python

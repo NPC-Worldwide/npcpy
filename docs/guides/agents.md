@@ -206,10 +206,10 @@ primary_directive: |
 model: llama3.2
 provider: ollama
 jinxes:
-  - lib/core/sh
-  - lib/core/python
-  - skills/code-review
-  - skills/debugging
+  - {{ Jinx('sh') }}
+  - {{ Jinx('python') }}
+  - {{ Jinx('skills/code-review') }}
+  - {{ Jinx('skills/debugging') }}
 ```
 
 The agent sees `code-review` and `debugging` in its tool catalog alongside `sh` and `python`. When it encounters a review task, it calls `code-review(section=correctness)` to get methodology, then uses `sh` or `python` to inspect the actual code. No separate configuration is needed — skills flow through the existing jinx assignment mechanism.

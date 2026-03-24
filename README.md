@@ -195,6 +195,8 @@ context: |
 forenpc: lead
 model: qwen3.5:2b
 provider: ollama
+output_format: markdown
+max_search_results: 5
 mcp_servers:
   - path: ~/.npcsh/mcp_server.py
 ```
@@ -207,10 +209,10 @@ primary_directive: |
   You lead the research team. Delegate literature searches to @searcher,
   data analysis to @analyst. Synthesize their findings into a coherent summary.
 jinxes:
-  - sh
-  - python
-  - delegate
-  - web_search
+  - {{ Jinx('sh') }}
+  - {{ Jinx('python') }}
+  - {{ Jinx('delegate') }}
+  - {{ Jinx('web_search') }}
 ```
 
 **searcher.npc:**
@@ -223,10 +225,35 @@ primary_directive: |
 model: gemini-2.5-flash
 provider: gemini
 jinxes:
-  - web_search
-  - load_file
-  - sh
+  - {{ Jinx('web_search') }}
+  - {{ Jinx('load_file') }}
+  - {{ Jinx('sh') }}
 ```
+
+**Jinxes can reference a specific NPC** to always run under that persona, and **access `ctx` variables** from `team.ctx`:
+
+**jinxes/search_and_summarize.jinx:**
+```yaml
+#!/usr/bin/env npc
+jinx_name: search_and_summarize
+description: Search for papers and summarize findings using the searcher NPC.
+npc: {{ NPC('searcher') }}
+inputs:
+  - query
+steps:
+  - name: search
+    engine: natural
+    code: |
+      Search for papers about {{ query }}.
+      Return up to {{ ctx.max_search_results }} results.
+  - name: summarize
+    engine: natural
+    code: |
+      Summarize the findings in {{ ctx.output_format }} format:
+      {{ output }}
+```
+
+The `npc:` field binds the jinx to a specific NPC — when this jinx runs, it always uses the `searcher` persona regardless of which NPC invoked it. Any custom keys in `team.ctx` (like `output_format`, `max_search_results`) are available as `{{ ctx.key }}` in Jinja templates and as `context['key']` in Python steps.
 
 ```
 my_project/
@@ -330,7 +357,7 @@ Focus on OWASP top 10 vulnerabilities...
 Reference in your NPC:
 ```yaml
 jinxes:
-  - skills/code-review
+  - {{ Jinx('skills/code-review') }}
 ```
 
 ### CLI tools

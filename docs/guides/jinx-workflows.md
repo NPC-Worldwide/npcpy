@@ -363,10 +363,10 @@ You can author skills as `SKILL.md` folders or as `.jinx` files with `engine: sk
 ```yaml
 # reviewer.npc
 jinxes:
-  - lib/core/sh
-  - lib/core/python
-  - skills/code-review
-  - skills/debugging
+  - {{ Jinx('sh') }}
+  - {{ Jinx('python') }}
+  - {{ Jinx('skills/code-review') }}
+  - {{ Jinx('skills/debugging') }}
 ```
 
 The agent calls `code-review(section=correctness)` the same way it calls `sh(command=ls)` — through the same jinx pipeline. See the [Skills guide](skills.md) for full details on authoring and usage.
