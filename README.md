@@ -423,7 +423,7 @@ Full documentation, guides, and API reference at [npcpy.readthedocs.io](https://
 - Simulating hormonal cycles for AI: [arxiv](https://arxiv.org/abs/2508.11829)
 - TinyTim: A Family of Language Models for Divergent Generation [arxiv](https://arxiv.org/abs/2508.11607)
 - The production of meaning in the processing of natural language: [arxiv](https://arxiv.org/abs/2603.20381)
-- ALARA for Agents: Least-Privilege Context Engineering Through Portable Composable Multi-Agent Teams: [arxiv](https://arxiv.org/abs/2603.20381)
+- ALARA for Agents: Least-Privilege Context Engineering Through Portable Composable Multi-Agent Teams: [arxiv](https://arxiv.org/abs/2603.20380)
 
 Has your research benefited from npcpy? Let us know!
 
