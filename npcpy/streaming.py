@@ -742,56 +742,32 @@ def create_jinx_stream(config: StreamConfig,
     provider = config.provider
     messages = config.messages
 
-    # Phase 1: stream the initial natural response
-    collected_content = ""
-    for event in create_chat_stream(config, cancellation_check):
-        if event.type == 'content_delta':
-            collected_content += event.data.get('content', '')
-        if event.type == 'message_stop':
-            # Don't yield message_stop yet — we may loop
-            continue
-        yield event
-
-    if not collected_content.strip():
-        yield StreamEvent('message_stop', {})
-        return
-
-    # Add assistant response to messages
-    messages.append({'role': 'assistant', 'content': collected_content})
-
     # Check if we even have jinxes
     jinxes_dict = None
     if npc:
         jinxes_dict = getattr(npc, 'jinxes_dict', None) or getattr(npc, 'jinxs_dict', None)
 
     if not jinxes_dict:
-        yield StreamEvent('message_stop', {})
+        # No jinxes available — fall back to plain chat stream
+        for event in create_chat_stream(config, cancellation_check):
+            yield event
         return
 
     fm = followup_model or model
     fp = followup_provider or provider
 
-    # --- Agentic loop: keep going until the agent stops ---
+    # --- Agentic loop: everything goes through check_llm_command / jinxes ---
     for iteration in range(max_followups):
         if cancellation_check and cancellation_check():
             yield StreamEvent('interrupt', {})
             return
 
-        # Call check_llm_command — let the LLM plan and execute jinxes
-        yield StreamEvent('thinking', {'message': 'Processing...'})
-
-        continue_prompt = """Based on your response and the conversation so far, decide what to do next.
-
-If you said you would search, delegate, execute code, generate an image, edit a document, or perform any action — you MUST now invoke the appropriate jinx to do it. Do not describe what you would do, actually do it.
-
-If you have already completed everything the user asked for and there is nothing more to do, respond naturally with your final answer. Do NOT invoke any jinx if the task is done.
-
-If you mentioned delegating to a team member, invoke the delegate jinx with npc_name and task.
-"""
+        if iteration > 0:
+            yield StreamEvent('thinking', {'message': 'Processing...'})
 
         try:
             result = npc.check_llm_command(
-                continue_prompt,
+                config.commandstr if iteration == 0 else "Continue. If the task is complete, call stop.",
                 messages=messages,
                 stream=False,
             )
