@@ -1721,3 +1721,182 @@ def get_available_tables(db_path_or_engine: Union[str, Engine]) -> List[Tuple[st
     except Exception as e:
         print(f"Error getting available tables: {e}")
         return []
+
+
+TABLE_SCHEMAS = {
+    "command_history": ["timestamp", "command", "subcommands", "output", "location"],
+    "conversation_history": [
+        "message_id", "timestamp", "conversation_id", "role", "content", "directory_path",
+        "model", "provider", "npc", "team", "tool_calls", "tool_results", "reasoning_content",
+        "parent_message_id", "device_id", "device_name", "params", "input_tokens", "output_tokens", "cost",
+    ],
+    "jinx_executions": [
+        "message_id", "jinx_name", "input", "timestamp", "npc", "team",
+        "conversation_id", "output", "status", "error_message", "duration_ms",
+    ],
+    "npc_executions": [
+        "message_id", "input", "timestamp", "npc", "team", "conversation_id", "model", "provider",
+    ],
+    "message_attachments": [
+        "message_id", "attachment_name", "attachment_type", "attachment_size",
+        "upload_timestamp", "file_path",
+    ],
+    "compiled_npcs": ["name", "source_path", "compiled_content", "compiled_at"],
+    "memory_lifecycle": [
+        "message_id", "conversation_id", "npc", "team", "directory_path", "timestamp",
+        "initial_memory", "final_memory", "status", "model", "provider", "created_at",
+    ],
+    "labels": ["entity_type", "entity_id", "label", "metadata", "created_at"],
+    "npc_memories": ["npc_name", "team_name", "content", "status", "created_at", "updated_at"],
+    "knowledge_graphs": ["npc_name", "team_name", "kg_data", "generation", "created_at", "updated_at"],
+}
+
+
+def _resolve_path(base_dir, table, row, ext="csv"):
+    import pathlib
+    ts = row.get("timestamp", "") or row.get("created_at", "") or row.get("compiled_at", "") or row.get("upload_timestamp", "")
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        try:
+            dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            dt = datetime.now()
+
+    dir_path = row.get("directory_path", "") or row.get("location", "")
+    path_part = dir_path.strip("/\\").replace("\\", "/") if dir_path else "_local"
+
+    group_id = (
+        row.get("conversation_id")
+        or row.get("npc_name")
+        or row.get("name")
+        or row.get("entity_id")
+        or row.get("message_id")
+        or "default"
+    )
+
+    return (pathlib.Path(base_dir) / table / path_part
+            / str(dt.year) / f"{dt.month:02d}" / f"{dt.day:02d}"
+            / f"{group_id}.{ext}")
+
+
+def append_row_csv(base_dir, table, row):
+    import csv as csv_mod
+    columns = TABLE_SCHEMAS.get(table)
+    if not columns:
+        raise ValueError(f"Unknown table: {table}")
+    clean = {col: str(row.get(col, "")) for col in columns}
+    path = _resolve_path(base_dir, table, clean, "csv")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exists = path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv_mod.DictWriter(f, fieldnames=columns)
+        if not exists:
+            writer.writeheader()
+        writer.writerow(clean)
+    return str(path)
+
+
+def append_row_parquet(base_dir, table, row):
+    import polars as pl
+    columns = TABLE_SCHEMAS.get(table)
+    if not columns:
+        raise ValueError(f"Unknown table: {table}")
+    clean = {col: row.get(col, "") for col in columns}
+    for col in columns:
+        if clean[col] is None:
+            clean[col] = ""
+    path = _resolve_path(base_dir, table, clean, "parquet")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new_df = pl.DataFrame([{k: str(v) for k, v in clean.items()}])
+    if path.exists():
+        existing = pl.read_parquet(path)
+        combined = pl.concat([existing, new_df])
+        combined.write_parquet(path)
+    else:
+        new_df.write_parquet(path)
+    return str(path)
+
+
+def load_file_csv(base_dir, table, group_id):
+    import csv as csv_mod
+    import pathlib
+    base = pathlib.Path(base_dir) / table
+    if not base.exists():
+        return []
+    target = f"{group_id}.csv"
+    for f in base.rglob(target):
+        with open(f, "r", encoding="utf-8") as fh:
+            return list(csv_mod.DictReader(fh))
+    return []
+
+
+def load_file_parquet(base_dir, table, group_id):
+    import polars as pl
+    import pathlib
+    base = pathlib.Path(base_dir) / table
+    if not base.exists():
+        return []
+    target = f"{group_id}.parquet"
+    for f in base.rglob(target):
+        return pl.read_parquet(f).to_dicts()
+    return []
+
+
+def list_files(base_dir, table, ext="csv", limit=100):
+    import pathlib
+    base = pathlib.Path(base_dir) / table
+    if not base.exists():
+        return []
+    files = sorted(base.rglob(f"*.{ext}"), key=lambda p: str(p), reverse=True)
+    return [{"group_id": f.stem, "file_path": str(f)} for f in files[:limit]]
+
+
+def search_files(base_dir, table, query, column="content", ext="csv"):
+    import csv as csv_mod
+    import pathlib
+    base = pathlib.Path(base_dir) / table
+    if not base.exists():
+        return []
+    q = query.lower()
+    results = []
+    for f in base.rglob(f"*.{ext}"):
+        if ext == "csv":
+            with open(f, "r", encoding="utf-8") as fh:
+                for row in csv_mod.DictReader(fh):
+                    if q in (row.get(column) or "").lower():
+                        results.append(row)
+        elif ext == "parquet":
+            try:
+                import polars as pl
+                df = pl.read_parquet(f)
+                if column in df.columns:
+                    matches = df.filter(pl.col(column).str.contains(query, literal=True))
+                    results.extend(matches.to_dicts())
+            except Exception:
+                pass
+    return results
+
+
+def scan_all(base_dir, table, ext="csv"):
+    import pathlib
+    base = pathlib.Path(base_dir) / table
+    if not base.exists():
+        return None
+    files = list(base.rglob(f"*.{ext}"))
+    if not files:
+        return None
+    try:
+        import polars as pl
+    except ImportError:
+        return None
+    dfs = []
+    for f in files:
+        try:
+            if ext == "csv":
+                dfs.append(pl.read_csv(f))
+            else:
+                dfs.append(pl.read_parquet(f))
+        except Exception:
+            pass
+    return pl.concat(dfs) if dfs else pl.DataFrame()
