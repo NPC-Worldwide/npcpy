@@ -39,6 +39,7 @@ base_requirements = [
     "Pillow",
     "python-dotenv",
     "pandas",
+    "polars",
     "beautifulsoup4",
     "duckduckgo-search",
     "flask",
@@ -84,13 +85,13 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="1.4.2",
+    version="1.4.3",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
-        "lite": api_requirements,  
-        "local": local_requirements,  
-        "yap": voice_requirements,  
+        "lite": api_requirements,
+        "local": local_requirements,
+        "yap": voice_requirements,
         "all": api_requirements + local_requirements + voice_requirements,
     },
     entry_points={
