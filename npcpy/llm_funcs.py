@@ -152,10 +152,10 @@ def gen_video(
 
 def resolve_model_provider(
     npc=None, team=None, model=None, provider=None,
-    api_url=None, images=None, attachments=None,
+    api_url=None, api_key=None, images=None, attachments=None,
 ):
-    """Resolve model, provider, and api_url from npc/team/explicit overrides."""
-    m, p, a_url = model, provider, api_url
+    """Resolve model, provider, api_url, and api_key from npc/team/explicit overrides."""
+    m, p, a_url, a_key = model, provider, api_url, api_key
     if m is not None and p is not None:
         pass
     elif p is None and m is not None:
@@ -165,22 +165,27 @@ def resolve_model_provider(
             p = npc.provider
         if npc.model is not None:
             m = npc.model
-        if npc.api_url is not None:
-            a_url = npc.api_url
     elif team is not None:
         if team.model is not None:
             m = team.model
         if team.provider is not None:
             p = team.provider
-        if team.api_url is not None:
-            a_url = team.api_url
     else:
         p = "ollama"
         if images is not None or attachments is not None:
             m = "llava:7b"
         else:
             m = "llama3.2"
-    return m, p, a_url
+    # Always resolve api_url and api_key from npc/team if not explicitly provided
+    if a_url is None and npc is not None and getattr(npc, 'api_url', None) is not None:
+        a_url = npc.api_url
+    if a_url is None and team is not None and getattr(team, 'api_url', None) is not None:
+        a_url = team.api_url
+    if a_key is None and npc is not None and getattr(npc, 'api_key', None) is not None:
+        a_key = npc.api_key
+    if a_key is None and team is not None and getattr(team, 'api_key', None) is not None:
+        a_key = team.api_key
+    return m, p, a_url, a_key
 
 
 def get_llm_response(
@@ -208,19 +213,21 @@ def get_llm_response(
         f"context={'yes' if context else 'no'}"
     )
 
-    base_model, base_provider, base_api_url = resolve_model_provider(
+    base_model, base_provider, base_api_url, base_api_key = resolve_model_provider(
         npc=npc, team=team, model=model, provider=provider,
-        api_url=api_url, images=images, attachments=attachments,
+        api_url=api_url, api_key=api_key, images=images, attachments=attachments,
     )
+    if api_key is None:
+        api_key = base_api_key
 
     use_matrix = matrix is not None and len(matrix) > 0
     multi_sample = n_samples and n_samples > 1
 
     if not use_matrix and not multi_sample:
         # Simple single-call path
-        run_model, run_provider, run_api_url = resolve_model_provider(
+        run_model, run_provider, run_api_url, run_api_key = resolve_model_provider(
             npc=npc, team=team, model=base_model, provider=base_provider,
-            api_url=api_url, images=images, attachments=attachments,
+            api_url=api_url, api_key=api_key, images=images, attachments=attachments,
         )
         tool_capable = bool(kwargs.get("tools"))
         system_message = get_system_message(npc, team, tool_capable=tool_capable) if npc is not None else "You are a helpful assistant."
@@ -285,11 +292,11 @@ def get_llm_response(
             if k not in {"model", "provider", "npc", "context", "team"}:
                 extra_kwargs[k] = v
 
-        run_model, run_provider, run_api_url = resolve_model_provider(
+        run_model, run_provider, run_api_url, run_api_key = resolve_model_provider(
             npc=run_npc, team=run_team,
             model=combo.get("model", base_model),
             provider=combo.get("provider", base_provider),
-            api_url=api_url, images=images, attachments=attachments,
+            api_url=api_url, api_key=api_key, images=images, attachments=attachments,
         )
 
         tool_capable = bool(extra_kwargs.get("tools"))
