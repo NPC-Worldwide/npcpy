@@ -16,7 +16,7 @@ def package_files(directory):
 
 base_requirements = [
     "jinja2",
-    "litellm==1.76.0",    
+    "litellm==1.81.13",    
     "scipy", 
     "numpy",
     "requests",
@@ -85,7 +85,7 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="1.4.4",
+    version="1.4.5",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
