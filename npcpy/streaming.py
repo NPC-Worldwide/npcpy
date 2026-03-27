@@ -757,6 +757,7 @@ def create_jinx_stream(config: StreamConfig,
     fp = followup_provider or provider
 
     # --- Agentic loop: everything goes through check_llm_command / jinxes ---
+    collected_content = ""
     for iteration in range(max_followups):
         if cancellation_check and cancellation_check():
             yield StreamEvent('interrupt', {})
@@ -769,7 +770,7 @@ def create_jinx_stream(config: StreamConfig,
             result = npc.check_llm_command(
                 config.commandstr if iteration == 0 else "Continue. If the task is complete, call stop.",
                 messages=messages,
-                stream=False,
+                stream=True,
             )
         except Exception as e:
             print("check_llm_command error (iter {}): {}".format(iteration, e))
@@ -789,31 +790,48 @@ def create_jinx_stream(config: StreamConfig,
             for j in all_execs
         ) if all_execs else False
 
-        # Yield tool events
+        # Yield tool events (skip chat and stop — they're invisible)
         if all_execs:
-            tool_names = [j.get('name', 'unknown') for j in all_execs]
-            yield StreamEvent('tool_execution_start', {
-                'tool_calls': [{'name': n} for n in tool_names],
-            })
-
-            for jexec in all_execs:
-                jname = jexec.get('name', 'unknown')
-                jinputs = jexec.get('inputs', jexec.get('args', {}))
-                joutput = jexec.get('output', jexec.get('result', ''))
-
-                yield StreamEvent('tool_start', {
-                    'name': jname, 'id': 'jinx-{}'.format(jname), 'args': jinputs,
-                })
-                yield StreamEvent('tool_result', {
-                    'name': jname, 'id': 'jinx-{}'.format(jname),
-                    'result': joutput, 'args': jinputs,
+            visible_execs = [j for j in all_execs if j.get('name', '') not in ('chat', 'stop')]
+            if visible_execs:
+                tool_names = [j.get('name', 'unknown') for j in visible_execs]
+                yield StreamEvent('tool_execution_start', {
+                    'tool_calls': [{'name': n} for n in tool_names],
                 })
 
-        # Yield any new content from the check_llm_command result
+                for jexec in visible_execs:
+                    jname = jexec.get('name', 'unknown')
+                    jinputs = jexec.get('inputs', jexec.get('args', {}))
+                    joutput = jexec.get('output', jexec.get('result', ''))
+
+                    yield StreamEvent('tool_start', {
+                        'name': jname, 'id': 'jinx-{}'.format(jname), 'args': jinputs,
+                    })
+                    yield StreamEvent('tool_result', {
+                        'name': jname, 'id': 'jinx-{}'.format(jname),
+                        'result': joutput, 'args': jinputs,
+                    })
+
+        # Yield content from the result
         output = result.get('output', '')
-        if output and output != collected_content:
-            yield StreamEvent('content_delta', {'content': str(output), 'model': model})
-            collected_content = str(output)
+        if output:
+            # Stream wrapper from chat jinx — consume and yield chunks
+            if hasattr(output, '__iter__') and not isinstance(output, (str, bytes, dict)):
+                chunks = []
+                for chunk in output:
+                    content, reasoning, tool_call_deltas = parse_stream_chunk(chunk, model, provider)
+                    if content:
+                        chunks.append(content)
+                        yield StreamEvent('content_delta', {'content': content, 'model': model})
+                output = ''.join(chunks)
+            else:
+                output = str(output)
+                # Strip chat jinx prefix
+                if output.startswith('[Response delivered to user] '):
+                    output = output[len('[Response delivered to user] '):]
+                if output and output != collected_content:
+                    yield StreamEvent('content_delta', {'content': output, 'model': model})
+            collected_content = output
 
         # Update messages with what happened
         if all_execs or output:
@@ -821,15 +839,15 @@ def create_jinx_stream(config: StreamConfig,
             exec_results = []
             for j in (all_execs or []):
                 jout = j.get('output', j.get('result', ''))
-                if jout:
-                    exec_results.append("{}: {}".format(j.get('name', ''), str(jout)[:500]))
+                if isinstance(jout, str) and jout:
+                    exec_results.append("{}: {}".format(j.get('name', ''), jout[:500]))
 
             messages.append({
                 'role': 'assistant',
                 'content': "[Jinx executed: {}]\n{}\n{}".format(
                     exec_summary,
                     '\n'.join(exec_results),
-                    str(output)[:1000] if output else ''
+                    output[:1000] if output else ''
                 ).strip()
             })
 
@@ -840,8 +858,5 @@ def create_jinx_stream(config: StreamConfig,
         # 2. No jinxes were called — agent responded naturally (task complete)
         if not all_execs:
             break
-
-        # Otherwise, loop: the agent executed jinxes, so give it another turn
-        # to either act more or wrap up with a final response
 
     yield StreamEvent('message_stop', {})
