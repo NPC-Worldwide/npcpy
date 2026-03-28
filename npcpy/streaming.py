@@ -717,30 +717,22 @@ def create_tool_agent_stream(config: StreamConfig,
 # check_llm_command stream (jinx-based, used by npcsh)
 # ---------------------------------------------------------------------------
 
-def create_jinx_stream(config: StreamConfig,
+def create_jinx_stream(npc,
+                       command: str,
                        cancellation_check: Callable[[], bool] = None,
-                       followup_model: str = None,
-                       followup_provider: str = None,
                        max_followups: int = 10,
                        ) -> Generator[StreamEvent, None, None]:
-    """Agentic jinx streaming loop: stream a response, execute jinxes via
-    check_llm_command, feed results back, and keep looping until the agent
-    decides to stop (no more jinxes called, or explicit 'stop' jinx).
-
-    This mirrors the npcsh agentic loop where the agent keeps autonomously
-    acting until it's satisfied the task is complete.
+    """Agentic jinx streaming loop.
 
     Args:
-        config: Stream configuration
+        npc: NPC instance (model, provider, memory, jinxes_dict, api_url, api_key)
+        command: The user's message
         cancellation_check: Optional cancellation callback
-        followup_model: Model for check_llm_command calls (default: config.model)
-        followup_provider: Provider for check_llm_command calls (default: config.provider)
-        max_followups: Max number of agentic iterations (safety cap)
+        max_followups: Max agentic iterations
     """
-    npc = config.npc
-    model = config.model
-    provider = config.provider
-    messages = config.messages
+    model = npc.model
+    provider = npc.provider
+    messages = npc.memory
 
     # Check if we even have jinxes
     jinxes_dict = None
@@ -748,13 +740,21 @@ def create_jinx_stream(config: StreamConfig,
         jinxes_dict = getattr(npc, 'jinxes_dict', None) or getattr(npc, 'jinxs_dict', None)
 
     if not jinxes_dict:
-        # No jinxes available — fall back to plain chat stream
-        for event in create_chat_stream(config, cancellation_check):
-            yield event
+        # No jinxes — just call get_llm_response directly
+        response = get_llm_response(
+            command, model=model, provider=provider, npc=npc,
+            messages=messages, stream=True,
+        )
+        out = response.get("response", "")
+        if hasattr(out, '__iter__') and not isinstance(out, (str, bytes, dict)):
+            for chunk in out:
+                content, reasoning, tcd = parse_stream_chunk(chunk, model, provider)
+                if content:
+                    yield StreamEvent('content_delta', {'content': content, 'model': model})
+        elif isinstance(out, str) and out:
+            yield StreamEvent('content_delta', {'content': out, 'model': model})
+        yield StreamEvent('message_stop', {})
         return
-
-    fm = followup_model or model
-    fp = followup_provider or provider
 
     # --- Agentic loop: everything goes through check_llm_command / jinxes ---
     for iteration in range(max_followups):
@@ -765,7 +765,7 @@ def create_jinx_stream(config: StreamConfig,
         if iteration > 0:
             yield StreamEvent('thinking', {'message': 'Processing...'})
 
-        cmd = config.commandstr if iteration == 0 else "Continue. If the task is complete, call stop."
+        cmd = command if iteration == 0 else "Continue. If the task is complete, call stop."
 
         try:
             gen = npc.check_llm_command(cmd, messages=messages, stream=True)
@@ -788,10 +788,9 @@ def create_jinx_stream(config: StreamConfig,
                 if name in ('stop', 'done', 'finish'):
                     stop_called = True
                 output = data.get('result', '')
-                if name not in ('chat', 'stop'):
-                    yield StreamEvent('tool_result', data)
-                elif name == 'chat' and output:
-                    # Chat result — may be a stream wrapper or string
+
+                if name == 'chat':
+                    # Chat — stream wrapper or string becomes content
                     if hasattr(output, '__iter__') and not isinstance(output, (str, bytes, dict)):
                         for chunk in output:
                             content, reasoning, tcd = parse_stream_chunk(chunk, model, provider)
@@ -802,6 +801,22 @@ def create_jinx_stream(config: StreamConfig,
                             output = output[len('[Response delivered to user] '):]
                         if output:
                             yield StreamEvent('content_delta', {'content': output, 'model': model})
+                elif name != 'stop':
+                    # Emit sub_events from delegation
+                    if hasattr(npc, 'shared_context') and npc.shared_context.get('sub_events'):
+                        for sub_type, sub_data in npc.shared_context.pop('sub_events'):
+                            yield StreamEvent(sub_type, sub_data)
+                    yield StreamEvent('tool_result', data)
+            elif event_type == 'content':
+                # Direct response (no jinx) — may be stream wrapper or string
+                output = data
+                if hasattr(output, '__iter__') and not isinstance(output, (str, bytes, dict)):
+                    for chunk in output:
+                        content, reasoning, tcd = parse_stream_chunk(chunk, model, provider)
+                        if content:
+                            yield StreamEvent('content_delta', {'content': content, 'model': model})
+                elif isinstance(output, str) and output:
+                    yield StreamEvent('content_delta', {'content': output, 'model': model})
             elif event_type == 'content':
                 # Direct content (no jinxes path)
                 output = data

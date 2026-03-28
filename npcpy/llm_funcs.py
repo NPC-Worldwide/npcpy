@@ -907,14 +907,6 @@ def check_llm_command(
     When stream=True, returns a generator yielding (event_type, data) tuples.
     When stream=False, returns a dict.
     """
-    if stream:
-        return _check_llm_command_gen(
-            command, model=model, provider=provider, api_url=api_url, api_key=api_key,
-            npc=npc, team=team, messages=messages, images=images, context=context,
-            actions=actions, extra_globals=extra_globals, max_iterations=max_iterations,
-            jinxes=jinxes, tool_capable=tool_capable,
-        )
-
     if messages is None:
         messages = []
 
@@ -1006,215 +998,78 @@ def check_llm_command(
     if not isinstance(actions,list) and isinstance(actions,dict): # the llm returned only one action
         actions = [actions]
 
-    # Execute
-    step_outputs = []
-    all_jinx_calls = []
-    current_messages = messages.copy()
-    last_jinx_output = None
+    def _execute():
+        step_outputs = []
+        all_jinx_calls = []
+        current_messages = messages.copy()
+        last_jinx_output = None
 
-    for i, action_data in enumerate(actions):
-        render_markdown(f"- {action_data}")
+        for i, action_data in enumerate(actions):
+            render_markdown(f"- {action_data}")
+            action_name = action_data.get("action", "")
+            is_jinx = action_name == "invoke_jinx" or "jinx_name" in action_data
+            jname = action_data.get("jinx_name", "")
 
-        action_result = handle_action_choice(
-                     command,
-                     action_data,
-                     jinxes,
-                     model = model,
-                     provider = provider,
-                     api_url = api_url,
-                     api_key = api_key,
-                     npc = npc,
-                     team = team,
-                     messages = current_messages,
-                     stream = stream,
-                     extra_globals = extra_globals,
-                     last_jinx_output = last_jinx_output,
-                     step_outputs = step_outputs,
-                     context = context,
-        )
-        current_messages = action_result.get('messages', [])
-        output = action_result.get('output', [])
-        all_jinx_calls.extend(action_result.get('jinx_calls', []))
-        if output == 'INVALID_ACTION':
-            return check_llm_command(
-                            f"""In the previous attempt, the correct action name was not provided and a jinx could not be deciphered. only select from available jinxes.
-            Original request: {command}""",
-                            model=model,
-                            provider=provider,
-                            api_url=api_url,
-                            api_key=api_key,
-                            npc=npc,
-                            team=team,
-                            messages=messages,
-                            stream=stream,
-                            context=context,
-                            extra_globals=extra_globals,
-                        )
+            if stream and is_jinx and jname:
+                yield ('tool_start', {'name': jname, 'args': action_data.get('inputs', {})})
 
-        step_outputs.append(output)
-        last_jinx_output = output
+            action_result = handle_action_choice(
+                         command,
+                         action_data,
+                         jinxes,
+                         model = model,
+                         provider = provider,
+                         api_url = api_url,
+                         api_key = api_key,
+                         npc = npc,
+                         team = team,
+                         messages = current_messages,
+                         stream = stream,
+                         extra_globals = extra_globals,
+                         last_jinx_output = last_jinx_output,
+                         step_outputs = step_outputs,
+                         context = context,
+            )
+            current_messages = action_result.get('messages', [])
+            output = action_result.get('output', [])
+            all_jinx_calls.extend(action_result.get('jinx_calls', []))
+            if output == 'INVALID_ACTION':
+                for evt in check_llm_command(
+                    f"""In the previous attempt, the correct action name was not provided and a jinx could not be deciphered. only select from available jinxes.
+                Original request: {command}""",
+                    model=model, provider=provider, api_url=api_url, api_key=api_key,
+                    npc=npc, team=team, messages=messages, stream=stream,
+                    context=context, extra_globals=extra_globals,
+                ):
+                    yield evt
+                return
 
-    # Single step — return directly
-    if len(step_outputs) == 1:
-        return {
+            if stream:
+                if is_jinx and jname:
+                    yield ('tool_result', {'name': jname, 'result': output, 'args': action_data.get('inputs', {})})
+                else:
+                    yield ('content', output)
+
+            step_outputs.append(output)
+            last_jinx_output = output
+
+        final_output = step_outputs[0] if len(step_outputs) == 1 else "\n".join(str(o) for o in step_outputs)
+        yield ('result', {
             "messages": current_messages,
-            "output": step_outputs[0] if step_outputs else "",
+            "output": final_output,
             "usage": response.get("usage", {}),
             "jinx_calls": all_jinx_calls,
-        }
+        })
 
-    # Multi-step — synthesize
-    synthesis_prompt = f"""The user asked: "{command}"
+    if stream:
+        return _execute()
 
-                      The following information was gathered:
-                      {json.dumps(step_outputs, indent=2)}
-
-                      Provide a single, coherent response answering the user's question directly.
-                      Do not mention the steps taken."""
-
-    synthesis = get_llm_response(
-        synthesis_prompt,
-        model=model, provider=provider, npc=npc, team=team,
-        messages=[], stream=stream, context=context,
-    )
-
-    return {
-        "messages": current_messages,
-        "output": synthesis.get("response", "\n".join(str(o) for o in step_outputs)),
-        "usage": response.get("usage", {}),
-        "jinx_calls": all_jinx_calls,
-    }
-
-
-def _check_llm_command_gen(
-    command, model=None, provider=None, api_url=None, api_key=None,
-    npc=None, team=None, messages=None, images=None, context=None,
-    actions=None, extra_globals=None, max_iterations=5, jinxes=None, tool_capable=None,
-):
-    """Generator version of check_llm_command — yields (event_type, data) as execution progresses."""
-    if messages is None:
-        messages = []
-
-    if jinxes is None:
-        jinxes = _get_jinxes(npc, team)
-
-    if not jinxes:
-        response = get_llm_response(
-            command,
-            model=model, provider=provider, api_url=api_url, api_key=api_key,
-            messages=messages[-10:], npc=npc, team=team, images=images,
-            stream=True, context=context,
-        )
-        out = response.get("response", "")
-        yield ('content', out)
-        yield ('result', {"messages": messages, "output": out, "usage": response.get("usage", {})})
-        return
-
-    prompt = f"""
-
-
-          A user submitted this request: {command}
-
-
-          Determine the nature of the user's request:
-
-          1. Should a jinx be invoked to fulfill the request? A jinx is a jinja-template execution script.
-
-          2. Is it a general question that requires an informative answer or a highly specific question that
-              requires information on the web?
-
-
-              Use jinxes when it is obvious that the answer needs to be as up-to-date as possible. For example,
-                  a question about where mount everest is does not necessarily need to be answered by a jinx call or an agent pass.
-
-              If a user asks to explain the plot of the aeneid, this can be answered without a jinx call or agent pass.
-
-              If a user were to ask for the current weather in tokyo or the current price of bitcoin or who the mayor of a city is,
-                  then a jinx call is appropriate.
-
-              If the user wants you to read a file, it must use a jinx to read the file.
-
-              If the user asks you to edit a file, you must use a jinx to edit the file.
-
-              If the user asks you to take a screenshot, you must to use a jinx to take the screenshot if available
-
-              If a user asks you to search or to take a screenshot or to open a program or to write a program most likely it is
-              appropriate to use a jinx.
-
-
-              remember, in your output, return only the action sequence. do not include and leading ```json or other markdown tags.
-
-              """
-
-    if messages:
-        prompt += f"\nRecent conversation: {messages[-5:]}"
-
-    response = get_llm_response(
-        prompt,
-        model=model, provider=provider, api_url=api_url, api_key=api_key,
-        npc=npc, team=team, format="json", messages=[], context=context,
-    )
-
-    actions = response.get("response", {})
-    print(actions)
-
-    if not isinstance(actions, list) and isinstance(actions, dict):
-        actions = [actions]
-
-    step_outputs = []
-    all_jinx_calls = []
-    current_messages = messages.copy()
-    last_jinx_output = None
-
-    for i, action_data in enumerate(actions):
-        render_markdown(f"- {action_data}")
-        jname = action_data.get("jinx_name", action_data.get("action", ""))
-
-        yield ('tool_start', {'name': jname, 'args': action_data.get('inputs', {})})
-
-        action_result = handle_action_choice(
-                     command,
-                     action_data,
-                     jinxes,
-                     model = model,
-                     provider = provider,
-                     api_url = api_url,
-                     api_key = api_key,
-                     npc = npc,
-                     team = team,
-                     messages = current_messages,
-                     stream = True,
-                     extra_globals = extra_globals,
-                     last_jinx_output = last_jinx_output,
-                     step_outputs = step_outputs,
-                     context = context,
-        )
-        current_messages = action_result.get('messages', [])
-        output = action_result.get('output', [])
-        all_jinx_calls.extend(action_result.get('jinx_calls', []))
-
-        if output == 'INVALID_ACTION':
-            for evt in _check_llm_command_gen(
-                f"""In the previous attempt, the correct action name was not provided and a jinx could not be deciphered. only select from available jinxes.
-            Original request: {command}""",
-                model=model, provider=provider, api_url=api_url, api_key=api_key,
-                npc=npc, team=team, messages=messages, context=context, extra_globals=extra_globals,
-            ):
-                yield evt
-            return
-
-        yield ('tool_result', {'name': jname, 'result': output, 'args': action_data.get('inputs', {})})
-
-        step_outputs.append(output)
-        last_jinx_output = output
-
-    final_output = step_outputs[0] if len(step_outputs) == 1 else "\n".join(str(o) for o in step_outputs)
-    yield ('result', {
-        "messages": current_messages,
-        "output": final_output,
-        "usage": response.get("usage", {}),
-        "jinx_calls": all_jinx_calls,
-    })
+    # Non-streaming: consume the generator and return the result dict
+    result = None
+    for event_type, data in _execute():
+        if event_type == 'result':
+            result = data
+    return result or {"messages": messages, "output": "", "jinx_calls": []}
 
 
 def identify_groups(
