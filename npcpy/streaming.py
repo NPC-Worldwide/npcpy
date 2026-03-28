@@ -802,10 +802,6 @@ def create_jinx_stream(npc,
                         if output:
                             yield StreamEvent('content_delta', {'content': output, 'model': model})
                 elif name != 'stop':
-                    # Emit sub_events from delegation
-                    if hasattr(npc, 'shared_context') and npc.shared_context.get('sub_events'):
-                        for sub_type, sub_data in npc.shared_context.pop('sub_events'):
-                            yield StreamEvent(sub_type, sub_data)
                     yield StreamEvent('tool_result', data)
             elif event_type == 'content':
                 # Direct response (no jinx) — may be stream wrapper or string

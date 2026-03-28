@@ -791,6 +791,11 @@ The format of the JSON object is:
             attempt=attempt + 1,
         )
 
+    # Collect any stream events produced during jinx execution (e.g. delegation sub-events)
+    stream_events = []
+    if npc and hasattr(npc, 'shared_context') and npc.shared_context.get('sub_events'):
+        stream_events = npc.shared_context.pop('sub_events')
+
     return {
         "output": output,
         "messages": messages,
@@ -799,6 +804,7 @@ The format of the JSON object is:
             "arguments": input_values,
             "result": str(output) if output else "",
         }],
+        "stream_events": stream_events,
     }
 
 def handle_action_choice(command: str,
@@ -845,6 +851,7 @@ def handle_action_choice(command: str,
         output = result.get("output", "")
         current_messages = result.get("messages", messages)
         jinx_calls = result.get("jinx_calls", [])
+        stream_events = result.get("stream_events", [])
 
         # Display
         if output and str(output).strip():
@@ -881,9 +888,9 @@ def handle_action_choice(command: str,
         current_messages = response.get("messages", messages)
         jinx_calls = []
 
-    return {'output':output, 'messages':current_messages, 'jinx_calls': jinx_calls}
-  
-      
+    return {'output':output, 'messages':current_messages, 'jinx_calls': jinx_calls, 'stream_events': stream_events if 'stream_events' in locals() else []}
+
+
 def check_llm_command(
     command: str,
     model: str = None,
@@ -1045,6 +1052,9 @@ def check_llm_command(
                 return
 
             if stream:
+                # Yield any sub-events from delegation before the tool_result
+                for evt in action_result.get('stream_events', []):
+                    yield evt
                 if is_jinx and jname:
                     yield ('tool_result', {'name': jname, 'result': output, 'args': action_data.get('inputs', {})})
                 else:
