@@ -767,11 +767,42 @@ def create_jinx_stream(config: StreamConfig,
             yield StreamEvent('thinking', {'message': 'Processing...'})
 
         try:
-            result = npc.check_llm_command(
-                config.commandstr if iteration == 0 else "Continue. If the task is complete, call stop.",
-                messages=messages,
-                stream=True,
-            )
+            import threading, queue as _queue
+            _result_box = [None]
+            _error_box = [None]
+            _event_q = _queue.Queue()
+
+            # Inject event queue so jinxes (like delegate) can push progress
+            if not hasattr(npc, 'shared_context'):
+                npc.shared_context = {}
+            npc.shared_context['_event_queue'] = _event_q
+
+            def _run():
+                try:
+                    _result_box[0] = npc.check_llm_command(
+                        config.commandstr if iteration == 0 else "Continue. If the task is complete, call stop.",
+                        messages=messages,
+                        stream=True,
+                    )
+                except Exception as ex:
+                    _error_box[0] = ex
+                finally:
+                    _event_q.put(None)
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            while True:
+                try:
+                    evt = _event_q.get(timeout=8)
+                    if evt is None:
+                        break
+                    yield evt
+                except _queue.Empty:
+                    yield StreamEvent('thinking', {'message': 'Processing...'})
+            t.join()
+            if _error_box[0] is not None:
+                raise _error_box[0]
+            result = _result_box[0]
         except Exception as e:
             print("check_llm_command error (iter {}): {}".format(iteration, e))
             break
