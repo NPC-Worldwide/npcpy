@@ -2053,7 +2053,7 @@ class NPC:
             if final_tools_schema:
                 tool_choice = "auto"
             else:
-                tool_choice = "none"
+                tool_choice = None
 
         response = npy.llm_funcs.get_llm_response(
             request, 
