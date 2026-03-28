@@ -757,7 +757,6 @@ def create_jinx_stream(config: StreamConfig,
     fp = followup_provider or provider
 
     # --- Agentic loop: everything goes through check_llm_command / jinxes ---
-    collected_content = ""
     for iteration in range(max_followups):
         if cancellation_check and cancellation_check():
             yield StreamEvent('interrupt', {})
@@ -766,128 +765,59 @@ def create_jinx_stream(config: StreamConfig,
         if iteration > 0:
             yield StreamEvent('thinking', {'message': 'Processing...'})
 
+        cmd = config.commandstr if iteration == 0 else "Continue. If the task is complete, call stop."
+
         try:
-            import threading, queue as _queue
-            _result_box = [None]
-            _error_box = [None]
-            _event_q = _queue.Queue()
-
-            # Inject event queue so jinxes (like delegate) can push progress
-            if not hasattr(npc, 'shared_context'):
-                npc.shared_context = {}
-            npc.shared_context['_event_queue'] = _event_q
-
-            def _run():
-                try:
-                    _result_box[0] = npc.check_llm_command(
-                        config.commandstr if iteration == 0 else "Continue. If the task is complete, call stop.",
-                        messages=messages,
-                        stream=True,
-                    )
-                except Exception as ex:
-                    _error_box[0] = ex
-                finally:
-                    _event_q.put(None)
-
-            t = threading.Thread(target=_run, daemon=True)
-            t.start()
-            while True:
-                try:
-                    evt = _event_q.get(timeout=8)
-                    if evt is None:
-                        break
-                    yield evt
-                except _queue.Empty:
-                    yield StreamEvent('thinking', {'message': 'Processing...'})
-            t.join()
-            if _error_box[0] is not None:
-                raise _error_box[0]
-            result = _result_box[0]
+            gen = npc.check_llm_command(cmd, messages=messages, stream=True)
         except Exception as e:
             print("check_llm_command error (iter {}): {}".format(iteration, e))
             break
 
-        if not isinstance(result, dict):
-            break
+        result = None
+        stop_called = False
+        has_jinx_calls = False
 
-        # Extract jinx executions
-        jinx_execs = result.get('jinx_executions', [])
-        jinx_calls = result.get('jinx_calls', [])
-        all_execs = jinx_execs or jinx_calls
-
-        # Check for explicit stop
-        stop_called = any(
-            j.get('name', '') in ('stop', 'done', 'finish')
-            for j in all_execs
-        ) if all_execs else False
-
-        # Yield tool events (skip chat and stop — they're invisible)
-        if all_execs:
-            visible_execs = [j for j in all_execs if j.get('name', '') not in ('chat', 'stop')]
-            if visible_execs:
-                tool_names = [j.get('name', 'unknown') for j in visible_execs]
-                yield StreamEvent('tool_execution_start', {
-                    'tool_calls': [{'name': n} for n in tool_names],
-                })
-
-                for jexec in visible_execs:
-                    jname = jexec.get('name', 'unknown')
-                    jinputs = jexec.get('inputs', jexec.get('args', {}))
-                    joutput = jexec.get('output', jexec.get('result', ''))
-
-                    yield StreamEvent('tool_start', {
-                        'name': jname, 'id': 'jinx-{}'.format(jname), 'args': jinputs,
-                    })
-                    yield StreamEvent('tool_result', {
-                        'name': jname, 'id': 'jinx-{}'.format(jname),
-                        'result': joutput, 'args': jinputs,
-                    })
-
-        # Yield content from the result
-        output = result.get('output', '')
-        if output:
-            # Stream wrapper from chat jinx — consume and yield chunks
-            if hasattr(output, '__iter__') and not isinstance(output, (str, bytes, dict)):
-                chunks = []
-                for chunk in output:
-                    content, reasoning, tool_call_deltas = parse_stream_chunk(chunk, model, provider)
-                    if content:
-                        chunks.append(content)
-                        yield StreamEvent('content_delta', {'content': content, 'model': model})
-                output = ''.join(chunks)
-            else:
-                output = str(output)
-                # Strip chat jinx prefix
-                if output.startswith('[Response delivered to user] '):
-                    output = output[len('[Response delivered to user] '):]
-                if output and output != collected_content:
+        for event_type, data in gen:
+            if event_type == 'tool_start':
+                name = data.get('name', '')
+                if name not in ('chat', 'stop'):
+                    has_jinx_calls = True
+                    yield StreamEvent('tool_start', data)
+            elif event_type == 'tool_result':
+                name = data.get('name', '')
+                if name in ('stop', 'done', 'finish'):
+                    stop_called = True
+                output = data.get('result', '')
+                if name not in ('chat', 'stop'):
+                    yield StreamEvent('tool_result', data)
+                elif name == 'chat' and output:
+                    # Chat result — may be a stream wrapper or string
+                    if hasattr(output, '__iter__') and not isinstance(output, (str, bytes, dict)):
+                        for chunk in output:
+                            content, reasoning, tcd = parse_stream_chunk(chunk, model, provider)
+                            if content:
+                                yield StreamEvent('content_delta', {'content': content, 'model': model})
+                    elif isinstance(output, str):
+                        if output.startswith('[Response delivered to user] '):
+                            output = output[len('[Response delivered to user] '):]
+                        if output:
+                            yield StreamEvent('content_delta', {'content': output, 'model': model})
+            elif event_type == 'content':
+                # Direct content (no jinxes path)
+                output = data
+                if hasattr(output, '__iter__') and not isinstance(output, (str, bytes, dict)):
+                    for chunk in output:
+                        content, reasoning, tcd = parse_stream_chunk(chunk, model, provider)
+                        if content:
+                            yield StreamEvent('content_delta', {'content': content, 'model': model})
+                elif isinstance(output, str) and output:
                     yield StreamEvent('content_delta', {'content': output, 'model': model})
-            collected_content = output
+            elif event_type == 'result':
+                result = data
 
-        # Update messages with what happened
-        if all_execs or output:
-            exec_summary = ', '.join(j.get('name', '') for j in all_execs) if all_execs else ''
-            exec_results = []
-            for j in (all_execs or []):
-                jout = j.get('output', j.get('result', ''))
-                if isinstance(jout, str) and jout:
-                    exec_results.append("{}: {}".format(j.get('name', ''), jout[:500]))
-
-            messages.append({
-                'role': 'assistant',
-                'content': "[Jinx executed: {}]\n{}\n{}".format(
-                    exec_summary,
-                    '\n'.join(exec_results),
-                    output[:1000] if output else ''
-                ).strip()
-            })
-
-        # Stop conditions:
-        # 1. Agent explicitly called stop
         if stop_called:
             break
-        # 2. No jinxes were called — agent responded naturally (task complete)
-        if not all_execs:
+        if not has_jinx_calls:
             break
 
     yield StreamEvent('message_stop', {})
