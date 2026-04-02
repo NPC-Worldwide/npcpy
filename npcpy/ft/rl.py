@@ -35,20 +35,31 @@ except ImportError:
 
 try:
     from trl import DPOTrainer, DPOConfig
-except ImportError:
+except (ImportError, RuntimeError):
     DPOTrainer = None
     DPOConfig = None
 
-    
+try:
+    import mlx.core as mx
+    import mlx.optimizers as mlx_opt
+    from mlx_lm import load as mlx_load
+    from mlx_lm.tuner.trainer import TrainingArgs as MLXTrainingArgs, train as mlx_train
+    from mlx_lm.tuner.utils import linear_to_lora_layers
+    MLX_AVAILABLE = True
+except ImportError:
+    MLX_AVAILABLE = False
+
 import random
 from typing import List, Dict, Any, Optional, Callable
 from npcpy.npc_compiler import NPC
 from npcpy.llm_funcs import get_llm_response
+from npcpy.ft.sft import _resolve_mlx_model, _num_lora_layers
 
 @dataclass
 class RLConfig:
     base_model_name: str = "Qwen/Qwen3-0.6B"
     adapter_path: str = "./rl_adapter"
+    device: str = "cpu"  # "cpu", "cuda", "mlx"
     max_iterations: int = 8
     min_reward_gap: float = 0.4
     num_train_epochs: int = 20
@@ -82,7 +93,7 @@ class TaskExecutor:
     ):
         self.agent = agent
         self.max_iterations = max_iterations
-    
+
     def execute_task(
         self,
         task_prompt: str
@@ -94,22 +105,22 @@ class TaskExecutor:
                 "content": self.agent.primary_directive
             }
         ]
-        
+
         raw_responses = []
         current_prompt = task_prompt
-        
+
         for i in range(self.max_iterations):
             response_obj = self.agent.get_llm_response(
                 current_prompt,
                 messages=messages,
                 auto_process_tool_calls=True
             )
-            
+
             raw_responses.append(response_obj)
             messages = response_obj.get('messages', messages)
-            
+
             last_content = messages[-1].get('content', '')
-            
+
             if self._is_complete(last_content):
                 return {
                     "raw_responses": raw_responses,
@@ -117,18 +128,18 @@ class TaskExecutor:
                     "total_iterations": i + 1,
                     "completed": True
                 }
-            
+
             current_prompt = (
                 "Continue or provide final answer."
             )
-        
+
         return {
             "raw_responses": raw_responses,
             "final_output": messages[-1].get('content', ''),
             "total_iterations": self.max_iterations,
             "completed": False
         }
-    
+
     def _is_complete(self, content: str) -> bool:
 
         completion_markers = [
@@ -140,7 +151,7 @@ class TaskExecutor:
         ]
         content_lower = content.lower()
         return any(
-            marker in content_lower 
+            marker in content_lower
             for marker in completion_markers
         )
 
@@ -153,20 +164,20 @@ def collect_traces(
 
     if config is None:
         config = RLConfig()
-    
+
     traces = []
-    
+
     for task in tasks:
         task_prompt = task.get('prompt', task.get('input', ''))
-        
+
         for agent in agents:
             executor = TaskExecutor(
                 agent,
                 max_iterations=config.max_iterations
             )
-            
+
             result = executor.execute_task(task_prompt)
-            
+
             trace = {
                 "agent_name": agent.name,
                 "task_prompt": task_prompt,
@@ -175,13 +186,13 @@ def collect_traces(
                 "completed": result['completed'],
                 "task_metadata": task
             }
-            
+
             trace['reward'] = reward_fn(trace)
-            
+
             traces.append(trace)
-            
+
             print(f"Agent {agent.name}: Reward={trace['reward']:.2f}")
-    
+
     return traces
 
 def create_preference_pairs(
@@ -191,12 +202,12 @@ def create_preference_pairs(
 
     df = pd.DataFrame(traces)
     df = df[df['reward'] > -1.0].copy()
-    
+
     if len(df) < 2:
         return None
-    
+
     df = df.sort_values('reward', ascending=False)
-    
+
     top_quantile = df['reward'].quantile(
         0.8,
         interpolation='higher'
@@ -205,37 +216,120 @@ def create_preference_pairs(
         0.2,
         interpolation='lower'
     )
-    
+
     high_traces = df[df['reward'] >= top_quantile]
     low_traces = df[df['reward'] <= low_quantile]
-    
+
     pairs = []
-    
+
     for _, high_trace in high_traces.iterrows():
         for _, low_trace in low_traces.iterrows():
             reward_gap = (
                 high_trace['reward'] - low_trace['reward']
             )
-            
+
             if reward_gap >= min_reward_gap:
                 pairs.append({
                     "prompt": str(high_trace['task_prompt']),
                     "chosen": str(high_trace['final_output']),
                     "rejected": str(low_trace['final_output'])
                 })
-    
+
     if len(pairs) < 5:
         print(f"Warning: Only {len(pairs)} pairs found. May overfit.")
 
     return Dataset.from_list(pairs)
 
-def train_with_dpo(
-    traces: List[Dict[str, Any]],
-    config: Optional[RLConfig] = None
+def _train_dpo_mlx(
+    pairs: List[Dict[str, str]],
+    config: RLConfig,
 ) -> str:
+    if not MLX_AVAILABLE:
+        raise ImportError("MLX backend requires mlx and mlx-lm. pip install mlx mlx-lm")
 
-    if config is None:
-        config = RLConfig()
+    os.makedirs(config.adapter_path, exist_ok=True)
+
+    mlx_model_name = _resolve_mlx_model(config.base_model_name)
+    model, tokenizer = mlx_load(mlx_model_name)
+
+    lora_cfg = {
+        "rank": config.lora_r,
+        "alpha": config.lora_alpha,
+        "dropout": config.lora_dropout,
+        "scale": config.lora_alpha / config.lora_r,
+    }
+    linear_to_lora_layers(model, _num_lora_layers(config.lora_r), lora_cfg)
+
+    # mlx-lm doesn't have native DPO, so SFT on chosen responses
+    processed = []
+    for p in pairs:
+        text = f"{p['prompt']}\n{p['chosen']}"
+        tokens = tokenizer.encode(text)
+        if tokens[-1] != tokenizer.eos_token_id:
+            tokens.append(tokenizer.eos_token_id)
+        processed.append((tokens, 0))
+
+    class _ProcessedDataset:
+        def __init__(self, data):
+            self._data = data
+        def __getitem__(self, idx):
+            return self._data[idx]
+        def __len__(self):
+            return len(self._data)
+
+    train_dataset = _ProcessedDataset(processed)
+
+    iters_per_epoch = max(1, len(pairs) // config.per_device_train_batch_size)
+    total_iters = iters_per_epoch * config.num_train_epochs
+
+    adapter_file = os.path.join(config.adapter_path, "adapters.safetensors")
+
+    training_args = MLXTrainingArgs(
+        batch_size=config.per_device_train_batch_size,
+        iters=total_iters,
+        val_batches=0,
+        steps_per_report=config.logging_steps,
+        steps_per_eval=0,
+        steps_per_save=config.save_steps,
+        max_seq_length=config.max_length,
+        adapter_file=adapter_file,
+        grad_checkpoint=True,
+        grad_accumulation_steps=config.gradient_accumulation_steps,
+    )
+
+    optimizer = mlx_opt.AdamW(learning_rate=config.learning_rate)
+
+    print(f"MLX DPO (SFT on chosen): {mlx_model_name}, {len(pairs)} pairs, {total_iters} iters")
+
+    mlx_train(
+        model=model,
+        optimizer=optimizer,
+        train_dataset=train_dataset,
+        val_dataset=None,
+        args=training_args,
+    )
+
+    adapter_config = {
+        "model": mlx_model_name,
+        "fine_tune_type": "lora",
+        "num_layers": _num_lora_layers(config.lora_r),
+        "lora_parameters": {
+            "rank": config.lora_r,
+            "alpha": config.lora_alpha,
+            "dropout": config.lora_dropout,
+            "scale": config.lora_alpha / config.lora_r,
+        },
+    }
+    with open(os.path.join(config.adapter_path, "adapter_config.json"), "w") as f:
+        json.dump(adapter_config, f, indent=2)
+
+    print(f"MLX adapter saved to {config.adapter_path}")
+    return config.adapter_path
+
+def _train_dpo_torch(
+    traces: List[Dict[str, Any]],
+    config: RLConfig,
+) -> str:
 
     preference_dataset = create_preference_pairs(
         traces,
@@ -249,13 +343,17 @@ def train_with_dpo(
     if config.max_pairs and len(preference_dataset) > config.max_pairs:
         preference_dataset = preference_dataset.select(range(config.max_pairs))
 
-    print(f"Training with {len(preference_dataset)} preference pairs")
+    print(f"Training with {len(preference_dataset)} preference pairs (device={config.device})")
 
     model_kwargs = {
-        "device_map": "auto",
         "trust_remote_code": True,
         "low_cpu_mem_usage": True
     }
+
+    if config.device == "cuda":
+        model_kwargs["device_map"] = "auto"
+    else:
+        model_kwargs["device_map"] = {"": "cpu"}
 
     if config.use_4bit:
         if BitsAndBytesConfig is None:
@@ -309,6 +407,12 @@ def train_with_dpo(
     else:
         optim = "adamw_torch"
 
+    use_fp16 = config.fp16 or config.use_4bit
+    use_bf16 = config.bf16
+    if config.device == "cpu":
+        use_fp16 = False
+        use_bf16 = False
+
     training_args = DPOConfig(
         output_dir="./dpo_results",
         per_device_train_batch_size=config.per_device_train_batch_size,
@@ -323,12 +427,13 @@ def train_with_dpo(
         max_length=config.max_length,
         max_prompt_length=config.max_prompt_length,
         dataloader_num_workers=0,
-        fp16=config.fp16 or config.use_4bit,
-        bf16=config.bf16,
+        fp16=use_fp16,
+        bf16=use_bf16,
         optim=optim,
         warmup_steps=config.warmup_steps,
         save_strategy="steps",
-        save_total_limit=2
+        save_total_limit=2,
+        no_cuda=(config.device == "cpu"),
     )
 
     trainer = DPOTrainer(
@@ -348,6 +453,35 @@ def train_with_dpo(
 
     return config.adapter_path
 
+def train_with_dpo(
+    traces: List[Dict[str, Any]],
+    config: Optional[RLConfig] = None
+) -> str:
+
+    if config is None:
+        config = RLConfig()
+
+    if config.device == "mlx":
+        # Extract pairs from traces first, then pass to MLX
+        preference_dataset = create_preference_pairs(
+            traces,
+            min_reward_gap=config.min_reward_gap
+        )
+        if preference_dataset is None or len(preference_dataset) == 0:
+            print("No valid preference pairs. Cannot train.")
+            return None
+
+        if config.max_pairs and len(preference_dataset) > config.max_pairs:
+            preference_dataset = preference_dataset.select(range(config.max_pairs))
+
+        pairs = [
+            {"prompt": r["prompt"], "chosen": r["chosen"], "rejected": r["rejected"]}
+            for r in preference_dataset
+        ]
+        return _train_dpo_mlx(pairs, config)
+    else:
+        return _train_dpo_torch(traces, config)
+
 def run_rl_training(
     tasks: List[Dict[str, Any]],
     agents: List[NPC],
@@ -358,7 +492,7 @@ def run_rl_training(
 
     if config is None:
         config = RLConfig()
-    
+
     print(f"Collecting traces from {len(tasks)} tasks...")
     traces = collect_traces(
         tasks,
@@ -366,32 +500,48 @@ def run_rl_training(
         reward_fn,
         config
     )
-    
+
     if save_traces:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         traces_file = f"rl_traces_{timestamp}.csv"
         df = pd.DataFrame(traces)
         df.to_csv(traces_file, index=False)
         print(f"Traces saved to {traces_file}")
-    
+
     print("Training with DPO...")
     adapter_path = train_with_dpo(traces, config)
-    
+
     return adapter_path
 
 def load_rl_model(
     base_model_id: str,
     adapter_path: str,
+    device: str = "cpu",
     use_4bit: bool = False,
     use_8bit: bool = False,
     merge_adapter: bool = True
 ):
+    if device == "mlx":
+        if not MLX_AVAILABLE:
+            raise ImportError("MLX backend requires mlx and mlx-lm. pip install mlx mlx-lm")
+        mlx_model = _resolve_mlx_model(base_model_id)
+        if adapter_path and os.path.exists(adapter_path):
+            model, tokenizer = mlx_load(mlx_model, adapter_path=adapter_path)
+        else:
+            model, tokenizer = mlx_load(mlx_model)
+        return model, tokenizer
+
+    # torch path
     print(f"Loading base model: {base_model_id}")
 
     model_kwargs = {
-        "device_map": "auto",
         "trust_remote_code": True
     }
+
+    if device == "cuda":
+        model_kwargs["device_map"] = "auto"
+    else:
+        model_kwargs["device_map"] = {"": "cpu"}
 
     if use_4bit:
         if BitsAndBytesConfig is None:
