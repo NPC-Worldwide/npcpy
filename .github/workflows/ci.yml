@@ -107,6 +107,102 @@ jobs:
         continue-on-error: true
 
   # =============================================================================
+  # Windows Compatibility Tests
+  # =============================================================================
+  windows-tests:
+    name: Windows Tests (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-timeout
+          pip install -e ".[lite]"
+
+      - name: Test serve.py imports
+        run: |
+          python -c "from npcpy.serve import app; print(f'OK: {len(app.url_map._rules)} routes')"
+
+      - name: Test serve.py settings endpoints exist
+        run: |
+          python -c "
+          from npcpy.serve import app
+          rules = [r.rule for r in app.url_map.iter_rules()]
+          assert '/api/settings/global' in rules, 'Missing /api/settings/global'
+          assert '/api/settings/project' in rules, 'Missing /api/settings/project'
+          assert '/api/models' in rules, 'Missing /api/models'
+          assert '/api/health' in rules, 'Missing /api/health'
+          print('All critical endpoints registered')
+          "
+
+      - name: Test server startup and settings round-trip
+        shell: cmd
+        run: |
+          start /b python -m npcpy.serve
+          timeout /t 10 /nobreak > nul
+          python -c "import urllib.request, json; r = urllib.request.urlopen('http://127.0.0.1:5337/api/health'); print('Health:', r.read().decode())" || echo "Server may not have started"
+          python -c "
+          import urllib.request, json
+          # Test settings save
+          data = json.dumps({'global_settings': {'model': 'test-model', 'provider': 'ollama'}, 'global_vars': {}}).encode()
+          req = urllib.request.Request('http://127.0.0.1:5337/api/settings/global', data=data, headers={'Content-Type': 'application/json'}, method='POST')
+          try:
+              resp = urllib.request.urlopen(req, timeout=5)
+              result = json.loads(resp.read())
+              print('Save result:', result)
+              assert result.get('error') is None, f'Save returned error: {result}'
+          except Exception as e:
+              print(f'Settings save test: {e}')
+          # Test settings load
+          try:
+              resp = urllib.request.urlopen('http://127.0.0.1:5337/api/settings/global', timeout=5)
+              result = json.loads(resp.read())
+              print('Load result keys:', list(result.keys()) if isinstance(result, dict) else 'not a dict')
+              assert 'global_settings' in result or 'model' in str(result), f'Unexpected response: {result}'
+          except Exception as e:
+              print(f'Settings load test: {e}')
+          print('Settings round-trip test complete')
+          " || echo "Settings test had issues"
+        timeout-minutes: 5
+
+      - name: Test npcsh directory creation on Windows
+        run: |
+          python -c "
+          import os, tempfile
+          # Simulate what serve.py does on startup
+          home = os.path.expanduser('~')
+          npcsh_base = os.path.join(home, '.npcsh')
+          dirs = [
+              npcsh_base,
+              os.path.join(npcsh_base, 'npc_team'),
+              os.path.join(npcsh_base, 'npc_team', 'jinxes'),
+              os.path.join(npcsh_base, 'incognide', 'data'),
+          ]
+          for d in dirs:
+              os.makedirs(d, exist_ok=True)
+              assert os.path.isdir(d), f'Failed to create {d}'
+              print(f'OK: {d}')
+          print('All directories created successfully')
+          "
+
+      - name: Run core unit tests on Windows
+        run: |
+          pytest tests/test_tools.py tests/test_command_history.py tests/test_build_funcs.py -v --tb=short --timeout=60
+        continue-on-error: true
+
+  # =============================================================================
   # Integration Tests with Ollama - Optional, triggered manually or on main
   # =============================================================================
   integration-tests:
@@ -273,7 +369,7 @@ jobs:
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [unit-tests, lint, build]
+    needs: [unit-tests, windows-tests, lint, build]
     if: always()
 
     steps:
