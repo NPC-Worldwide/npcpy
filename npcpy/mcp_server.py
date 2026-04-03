@@ -136,6 +136,34 @@ class NPCServerState:
         if not jinx:
             return f"Jinx '{tool_name}' not found."
 
+        # For jinxes that use engine: X (e.g. engine: incognide), the compiled
+        # steps contain the engine's code which reads action/args from context.
+        # Reconstruct those from _raw_steps and render templates with the MCP args.
+        if hasattr(jinx, '_raw_steps') and jinx._raw_steps:
+            from jinja2 import Environment
+            env = Environment()
+            for raw_step in jinx._raw_steps:
+                if raw_step.get('engine') and raw_step['engine'] not in ('python', 'bash'):
+                    for k, v in raw_step.items():
+                        if k in ('engine', 'name'):
+                            continue
+                        if isinstance(v, str) and '{{' in v:
+                            try:
+                                v = env.from_string(v).render(**args)
+                            except Exception:
+                                pass
+                        elif isinstance(v, dict):
+                            rendered = {}
+                            for dk, dv in v.items():
+                                if isinstance(dv, str) and '{{' in dv:
+                                    try:
+                                        dv = env.from_string(dv).render(**args)
+                                    except Exception:
+                                        pass
+                                rendered[dk] = dv
+                            v = rendered
+                        args[k] = v
+
         try:
             start = time.time()
             result = jinx.execute(
