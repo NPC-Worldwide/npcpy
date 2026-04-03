@@ -329,7 +329,7 @@ class MCPClientNPC:
             self.session = None
             self._exit_stack = None
 
-def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools, stream, team, context=None):
+def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools, stream, team, context=None, **kwargs):
     """Unified LLM response with basic exception handling (inlined from corca to avoid that dependency)."""
     try:
         return get_llm_response(
@@ -342,7 +342,8 @@ def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools,
             auto_process_tool_calls=False,
             stream=stream,
             team=team,
-            context=context
+            context=context,
+            **kwargs,
         )
     except Exception as e:
         print(f"[LLM ERROR] First attempt failed: {e}")
@@ -359,7 +360,8 @@ def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools,
                 auto_process_tool_calls=False,
                 stream=stream,
                 team=team,
-                context=context
+                context=context,
+                **kwargs,
             )
         except Exception as e2:
             print(f"[LLM ERROR] Second attempt failed: {e2}")
@@ -5517,6 +5519,7 @@ def stream():
             stream=True,
             attachments=attachment_paths_for_llm,
             include_usage=True,
+            **(params or {}),
             **thinking_kwargs,
         )
         messages = stream_response.get('messages', messages)
@@ -5644,7 +5647,8 @@ IMPORTANT AGENT BEHAVIOR:
                     tools=tools_for_llm,
                     stream=True,
                     team=team_object,
-                    context=agent_context
+                    context=agent_context,
+                    **(params or {}),
                 )
                 print('RESPONSE', llm_response)
 
