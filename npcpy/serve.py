@@ -1,7 +1,13 @@
 import datetime
 from flask import Flask, request, jsonify, Response
-from flask_sse import sse
-import redis
+try:
+    from flask_sse import sse
+except ImportError:
+    sse = None
+try:
+    import redis
+except ImportError:
+    redis = None
 import threading
 import uuid
 import sys 
@@ -21,8 +27,13 @@ import json
 from pathlib import Path
 import yaml
 from dotenv import load_dotenv
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+try:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+except ImportError:
+    ClientSession = None
+    StdioServerParameters = None
+    stdio_client = None
 
 from PIL import Image
 from PIL import ImageFile
@@ -531,7 +542,7 @@ app.config["REDIS_URL"] = "redis://localhost:6379"
 app.config['DB_PATH'] = ''
 app.jinx_conversation_contexts ={}
 
-redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
+redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True) if redis else None
 
 available_models = {}
 CORS(
@@ -7905,26 +7916,59 @@ def start_flask_server(
 
         
         print(f"Starting Flask server on http://0.0.0.0:{port}")
-        app.run(host="0.0.0.0", port=port, debug=debug,  threaded=True)
+        app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
+    except OSError as e:
+        if "Address already in use" in str(e) or "10048" in str(e):
+            print(f"Address already in use")
+            print(f"Port {port} is in use by another program. Either identify and stop that program, or start the server with a different port.")
+        else:
+            print(f"Error starting server: {str(e)}")
+        raise
     except Exception as e:
         print(f"Error starting server: {str(e)}")
+        raise
 
 if __name__ == "__main__":
 
     SETTINGS_FILE = Path(os.path.expanduser("~/.npcshrc"))
 
+    # Use NPCSH_BASE if set (passed by Electron), otherwise default
+    npcsh_base = os.environ.get('NPCSH_BASE', os.path.expanduser("~/.npcsh"))
     db_path = os.environ.get('INCOGNIDE_DB_PATH', os.path.expanduser("~/npcsh_history.db"))
-    user_npc_directory = os.path.expanduser("~/.npcsh/npc_team")
+    user_npc_directory = os.path.join(npcsh_base, "npc_team")
 
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    os.makedirs(user_npc_directory, exist_ok=True)
+    # Ensure directories exist (critical for Windows where ~ dirs aren't pre-created)
+    try:
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        os.makedirs(user_npc_directory, exist_ok=True)
+        os.makedirs(os.path.join(user_npc_directory, "jinxes"), exist_ok=True)
+        os.makedirs(npcsh_base, exist_ok=True)
+        data_dir = os.environ.get('INCOGNIDE_DATA_DIR', os.path.join(npcsh_base, 'incognide', 'data'))
+        os.makedirs(data_dir, exist_ok=True)
+    except Exception as dir_err:
+        print(f"[SERVE] Warning: Could not create directories: {dir_err}")
 
     try:
         initialize_base_npcs_if_needed(db_path)
         print(f"[SERVE] Base NPCs initialized")
     except Exception as e:
         print(f"[SERVE] Warning: Failed to initialize base NPCs: {e}")
+        print(f"[SERVE] Continuing without NPC initialization — settings and models will still work")
 
     port = int(os.environ.get('INCOGNIDE_PORT', 5337))
 
-    start_flask_server(db_path=db_path, user_npc_directory=user_npc_directory, port=port)
+    try:
+        start_flask_server(db_path=db_path, user_npc_directory=user_npc_directory, port=port)
+    except OSError as e:
+        if "Address already in use" in str(e) or "10048" in str(e):
+            print(f"Port {port} is in use by another program. Either identify and stop that program, or start the server with a different port.")
+        else:
+            print(f"[SERVE] Failed to start server: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[SERVE] Failed to start server: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
