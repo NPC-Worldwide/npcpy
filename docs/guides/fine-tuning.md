@@ -43,6 +43,24 @@ print(response)
 
 `run_sft` formats the data into chat-style turns (Gemma format by default, Llama format also supported via `format_style="llama"`), applies a LoRA adapter, and trains with the TRL `SFTTrainer`. The function returns the path where the adapter was saved.
 
+### Apple Silicon (MLX)
+
+On Apple Silicon Macs, SFT automatically uses MLX when available. MLX training is significantly faster than PyTorch on M-series chips. The module maps common HuggingFace model names to their `mlx-community` equivalents.
+
+```python
+from npcpy.ft.sft import run_sft, SFTConfig
+
+# MLX is auto-detected — no config changes needed
+config = SFTConfig(
+    base_model_name="google/gemma-3-270m-it",  # auto-maps to mlx-community/gemma-3-270m-it-4bit
+    output_model_path="models/my_adapter",
+    num_train_epochs=10,
+)
+model_path = run_sft(X_train, y_train, config=config)
+```
+
+Supported MLX model mappings include Gemma, Qwen, and Llama families. If a model has no MLX mapping, it falls back to HuggingFace Transformers.
+
 ### SFTConfig Options
 
 | Parameter | Default | Description |

@@ -379,6 +379,77 @@ npc-opencode / npc-aider / npc-amp
 npc-plugin claude
 ```
 
+### Knowledge graphs
+
+Build, evolve, and search knowledge graphs from text. The KG grows through waking (assimilation), sleeping (consolidation), and dreaming (speculative synthesis).
+
+```python
+from npcpy.memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_sleep_process
+
+# Build a KG from text
+kg = kg_initial(
+    content="Python was created by Guido van Rossum in 1991. It supports multiple paradigms.",
+    model="qwen3:4b", provider="ollama",
+)
+
+# Evolve with new information
+kg, _ = kg_evolve_incremental(
+    kg, new_content_text="Python 3.12 introduced performance improvements.",
+    model="qwen3:4b", provider="ollama", get_concepts=True,
+)
+
+# Sleep to consolidate
+kg, _ = kg_sleep_process(kg, model="qwen3:4b", provider="ollama")
+print(f"{len(kg['facts'])} facts, {len(kg['concepts'])} concepts")
+```
+
+### Memory extraction
+
+Extract structured memories from conversations with a self-improving quality loop.
+
+```python
+from npcpy.llm_funcs import get_facts
+
+facts = get_facts(
+    "The user decided to use Clerk for auth with no Stripe integration.",
+    model="qwen3:4b", provider="ollama",
+)
+for f in facts:
+    print(f['statement'])
+```
+
+### Sememolution (population-based KG evolution)
+
+Maintain a population of KG variants that evolve independently. Each individual has Poisson-sampled search parameters, producing different traversals each query. Selection pressure from response ranking drives convergence toward useful graph structures.
+
+```python
+from npcpy.memory.kg_population import SememolutionPopulation
+
+pop = SememolutionPopulation(population_size=100, sample_size=10)
+pop.initialize()
+
+# Each individual assimilates text according to its own genome
+pop.assimilate_text("TypeORM handles MySQL connections in the Celeria project.")
+
+# Sleep/dream with per-individual configs
+pop.sleep_cycle()
+
+# Sample 10 individuals, search, generate responses, rank
+rankings = pop.query_and_rank("database connection strategy")
+```
+
+### Fine-tuning (SFT, RL, MLX)
+
+```python
+from npcpy.ft.sft import run_sft
+
+# LoRA fine-tuning — auto-uses MLX on Apple Silicon
+model_path = run_sft(
+    X_train=["translate: hello", "translate: goodbye"],
+    y_train=["bonjour", "au revoir"],
+)
+```
+
 ## Features
 
 - **[Agents (NPCs)](https://npcpy.readthedocs.io/en/latest/guides/agents/)** — Agents with personas, directives, and tool calling. Subclasses: `Agent` (default tools), `ToolAgent` (custom tools + MCP), `CodingAgent` (auto-execute code blocks)
@@ -387,8 +458,10 @@ npc-plugin claude
 - **[Skills](https://npcpy.readthedocs.io/en/latest/guides/skills/)** — Knowledge-content jinxes that serve instructional sections to agents on demand
 - **[NPCArray](https://npcpy.readthedocs.io/en/latest/guides/npc-array/)** — NumPy-like vectorized operations over model populations
 - **[Image, Audio & Video](https://npcpy.readthedocs.io/en/latest/guides/image-audio-video/)** — Generation via Ollama, diffusers, OpenAI, Gemini, ElevenLabs
-- **[Knowledge Graphs](https://npcpy.readthedocs.io/en/latest/guides/knowledge-graphs/)** — Build and evolve knowledge graphs from text
-- **[Fine-Tuning & Evolution](https://npcpy.readthedocs.io/en/latest/guides/fine-tuning/)** — SFT, RL, diffusion, genetic algorithms
+- **[Knowledge Graphs](https://npcpy.readthedocs.io/en/latest/guides/knowledge-graphs/)** — Build and evolve knowledge graphs from text with sleep/dream lifecycle
+- **[Sememolution](https://npcpy.readthedocs.io/en/latest/guides/knowledge-graphs/#sememolution-population-based-kg-evolution)** — Population-based KG evolution with genetic selection and Poisson-sampled search
+- **[Memory Pipeline](https://npcpy.readthedocs.io/en/latest/guides/knowledge-graphs/#memory-extraction-and-lifecycle)** — Extract, approve, and backfill memories with self-improving quality feedback
+- **[Fine-Tuning & Evolution](https://npcpy.readthedocs.io/en/latest/guides/fine-tuning/)** — SFT, USFT, RL/DPO, diffusion, genetic algorithms, MLX on Apple Silicon
 - **[Serving](https://npcpy.readthedocs.io/en/latest/guides/serving/)** — Flask server for deploying teams via REST API
 - **[ML Functions](https://npcpy.readthedocs.io/en/latest/guides/ml-funcs/)** — Scikit-learn grid search, ensemble prediction, PyTorch training
 - **[Streaming & JSON](https://npcpy.readthedocs.io/en/latest/guides/llm-responses/)** — Streaming responses, structured JSON output, message history
@@ -451,6 +524,7 @@ Full documentation, guides, and API reference at [npcpy.readthedocs.io](https://
 - TinyTim: A Family of Language Models for Divergent Generation [arxiv](https://arxiv.org/abs/2508.11607)
 - The production of meaning in the processing of natural language: [arxiv](https://arxiv.org/abs/2603.20381)
 - ALARA for Agents: Least-Privilege Context Engineering Through Portable Composable Multi-Agent Teams: [arxiv](https://arxiv.org/abs/2603.20380)
+- Sememolution: A Semantic Framework for the Construction and Evolution of Knowledge Graphs (AAAI 2026, under review)
 
 Has your research benefited from npcpy? Let us know!
 

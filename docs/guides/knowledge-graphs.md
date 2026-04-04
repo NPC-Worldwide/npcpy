@@ -284,3 +284,139 @@ Every fact and concept carries a `generation` field. This enables:
 - Filtering knowledge by age (e.g., only facts from the last 3 generations).
 - Visualizing how the KG grew over time with `visualize_growth`.
 - Identifying dream-originated vs. observation-originated knowledge via the `origin` field.
+
+## Memory Extraction and Lifecycle
+
+npcpy includes a memory extraction pipeline that pulls structured memories from conversation history, stores them as pending for human approval, and feeds approved memories into the KG through a backfill process.
+
+### Extracting Memories from Conversations
+
+```python
+from npcpy.llm_funcs import get_facts
+
+conversation = """user: We need to use Clerk for all auth, no Stripe.
+assistant: I'll configure Clerk for auth, billing, and subscriptions.
+user: Make sure CSP headers allow Clerk domains."""
+
+facts = get_facts(
+    conversation,
+    model="qwen3:4b",
+    provider="ollama",
+    context="Extract precise technical decisions and their rationale.",
+)
+
+for f in facts:
+    print(f['statement'])
+```
+
+### Memory Approval Pipeline
+
+Memories go through a lifecycle: `pending_approval` → `human-approved` / `human-rejected` / `human-edited`. Approved and rejected memories are fed back as positive and negative examples to future extraction calls, creating a self-improving quality loop.
+
+```python
+from npcpy.memory.command_history import CommandHistory
+
+ch = CommandHistory("~/npcsh_history.db")
+
+# Get pending memories
+pending = ch.get_pending_memories(limit=20)
+
+# Approve or reject
+ch.update_memory_status(memory_id=42, new_status="human-approved")
+ch.update_memory_status(memory_id=43, new_status="human-rejected")
+
+# Get quality examples for future extraction
+examples = ch.get_memory_examples_for_context(
+    npc="sibiji", team="npc_team", directory_path="/my/project"
+)
+# Returns approved, rejected, and edited memories as few-shot examples
+```
+
+### Backfilling Approved Memories into the KG
+
+```python
+from npcpy.memory.knowledge_graph import kg_backfill_from_memories
+
+result = kg_backfill_from_memories(
+    engine=ch.engine,
+    model="qwen3:4b",
+    provider="ollama",
+    get_concepts=True,
+)
+print(f"Added {result['facts_after'] - result['facts_before']} new facts")
+```
+
+## Sememolution: Population-Based KG Evolution
+
+The Sememolution framework maintains a population of KG individuals that evolve independently. Each individual has its own graph (different facts, concepts, links) and its own genome controlling how it searches and evolves. Stochastic LLM responses and randomized sleep/dream configurations produce structural diversity — this is the mutation. Selection happens through response ranking.
+
+### Core Concepts
+
+- **Individual**: a full KG with its own genome of parameters
+- **Genome**: lambda_depth, lambda_breadth (Poisson rate params for search traversal), sleep_ops, dream_probability, linking behavior
+- **Lifecycle**: waking (assimilate text), sleeping (prune/deepen/link), dreaming (speculative synthesis)
+- **Poisson sampling**: each search samples `depth ~ Poisson(lambda_depth)` and `breadth ~ Poisson(lambda_breadth)`, so the same individual produces different traversals each time
+- **Fitness**: based on how well an individual's search results produce good LLM responses when ranked against other individuals
+
+### Creating a Population
+
+```python
+from npcpy.memory.kg_population import SememolutionPopulation
+
+pop = SememolutionPopulation(
+    model="gemma3:4b",
+    provider="ollama",
+    population_size=100,
+    sample_size=10,
+)
+pop.initialize()
+print(f"Population: {len(pop.ga.population)} individuals")
+```
+
+### Assimilating Text
+
+Every individual absorbs the text according to its own genome — different linking configs produce different graph structures from the same input.
+
+```python
+pop.assimilate_text("TypeORM is used for MySQL in the Celeria project...")
+```
+
+### Sleep/Dream Cycle
+
+Each individual sleeps with its own ops config. Dreaming happens probabilistically based on the genome's dream_probability.
+
+```python
+pop.sleep_cycle()
+```
+
+### Query and Rank
+
+Sample 10 individuals, each searches its own graph with Poisson-sampled depth/breadth, each generates a response, responses are ranked. Winners get fitness bumps.
+
+```python
+rankings = pop.query_and_rank("How should I implement the database connection?")
+for r in rankings[:3]:
+    print(f"  Rank {r['rank']}: {r['response'][:100]}...")
+    print(f"    Facts used: {r['n_facts']}, Individual: {r['individual'].individual_id[:20]}")
+```
+
+### GA Evolution
+
+Uses `GeneticEvolver` from `npcpy.ft.ge` for tournament selection, elitism, crossover, and mutation.
+
+```python
+stats = pop.evolve_generation()
+print(f"Best fitness: {stats['best_fitness']:.3f}")
+print(f"Avg fitness: {stats['avg_fitness']:.3f}")
+```
+
+### Structural Diversity
+
+After several generations, individuals specialize. Some develop dense, shallow graphs good for keyword-heavy queries. Others build deep hierarchies that find cross-domain connections. The Poisson sampling ensures each individual's quality reveals itself over many queries despite per-query stochasticity.
+
+```python
+stats = pop.get_stats()
+print(f"Lambda depth:  mean={stats['lambda_depth']['mean']:.2f}")
+print(f"Lambda breadth: mean={stats['lambda_breadth']['mean']:.2f}")
+print(f"Unique sleep configs: {stats['unique_sleep_configs']}")
+```
