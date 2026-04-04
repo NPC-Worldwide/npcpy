@@ -3602,11 +3602,19 @@ def _tool_web_search(query: str) -> str:
     Args:
         query: Search query string.
     """
-    from npcpy.data.web import search_web
-    results = search_web(query)
-    if isinstance(results, list):
-        return "\n".join(str(r) for r in results[:5])
-    return str(results)
+    try:
+        from npcpy.data.web import search_web
+        results = search_web(query)
+        if isinstance(results, list):
+            return "\n".join(str(r) for r in results[:5])
+        return str(results)
+    except ImportError:
+        cmd = f"curl -sL 'https://lite.duckduckgo.com/lite/?q={query.replace(' ', '+')}' | head -100"
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+            return result.stdout or "No results"
+        except Exception as e:
+            return f"Search failed: {e}"
 
 
 def _tool_file_search(query: str, path: str = ".") -> str:
@@ -3617,17 +3625,10 @@ def _tool_file_search(query: str, path: str = ".") -> str:
         path: Directory to search in.
     """
     path = os.path.expanduser(path)
+    cmd = f"grep -rn --include='*.{{py,rs,js,ts,md,txt,yaml,yml,toml,json,sh}}' -l '{query}' '{path}' 2>/dev/null | head -20"
     try:
-        result = subprocess.run(
-            ["grep", "-rn",
-             "--include=*.py", "--include=*.rs", "--include=*.js", "--include=*.ts",
-             "--include=*.md", "--include=*.txt", "--include=*.yaml", "--include=*.yml",
-             "--include=*.toml", "--include=*.json", "--include=*.sh",
-             "-l", query, path],
-            capture_output=True, text=True, timeout=30,
-        )
-        lines = [l for l in (result.stdout or "").split("\n") if l][:20]
-        return "\n".join(lines) or f"No files found matching '{query}' in {path}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+        return result.stdout or f"No files found matching '{query}' in {path}"
     except Exception as e:
         return f"Search error: {e}"
 
