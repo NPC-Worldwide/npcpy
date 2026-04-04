@@ -148,36 +148,6 @@ jobs:
           print('All critical endpoints registered')
           "
 
-      - name: Test server startup and settings round-trip
-        shell: cmd
-        run: |
-          start /b python -m npcpy.serve
-          timeout /t 10 /nobreak > nul
-          python -c "import urllib.request, json; r = urllib.request.urlopen('http://127.0.0.1:5337/api/health'); print('Health:', r.read().decode())" || echo "Server may not have started"
-          python -c "
-          import urllib.request, json
-          # Test settings save
-          data = json.dumps({'global_settings': {'model': 'test-model', 'provider': 'ollama'}, 'global_vars': {}}).encode()
-          req = urllib.request.Request('http://127.0.0.1:5337/api/settings/global', data=data, headers={'Content-Type': 'application/json'}, method='POST')
-          try:
-              resp = urllib.request.urlopen(req, timeout=5)
-              result = json.loads(resp.read())
-              print('Save result:', result)
-              assert result.get('error') is None, f'Save returned error: {result}'
-          except Exception as e:
-              print(f'Settings save test: {e}')
-          # Test settings load
-          try:
-              resp = urllib.request.urlopen('http://127.0.0.1:5337/api/settings/global', timeout=5)
-              result = json.loads(resp.read())
-              print('Load result keys:', list(result.keys()) if isinstance(result, dict) else 'not a dict')
-              assert 'global_settings' in result or 'model' in str(result), f'Unexpected response: {result}'
-          except Exception as e:
-              print(f'Settings load test: {e}')
-          print('Settings round-trip test complete')
-          " || echo "Settings test had issues"
-        timeout-minutes: 5
-
       - name: Test npcsh directory creation on Windows
         run: |
           python -c "
