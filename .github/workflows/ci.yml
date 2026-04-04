@@ -130,6 +130,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest pytest-timeout
           pip install -e ".[lite]"
+          pip install npcsh
 
       - name: Test serve.py imports
         run: |
