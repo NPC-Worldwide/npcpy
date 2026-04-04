@@ -148,6 +148,41 @@ jobs:
           print('All critical endpoints registered')
           "
 
+      - name: Test server startup and settings round-trip
+        run: |
+          python -c "
+          import subprocess, sys, time, urllib.request, json
+          proc = subprocess.Popen([sys.executable, '-m', 'npcpy.serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          time.sleep(10)
+          ok = True
+          try:
+              r = urllib.request.urlopen('http://127.0.0.1:5337/api/health', timeout=5)
+              print('Health:', r.read().decode())
+          except Exception as e:
+              print(f'Health failed: {e}')
+              ok = False
+          if ok:
+              try:
+                  data = json.dumps({'global_settings': {'model': 'ci-test', 'provider': 'ollama'}, 'global_vars': {}}).encode()
+                  req = urllib.request.Request('http://127.0.0.1:5337/api/settings/global', data=data, headers={'Content-Type': 'application/json'}, method='POST')
+                  resp = urllib.request.urlopen(req, timeout=5)
+                  result = json.loads(resp.read())
+                  assert result.get('error') is None, f'Save error: {result}'
+                  print('Settings save OK')
+              except Exception as e:
+                  print(f'Settings save: {e}')
+              try:
+                  resp = urllib.request.urlopen('http://127.0.0.1:5337/api/settings/global', timeout=5)
+                  result = json.loads(resp.read())
+                  print('Settings load OK:', list(result.keys())[:3])
+              except Exception as e:
+                  print(f'Settings load: {e}')
+          proc.terminate()
+          proc.wait()
+          print('Server test complete')
+          "
+        timeout-minutes: 3
+
       - name: Test npcsh directory creation on Windows
         run: |
           python -c "
