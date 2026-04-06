@@ -251,6 +251,13 @@ def _build_sse_chunk(content: str, model: str, reasoning: str = None,
 # SSE formatting
 # ---------------------------------------------------------------------------
 
+# Eventlet/gevent WSGI servers buffer responses until minimum_chunk_size
+# (default 4096 bytes). SSE events are typically ~80 bytes, so they get
+# batched instead of streaming in real-time. We pad each event with an
+# SSE comment line (ignored by clients) to force an immediate flush.
+_SSE_FLUSH_PAD = ": {}\n\n".format(" " * 4096)
+
+
 def format_sse_event(event: StreamEvent) -> str:
     """Convert a StreamEvent to an SSE ``data: ...`` line."""
     if event.type == 'content_delta':
@@ -259,7 +266,7 @@ def format_sse_event(event: StreamEvent) -> str:
             event.data.get('model', ''),
             reasoning=event.data.get('reasoning'),
         )
-        return "data: {}\n\n".format(json.dumps(chunk))
+        return "data: {}\n\n".format(json.dumps(chunk)) + _SSE_FLUSH_PAD
 
     if event.type == 'reasoning_delta':
         chunk = _build_sse_chunk(
@@ -267,17 +274,17 @@ def format_sse_event(event: StreamEvent) -> str:
             event.data.get('model', ''),
             reasoning=event.data.get('reasoning', ''),
         )
-        return "data: {}\n\n".format(json.dumps(chunk))
+        return "data: {}\n\n".format(json.dumps(chunk)) + _SSE_FLUSH_PAD
 
     # All other event types just serialize data with the type field
     payload = dict(event.data)
     payload['type'] = event.type
-    return "data: {}\n\n".format(json.dumps(payload))
+    return "data: {}\n\n".format(json.dumps(payload)) + _SSE_FLUSH_PAD
 
 
 def format_sse_raw(data: dict) -> str:
     """Format a raw dict as an SSE data line."""
-    return "data: {}\n\n".format(json.dumps(data))
+    return "data: {}\n\n".format(json.dumps(data)) + _SSE_FLUSH_PAD
 
 
 # ---------------------------------------------------------------------------
@@ -765,7 +772,7 @@ def create_jinx_stream(npc,
         if iteration > 0:
             yield StreamEvent('thinking', {'message': 'Processing...'})
 
-        cmd = command if iteration == 0 else "Continue. If the task is complete, call stop."
+        cmd = command if iteration == 0 else "Continue. If results are ready, present them to the user using chat, then call stop. Do not call stop without first responding to the user."
 
         try:
             gen = npc.check_llm_command(cmd, messages=messages, stream=True)
