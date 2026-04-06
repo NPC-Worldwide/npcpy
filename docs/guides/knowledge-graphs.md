@@ -25,9 +25,14 @@ Every fact and concept carries a `generation` number so you can track when each 
 from npcpy.memory.knowledge_graph import kg_initial
 
 kg = kg_initial(
-    content="Python was created by Guido van Rossum and released in 1991. "
-            "It emphasizes code readability and supports multiple paradigms "
-            "including procedural, object-oriented, and functional programming.",
+    content="Reinforcement Learning from Human Feedback (RLHF) trains a reward model "
+            "on pairwise preference data and then optimizes the policy against that "
+            "reward signal using PPO. Direct Preference Optimization (DPO) eliminates "
+            "the reward model entirely by reparameterizing the RLHF objective so the "
+            "policy itself serves as the implicit reward function. This reduces memory "
+            "overhead and stabilizes training, but DPO is sensitive to distribution "
+            "shift between the reference policy and the online policy, which can cause "
+            "reward hacking when the learned policy drifts far from the SFT baseline.",
     model="qwen3:4b",
     provider="ollama",
 )
@@ -55,7 +60,14 @@ from npcpy.memory.knowledge_graph import kg_evolve_incremental
 
 evolved_kg, _ = kg_evolve_incremental(
     existing_kg=kg,
-    new_content_text="Python 3.12 introduced performance improvements and better error messages.",
+    new_content_text="SimPO replaces the explicit reference model in DPO with an implicit "
+                     "length-normalized reward derived from the average log-probability of "
+                     "the response, cutting memory usage roughly in half. ORPO folds "
+                     "preference optimization into the supervised fine-tuning stage by "
+                     "adding an odds-ratio penalty term, eliminating the need for a "
+                     "separate alignment pass. KTO generalizes DPO to unpaired preference "
+                     "data by optimizing a Kahneman-Tversky value function over individual "
+                     "examples rather than requiring matched chosen/rejected pairs.",
     model="qwen3:4b",
     provider="ollama",
     get_concepts=True,           # generate new concepts from new facts
@@ -241,30 +253,57 @@ A complete pipeline that loads files, creates a KG, and evolves it:
 ```python
 from pathlib import Path
 from npcpy.data.load import load_file_contents
-from npcpy.memory.knowledge_graph import kg_initial, kg_evolve_incremental
+from npcpy.memory.knowledge_graph import (
+    kg_initial, kg_evolve_incremental, kg_sleep_process, kg_dream_process,
+    kg_hybrid_search,
+)
 
-MODEL   = "qwen3:4b"
+MODEL    = "qwen3:4b"
 PROVIDER = "ollama"
 
-# Step 1: Load files into text chunks
-files = [Path("report.pdf"), Path("notes.txt"), Path("data.csv")]
+# Step 1: Load mixed file types into text chunks
+source_globs = {
+    "papers":      "*.pdf",
+    "docs":        "*.md",
+    "src/core":    "*.py",
+    "transcripts": "*.docx",
+}
 corpus = []
-for f in files:
-    chunks = load_file_contents(str(f), chunk_size=600)
-    corpus.extend(chunks[:4])   # limit chunks per file
+for directory, pattern in source_globs.items():
+    for fpath in sorted(Path(directory).glob(pattern)):
+        chunks = load_file_contents(str(fpath), chunk_size=800)
+        corpus.extend(chunks[:6])   # cap chunks per file to stay within budget
+print(f"Loaded {len(corpus)} chunks from {sum(1 for d,p in source_globs.items() for _ in Path(d).glob(p))} files")
 
-# Step 2: Build initial KG
-content = "\n".join(corpus)
-kg = kg_initial(content=content, model=MODEL, provider=PROVIDER)
+# Step 2: Build initial KG from the first batch
+kg = kg_initial(content="\n".join(corpus[:20]), model=MODEL, provider=PROVIDER)
 print(f"Initial: {len(kg['facts'])} facts, {len(kg['concepts'])} concepts")
 
-# Step 3: Evolve with new content
-new_text = "Additional information from a meeting transcript..."
-kg, _ = kg_evolve_incremental(
-    kg, new_content_text=new_text,
-    model=MODEL, provider=PROVIDER, get_concepts=True
+# Step 3: Evolve incrementally with remaining chunks
+for i, chunk in enumerate(corpus[20:]):
+    kg, _ = kg_evolve_incremental(
+        kg, new_content_text=chunk,
+        model=MODEL, provider=PROVIDER,
+        get_concepts=(i % 5 == 0),      # generate concepts every 5th chunk
+        link_concepts_facts=True,
+        link_facts_facts=(i % 3 == 0),  # link facts every 3rd chunk
+    )
+print(f"After ingestion: {len(kg['facts'])} facts, {len(kg['concepts'])} concepts, gen {kg['generation']}")
+
+# Step 4: Sleep — prune redundancy, deepen implications, fix orphans
+kg, _ = kg_sleep_process(kg, model=MODEL, provider=PROVIDER)
+
+# Step 5: Dream — speculative cross-domain synthesis
+kg, _ = kg_dream_process(kg, model=MODEL, provider=PROVIDER, num_seeds=4)
+print(f"After sleep/dream: {len(kg['facts'])} facts, {len(kg['concepts'])} concepts")
+
+# Step 6: Search the consolidated graph
+results = kg_hybrid_search(
+    kg, query="How does the retrieval pipeline interact with the fine-tuning loop?",
+    mode="all", max_depth=3, similarity_threshold=0.55, max_results=15,
 )
-print(f"Evolved: {len(kg['facts'])} facts, {len(kg['concepts'])} concepts")
+for r in results[:5]:
+    print(f"  [{r['type']}] (score {r['score']:.2f}) {r['content'][:120]}")
 ```
 
 ## Scoping
@@ -294,9 +333,14 @@ npcpy includes a memory extraction pipeline that pulls structured memories from 
 ```python
 from npcpy.llm_funcs import get_facts
 
-conversation = """user: We need to use Clerk for all auth, no Stripe.
-assistant: I'll configure Clerk for auth, billing, and subscriptions.
-user: Make sure CSP headers allow Clerk domains."""
+conversation = """user: We need to rip out the Stripe-based auth entirely and switch to Clerk.
+assistant: Got it. I'll remove the Stripe customer-portal session logic and wire up Clerk's JWT verification middleware instead.
+user: The frontend CSP headers will need to allow Clerk's domains — clerk.accounts.dev and whatever their JS SDK serves from.
+assistant: I'll add those to the connect-src and script-src directives in the helmet config.
+user: Also, the rate limiter was keying on the Stripe customer ID. Switch it to Clerk user IDs.
+assistant: Will update the express-rate-limit keyGenerator to pull from req.auth.userId instead of req.stripeCustomerId.
+user: And we can drop the Redis session store now since Clerk handles sessions stateless with short-lived JWTs.
+assistant: I'll remove the connect-redis dependency and the session middleware. We'll rely on Clerk's getAuth() for request context."""
 
 facts = get_facts(
     conversation,
@@ -378,7 +422,20 @@ print(f"Population: {len(pop.ga.population)} individuals")
 Every individual absorbs the text according to its own genome — different linking configs produce different graph structures from the same input.
 
 ```python
-pop.assimilate_text("TypeORM is used for MySQL in the Celeria project...")
+from pathlib import Path
+from npcpy.data.load import load_file_contents
+
+sources = (
+    list(Path("papers").glob("*.pdf"))
+    + list(Path("docs").glob("*.md"))
+    + list(Path("src/core").glob("*.py"))
+    + list(Path("transcripts").glob("*.docx"))
+)
+
+for src in sources:
+    chunks = load_file_contents(str(src), chunk_size=800)
+    for chunk in chunks[:6]:
+        pop.assimilate_text(chunk)
 ```
 
 ### Sleep/Dream Cycle
@@ -394,7 +451,10 @@ pop.sleep_cycle()
 Sample 10 individuals, each searches its own graph with Poisson-sampled depth/breadth, each generates a response, responses are ranked. Winners get fitness bumps.
 
 ```python
-rankings = pop.query_and_rank("How should I implement the database connection?")
+rankings = pop.query_and_rank(
+    "How can retrieval-augmented generation be combined with a mixture-of-experts "
+    "architecture so that each expert specializes in a different source corpus?"
+)
 for r in rankings[:3]:
     print(f"  Rank {r['rank']}: {r['response'][:100]}...")
     print(f"    Facts used: {r['n_facts']}, Individual: {r['individual'].individual_id[:20]}")

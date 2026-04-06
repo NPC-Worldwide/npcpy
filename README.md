@@ -384,22 +384,52 @@ npc-plugin claude
 Build, evolve, and search knowledge graphs from text. The KG grows through waking (assimilation), sleeping (consolidation), and dreaming (speculative synthesis).
 
 ```python
-from npcpy.memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_sleep_process
+from npcpy.memory.knowledge_graph import (
+    kg_initial, kg_evolve_incremental, kg_sleep_process,
+    kg_dream_process, kg_hybrid_search,
+)
+from npcpy.data.load_file import load_file_contents
 
-# Build a KG from text
+# Seed the KG from a design doc PDF and a migration script
+design_doc = load_file_contents("docs/auth_migration_plan.pdf")
+migration_sql = load_file_contents("migrations/003_clerk_auth.sql")
+
 kg = kg_initial(
-    content="Python was created by Guido van Rossum in 1991. It supports multiple paradigms.",
+    content=design_doc + "\n\n" + migration_sql,
     model="qwen3:4b", provider="ollama",
 )
 
-# Evolve with new information
+# Assimilate follow-up commits and PR descriptions
 kg, _ = kg_evolve_incremental(
-    kg, new_content_text="Python 3.12 introduced performance improvements.",
+    kg,
+    new_content_text=(
+        "PR #412: Replaced Stripe customer-session lookup with Clerk JWT verification. "
+        "Removed /api/stripe/webhook endpoint. Added ClerkMiddleware to all protected routes. "
+        "CSP headers updated to allow clerk.accounts.dev origin."
+    ),
     model="qwen3:4b", provider="ollama", get_concepts=True,
 )
 
-# Sleep to consolidate
-kg, _ = kg_sleep_process(kg, model="qwen3:4b", provider="ollama")
+kg, _ = kg_evolve_incremental(
+    kg,
+    new_content_text=(
+        "PR #418: Fixed GraphQL resolver auth context — clerkUserId now propagated "
+        "through dataloader chain. Added integration tests for nested query auth."
+    ),
+    model="qwen3:4b", provider="ollama", get_concepts=True,
+)
+
+# Consolidate — merge redundant nodes, strengthen high-frequency edges
+kg, sleep_report = kg_sleep_process(kg, model="qwen3:4b", provider="ollama")
+
+# Dream — generate speculative connections between loosely related concepts
+kg, dream_report = kg_dream_process(kg, model="qwen3:4b", provider="ollama")
+
+# Search across facts, concepts, and speculative edges
+results = kg_hybrid_search(kg, "How does auth propagate through GraphQL resolvers?",
+                           model="qwen3:4b", provider="ollama")
+for r in results:
+    print(r['score'], r['text'])
 print(f"{len(kg['facts'])} facts, {len(kg['concepts'])} concepts")
 ```
 
@@ -410,12 +440,26 @@ Extract structured memories from conversations with a self-improving quality loo
 ```python
 from npcpy.llm_funcs import get_facts
 
-facts = get_facts(
-    "The user decided to use Clerk for auth with no Stripe integration.",
-    model="qwen3:4b", provider="ollama",
-)
+conversation = """
+User: We're ripping out Stripe entirely and moving auth to Clerk. The JWT verification
+      will happen in ClerkMiddleware instead of the custom verify_stripe_session helper.
+Assistant: Got it. I'll update the middleware chain. What about the existing session store?
+User: Kill the Redis session cache — Clerk handles session state on their end.
+      Also, the CSP headers need clerk.accounts.dev and clerk.enpisi.com added to connect-src.
+Assistant: Makes sense. Should I keep the rate limiter on /api/auth endpoints?
+User: Switch it from the per-session token bucket to a per-IP sliding window.
+      The Stripe webhook endpoint at /api/stripe/webhook can be deleted entirely.
+Assistant: Will do. I'll also remove the STRIPE_SECRET_KEY from the env template.
+"""
+
+facts = get_facts(conversation, model="qwen3:4b", provider="ollama")
 for f in facts:
-    print(f['statement'])
+    print(f"[{f.get('category', 'general')}] {f['statement']}")
+# [architecture] Auth provider migrated from Stripe to Clerk with JWT verification via ClerkMiddleware
+# [infrastructure] Redis session cache removed — Clerk manages session state
+# [security] CSP connect-src updated to include clerk.accounts.dev and clerk.enpisi.com
+# [architecture] Rate limiter changed from per-session token bucket to per-IP sliding window
+# [cleanup] /api/stripe/webhook endpoint deleted; STRIPE_SECRET_KEY removed from env template
 ```
 
 ### Sememolution (population-based KG evolution)
@@ -423,19 +467,35 @@ for f in facts:
 Maintain a population of KG variants that evolve independently. Each individual has Poisson-sampled search parameters, producing different traversals each query. Selection pressure from response ranking drives convergence toward useful graph structures.
 
 ```python
+from pathlib import Path
 from npcpy.memory.kg_population import SememolutionPopulation
+from npcpy.data.load_file import load_file_contents
 
 pop = SememolutionPopulation(population_size=100, sample_size=10)
 pop.initialize()
 
-# Each individual assimilates text according to its own genome
-pop.assimilate_text("TypeORM handles MySQL connections in the Celeria project.")
+# Ingest a heterogeneous corpus — PDFs, DOCX, source code, meeting transcripts
+corpus_dirs = [Path("docs/architecture"), Path("docs/meeting_notes"), Path("src/auth")]
+for d in corpus_dirs:
+    for f in sorted(d.glob("*")):
+        if f.suffix in (".pdf", ".docx", ".md", ".py", ".ts", ".txt"):
+            text = load_file_contents(str(f))
+            pop.assimilate_text(text)
 
-# Sleep/dream with per-individual configs
+# Sleep/dream cycle — each individual consolidates according to its genome
 pop.sleep_cycle()
 
-# Sample 10 individuals, search, generate responses, rank
-rankings = pop.query_and_rank("database connection strategy")
+# Query: sample 10 individuals, generate competing responses, rank them
+rankings = pop.query_and_rank("How does the auth middleware chain interact with the GraphQL context?")
+for rank, entry in enumerate(rankings[:3], 1):
+    print(f"#{rank} (individual {entry['id']}, score {entry['score']:.3f}): {entry['response'][:120]}...")
+
+# Selection + reproduction — top performers breed, bottom are replaced
+pop.evolve_generation()
+
+stats = pop.get_stats()
+print(f"Generation {stats['generation']} | avg fitness {stats['avg_fitness']:.3f} | "
+      f"best fitness {stats['best_fitness']:.3f} | diversity {stats['diversity']:.3f}")
 ```
 
 ### Fine-tuning (SFT, RL, MLX)
@@ -443,11 +503,37 @@ rankings = pop.query_and_rank("database connection strategy")
 ```python
 from npcpy.ft.sft import run_sft
 
+# Train a model to extract structured decisions from meeting notes
 # LoRA fine-tuning — auto-uses MLX on Apple Silicon
-model_path = run_sft(
-    X_train=["translate: hello", "translate: goodbye"],
-    y_train=["bonjour", "au revoir"],
-)
+X_train = [
+    "Meeting: Auth Migration Sync (2025-01-15)\nAttendees: Sarah, Mike, Priya\n"
+    "Discussion: Evaluated Clerk vs Auth0 for replacing Stripe auth. Clerk chosen "
+    "for lower latency and native Next.js support. Migration starts sprint 12. "
+    "Redis session store will be removed once Clerk JWT verification is stable.",
+
+    "Meeting: API Rate Limiting Review (2025-01-22)\nAttendees: Mike, Jordan\n"
+    "Discussion: Current per-session token bucket is incompatible with Clerk's "
+    "stateless JWTs. Agreed to switch to per-IP sliding window with 100 req/min "
+    "default. Premium tier gets 500 req/min. Jordan to implement by Friday.",
+
+    "Meeting: GraphQL Schema Freeze (2025-02-01)\nAttendees: Sarah, Priya, Jordan\n"
+    "Discussion: Schema v2 locked for release. Nested auth context propagation "
+    "through dataloaders confirmed working. New 'viewer' pattern adopted for "
+    "all authenticated queries. Breaking changes documented in CHANGELOG.",
+
+    "Meeting: Deployment Postmortem (2025-02-10)\nAttendees: full team\n"
+    "Discussion: Production outage caused by missing CSP header for clerk.accounts.dev. "
+    "Root cause: deploy script didn't pick up new env vars. Fix: added CSP validation "
+    "to CI pipeline. New rule: all external origins must be in csp_allowlist.json.",
+]
+y_train = [
+    '{"decisions": [{"what": "Adopt Clerk for auth", "why": "Lower latency, native Next.js support", "owner": "team", "deadline": "sprint 12"}, {"what": "Remove Redis session store", "why": "Clerk handles session state", "owner": "team", "deadline": "after JWT verification stable"}]}',
+    '{"decisions": [{"what": "Switch to per-IP sliding window rate limiter", "why": "Token bucket incompatible with stateless JWTs", "owner": "Jordan", "deadline": "Friday"}, {"what": "Set rate limits to 100/min default, 500/min premium", "why": "Tiered access control", "owner": "Jordan", "deadline": "Friday"}]}',
+    '{"decisions": [{"what": "Freeze GraphQL schema v2", "why": "Release readiness", "owner": "Sarah", "deadline": "immediate"}, {"what": "Adopt viewer pattern for authenticated queries", "why": "Consistent auth context in nested resolvers", "owner": "Priya", "deadline": "immediate"}]}',
+    '{"decisions": [{"what": "Add CSP validation to CI pipeline", "why": "Prevent missing CSP headers in deploys", "owner": "team", "deadline": "immediate"}, {"what": "Require external origins in csp_allowlist.json", "why": "Enforce explicit approval of external domains", "owner": "team", "deadline": "immediate"}]}',
+]
+
+model_path = run_sft(X_train=X_train, y_train=y_train)
 ```
 
 ## Features
@@ -524,7 +610,6 @@ Full documentation, guides, and API reference at [npcpy.readthedocs.io](https://
 - TinyTim: A Family of Language Models for Divergent Generation [arxiv](https://arxiv.org/abs/2508.11607)
 - The production of meaning in the processing of natural language: [arxiv](https://arxiv.org/abs/2603.20381)
 - ALARA for Agents: Least-Privilege Context Engineering Through Portable Composable Multi-Agent Teams: [arxiv](https://arxiv.org/abs/2603.20380)
-- Sememolution: A Semantic Framework for the Construction and Evolution of Knowledge Graphs (AAAI 2026, under review)
 
 Has your research benefited from npcpy? Let us know!
 
