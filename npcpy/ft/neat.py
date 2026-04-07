@@ -32,8 +32,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple, Any
 import copy
 import random
-import json
-import pickle
+import csv
 
 import numpy as np
 
@@ -792,16 +791,73 @@ class NEATEvolver:
         return NEATNetwork(genome, self.engine)
 
     def save(self, filepath: str, genome: Optional[Genome] = None):
-        """Save a genome to file."""
+        """Save a genome to CSV files (nodes and connections)."""
         g = genome or max(self.population, key=lambda g: g.fitness)
-        with open(filepath, "wb") as f:
-            pickle.dump(g.to_dict(), f)
+        base = filepath.rsplit(".", 1)[0] if "." in filepath else filepath
+
+        # Save metadata
+        with open(base + "_meta.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["key", "value"])
+            w.writerow(["input_size", g.input_size])
+            w.writerow(["output_size", g.output_size])
+            w.writerow(["fitness", g.fitness])
+
+        # Save nodes
+        with open(base + "_nodes.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["id", "type", "activation", "bias"])
+            for node in g.nodes.values():
+                w.writerow([node.id, node.type, node.activation, node.bias])
+
+        # Save connections
+        with open(base + "_connections.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["innovation", "input_node", "output_node", "weight", "enabled"])
+            for inn, conn in g.connections.items():
+                w.writerow([inn, conn.input_node, conn.output_node, conn.weight, conn.enabled])
 
     def load(self, filepath: str) -> Genome:
-        """Load a genome from file."""
-        with open(filepath, "rb") as f:
-            data = pickle.load(f)
-        return Genome.from_dict(data)
+        """Load a genome from CSV files."""
+        base = filepath.rsplit(".", 1)[0] if "." in filepath else filepath
+
+        # Load metadata
+        with open(base + "_meta.csv", "r") as f:
+            r = csv.reader(f)
+            next(r)  # skip header
+            meta = {row[0]: row[1] for row in r}
+
+        g = Genome(int(meta["input_size"]), int(meta["output_size"]))
+        g.fitness = float(meta["fitness"])
+        g.nodes = {}
+
+        # Load nodes
+        with open(base + "_nodes.csv", "r") as f:
+            r = csv.DictReader(f)
+            for row in r:
+                nid = int(row["id"])
+                g.nodes[nid] = NodeGene(
+                    id=nid, type=row["type"],
+                    activation=row["activation"], bias=float(row["bias"]),
+                )
+
+        # Load connections
+        with open(base + "_connections.csv", "r") as f:
+            r = csv.DictReader(f)
+            for row in r:
+                inn = int(row["innovation"])
+                g.connections[inn] = ConnectionGene(
+                    input_node=int(row["input_node"]),
+                    output_node=int(row["output_node"]),
+                    weight=float(row["weight"]),
+                    enabled=row["enabled"] == "True",
+                    innovation=inn,
+                )
+
+        if g.nodes:
+            g._next_node_id = max(g.nodes.keys()) + 1
+
+        return g
 
 
 # ---------------------------------------------------------------------------
