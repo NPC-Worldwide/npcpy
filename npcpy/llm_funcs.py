@@ -823,7 +823,7 @@ def handle_action_choice(command: str,
                          last_jinx_output = None,
                          step_outputs: list = None,
                          context: str = '',
-                          
+                         **kwargs,
                         ):
     action_name = action_data.get("action", "answer")
     if action_name == "invoke_jinx" or 'jinx_name' in action_data:
@@ -883,6 +883,7 @@ def handle_action_choice(command: str,
             images=images,
             stream=stream,
             context=context,
+            **kwargs,
         )
         output = response.get("response", "")
         current_messages = response.get("messages", messages)
@@ -908,6 +909,7 @@ def check_llm_command(
     max_iterations: int = 5,
     jinxes: Dict = None,
     tool_capable: bool = None,
+    **kwargs,
 ):
     """Plan and execute: decide whether to answer directly or use jinxes, then do it.
 
@@ -936,6 +938,7 @@ def check_llm_command(
             images=images,
             stream=False,
             context=context,
+            **kwargs,
         )
         messages.append({"role": "user", "content": command})
         out = response.get("response", "")
@@ -994,6 +997,7 @@ def check_llm_command(
         format="json",
         messages=[],
         context=context,
+        **kwargs,
     )
 
     actions = response.get("response", {})
@@ -1036,6 +1040,7 @@ def check_llm_command(
                          last_jinx_output = last_jinx_output,
                          step_outputs = step_outputs,
                          context = context,
+                         **kwargs,
             )
             current_messages = action_result.get('messages', [])
             output = action_result.get('output', [])
@@ -1046,7 +1051,7 @@ def check_llm_command(
                 Original request: {command}""",
                     model=model, provider=provider, api_url=api_url, api_key=api_key,
                     npc=npc, team=team, messages=messages, stream=stream,
-                    context=context, extra_globals=extra_globals,
+                    context=context, extra_globals=extra_globals, **kwargs,
                 ):
                     yield evt
                 return

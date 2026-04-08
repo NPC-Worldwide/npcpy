@@ -2461,8 +2461,9 @@ Requirements:
                             context=None,
                             team=None,
                             stream=False,
-                            jinxes=None, 
-                            use_jinxes=True):
+                            jinxes=None,
+                            use_jinxes=True,
+                            **kwargs):
         """Check if a command is for the LLM"""
         if context is None:
             context = self.shared_context
@@ -2473,7 +2474,7 @@ Requirements:
             jinxes_to_use = self.jinxes_dict
         elif jinxes is not None and use_jinxes:
             jinxes_to_use = jinxes
-            
+
         return npy.llm_funcs.check_llm_command(
             command,
             model=self.model,
@@ -2484,6 +2485,7 @@ Requirements:
             context=context,
             stream=stream,
             jinxes=jinxes_to_use,
+            **kwargs,
         )
     
     def handle_agent_pass(self, 

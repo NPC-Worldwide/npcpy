@@ -728,6 +728,7 @@ def create_jinx_stream(npc,
                        command: str,
                        cancellation_check: Callable[[], bool] = None,
                        max_followups: int = 10,
+                       **kwargs,
                        ) -> Generator[StreamEvent, None, None]:
     """Agentic jinx streaming loop.
 
@@ -750,7 +751,7 @@ def create_jinx_stream(npc,
         # No jinxes — just call get_llm_response directly
         response = get_llm_response(
             command, model=model, provider=provider, npc=npc,
-            messages=messages, stream=True,
+            messages=messages, stream=True, **kwargs,
         )
         out = response.get("response", "")
         if hasattr(out, '__iter__') and not isinstance(out, (str, bytes, dict)):
@@ -775,7 +776,7 @@ def create_jinx_stream(npc,
         cmd = command if iteration == 0 else "Continue. If results are ready, present them to the user using chat, then call stop. Do not call stop without first responding to the user."
 
         try:
-            gen = npc.check_llm_command(cmd, messages=messages, stream=True)
+            gen = npc.check_llm_command(cmd, messages=messages, stream=True, **kwargs)
         except Exception as e:
             print("check_llm_command error (iter {}): {}".format(iteration, e))
             break
