@@ -6392,6 +6392,81 @@ def get_memories_by_scope():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/activity/log", methods=["POST"])
+def log_activity():
+    try:
+        data = request.json or {}
+        ch = CommandHistory(app.config.get('DB_PATH'))
+        ch.log_activity(
+            activity_type=data.get("type", "unknown"),
+            activity_data=json.dumps(data.get("data")) if data.get("data") else None,
+            directory_path=data.get("directoryPath"),
+            npc=data.get("npc"),
+            device_id=data.get("deviceId"),
+            session_id=data.get("sessionId"),
+        )
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/activity/list", methods=["GET"])
+def list_activities():
+    try:
+        ch = CommandHistory(app.config.get('DB_PATH'))
+        activities = ch.get_activities(
+            activity_type=request.args.get("type"),
+            limit=int(request.args.get("limit", 100)),
+            directory_path=request.args.get("directoryPath"),
+            session_id=request.args.get("sessionId"),
+        )
+        return jsonify({"activities": activities})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/autocomplete/log", methods=["POST"])
+def log_autocomplete():
+    try:
+        data = request.json or {}
+        ch = CommandHistory(app.config.get('DB_PATH'))
+        ch.log_autocomplete(
+            suggestion_type=data.get("type", "text"),
+            input_context=data.get("inputContext", ""),
+            suggestion=data.get("suggestion", ""),
+            accepted=data.get("accepted", False),
+            npc=data.get("npc"),
+            model=data.get("model"),
+            provider=data.get("provider"),
+            directory_path=data.get("directoryPath"),
+        )
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/autocomplete/stats", methods=["GET"])
+def autocomplete_stats():
+    try:
+        ch = CommandHistory(app.config.get('DB_PATH'))
+        stats = ch.get_autocomplete_stats(
+            suggestion_type=request.args.get("type"),
+            npc=request.args.get("npc"),
+        )
+        return jsonify({"stats": stats})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/autocomplete/training", methods=["GET"])
+def autocomplete_training_data():
+    try:
+        ch = CommandHistory(app.config.get('DB_PATH'))
+        data = ch.get_training_data(
+            suggestion_type=request.args.get("type"),
+            accepted_only=request.args.get("acceptedOnly") == "true",
+            limit=int(request.args.get("limit", 1000)),
+        )
+        return jsonify({"data": data, "count": len(data)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/interrupt", methods=["POST"])
 def interrupt_stream():
     data = request.json

@@ -710,6 +710,41 @@ class CommandHistory:
             Column('created_at', DateTime, default=func.now())
         )
         
+        Table('activity_log', metadata,
+            Column('id', Integer, primary_key=True, autoincrement=True),
+            Column('timestamp', String(50), nullable=False),
+            Column('activity_type', String(50), nullable=False),
+            Column('activity_data', Text),
+            Column('directory_path', Text),
+            Column('npc', String(100)),
+            Column('device_id', String(255)),
+            Column('session_id', String(100)),
+        )
+
+        Table('autocomplete_suggestions', metadata,
+            Column('id', Integer, primary_key=True, autoincrement=True),
+            Column('timestamp', String(50), nullable=False),
+            Column('suggestion_type', String(50), nullable=False),
+            Column('input_context', Text),
+            Column('suggestion', Text, nullable=False),
+            Column('accepted', Integer, default=0),
+            Column('npc', String(100)),
+            Column('model', String(100)),
+            Column('provider', String(100)),
+            Column('directory_path', Text),
+        )
+
+        Table('autocomplete_training', metadata,
+            Column('id', Integer, primary_key=True, autoincrement=True),
+            Column('created_at', DateTime, default=func.now()),
+            Column('suggestion_type', String(50), nullable=False),
+            Column('input_text', Text, nullable=False),
+            Column('output_text', Text, nullable=False),
+            Column('accepted', Integer, nullable=False),
+            Column('npc', String(100)),
+            Column('model', String(100)),
+        )
+
         metadata.create_all(self.engine, checkfirst=True)
         init_kg_schema(self.engine)
 
@@ -1015,22 +1050,32 @@ class CommandHistory:
         directory_path: str,
         status: Optional[str] = None
     ) -> List[Dict]:
-        
-        query = """
-            SELECT id, initial_memory, final_memory, 
-                status, timestamp, created_at
-            FROM memory_lifecycle
-            WHERE npc = :npc AND team = :team AND directory_path = :path
-        """
-        params = {"npc": npc, "team": team, "path": directory_path}
-        
+
+        conditions = []
+        params = {}
+
+        if npc:
+            conditions.append("npc = :npc")
+            params["npc"] = npc
+        if team:
+            conditions.append("team = :team")
+            params["team"] = team
+        if directory_path:
+            conditions.append("directory_path = :path")
+            params["path"] = directory_path
         if status:
-            query += " AND status = :status"
+            conditions.append("status = :status")
             params["status"] = status
-        
-        query += " ORDER BY created_at DESC"
-        data =self._fetch_all(query, params)
-        return  data
+
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        query = f"""
+            SELECT id, initial_memory, final_memory,
+                status, timestamp, created_at, npc, team, directory_path
+            FROM memory_lifecycle
+            {where}
+            ORDER BY created_at DESC
+        """
+        return self._fetch_all(query, params)
 
     def search_memory(self, query: str, npc: str = None, team: str = None, 
                     directory_path: str = None, status_filter: str = None, limit: int = 10):
@@ -1523,6 +1568,82 @@ class CommandHistory:
             LIMIT :limit
         """
         return self._fetch_all(stmt, {"limit": limit})
+
+    def log_activity(self, activity_type: str, activity_data: str = None,
+                     directory_path: str = None, npc: str = None,
+                     device_id: str = None, session_id: str = None):
+        import datetime
+        ts = datetime.datetime.now().isoformat()
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO activity_log (timestamp, activity_type, activity_data, directory_path, npc, device_id, session_id)
+                VALUES (:ts, :atype, :adata, :dpath, :npc, :did, :sid)
+            """), {"ts": ts, "atype": activity_type, "adata": activity_data,
+                   "dpath": directory_path, "npc": npc, "did": device_id, "sid": session_id})
+
+    def log_autocomplete(self, suggestion_type: str, input_context: str, suggestion: str,
+                         accepted: bool, npc: str = None, model: str = None,
+                         provider: str = None, directory_path: str = None):
+        import datetime
+        ts = datetime.datetime.now().isoformat()
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO autocomplete_suggestions (timestamp, suggestion_type, input_context, suggestion, accepted, npc, model, provider, directory_path)
+                VALUES (:ts, :stype, :ctx, :sug, :acc, :npc, :model, :prov, :dpath)
+            """), {"ts": ts, "stype": suggestion_type, "ctx": input_context,
+                   "sug": suggestion, "acc": 1 if accepted else 0,
+                   "npc": npc, "model": model, "prov": provider, "dpath": directory_path})
+            conn.execute(text("""
+                INSERT INTO autocomplete_training (suggestion_type, input_text, output_text, accepted, npc, model)
+                VALUES (:stype, :inp, :out, :acc, :npc, :model)
+            """), {"stype": suggestion_type, "inp": input_context, "out": suggestion,
+                   "acc": 1 if accepted else 0, "npc": npc, "model": model})
+
+    def get_activities(self, activity_type: str = None, limit: int = 100,
+                       directory_path: str = None, session_id: str = None):
+        conditions = []
+        params = {"lim": limit}
+        if activity_type:
+            conditions.append("activity_type = :atype")
+            params["atype"] = activity_type
+        if directory_path:
+            conditions.append("directory_path = :dpath")
+            params["dpath"] = directory_path
+        if session_id:
+            conditions.append("session_id = :sid")
+            params["sid"] = session_id
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        return self._fetch_all(f"SELECT * FROM activity_log {where} ORDER BY timestamp DESC LIMIT :lim", params)
+
+    def get_autocomplete_stats(self, suggestion_type: str = None, npc: str = None):
+        conditions = []
+        params = {}
+        if suggestion_type:
+            conditions.append("suggestion_type = :stype")
+            params["stype"] = suggestion_type
+        if npc:
+            conditions.append("npc = :npc")
+            params["npc"] = npc
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        return self._fetch_all(f"""
+            SELECT suggestion_type,
+                   COUNT(*) as total,
+                   SUM(accepted) as accepted,
+                   COUNT(*) - SUM(accepted) as rejected
+            FROM autocomplete_suggestions {where}
+            GROUP BY suggestion_type
+        """, params)
+
+    def get_training_data(self, suggestion_type: str = None, accepted_only: bool = False, limit: int = 1000):
+        conditions = []
+        params = {"lim": limit}
+        if suggestion_type:
+            conditions.append("suggestion_type = :stype")
+            params["stype"] = suggestion_type
+        if accepted_only:
+            conditions.append("accepted = 1")
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        return self._fetch_all(f"SELECT * FROM autocomplete_training {where} ORDER BY created_at DESC LIMIT :lim", params)
 
     def close(self):
         """Dispose of the SQLAlchemy engine."""
