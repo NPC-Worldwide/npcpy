@@ -203,7 +203,8 @@ def kg_initial(content,
                generation=None,
                verbose=True,
                embedding_model=None,
-               embedding_provider=None):
+               embedding_provider=None,
+               zoom_in_enabled=False):
 
     if generation is None:
         CURRENT_GENERATION = 0
@@ -242,31 +243,34 @@ def kg_initial(content,
         logger.info(f"Mode: Building structure from {len(facts)} pre-existing facts...")
         all_facts = list(facts)
 
-    logger.info("Inferring implied facts (zooming in)...")
     all_implied_facts = []
-    if len(all_facts) > 20:
-        sampled_facts = random.sample(all_facts, k=20)
-        for n in range(len(all_facts) // 20):
-            implied_facts = zoom_in(sampled_facts,
+    if zoom_in_enabled:
+        logger.info("Inferring implied facts (zooming in)...")
+        if len(all_facts) > 20:
+            sampled_facts = random.sample(all_facts, k=20)
+            for n in range(len(all_facts) // 20):
+                implied_facts = zoom_in(sampled_facts,
+                                        model=model,
+                                        provider=provider,
+                                        npc=npc,
+                                        context=context)
+                all_implied_facts.extend(implied_facts)
+                if verbose:
+                    logger.debug(f"Inferred {len(implied_facts)} implied facts from sample {n+1}")
+        else:
+            implied_facts = zoom_in(all_facts,
                                     model=model,
                                     provider=provider,
                                     npc=npc,
                                     context=context)
             all_implied_facts.extend(implied_facts)
             if verbose:
-                logger.debug(f"Inferred {len(implied_facts)} implied facts from sample {n+1}")
-    else:
-        implied_facts = zoom_in(all_facts,
-                                model=model,
-                                provider=provider,
-                                npc=npc,
-                                context=context)
-        all_implied_facts.extend(implied_facts)
-        if verbose:
-            logger.debug(f"Inferred {len(implied_facts)} implied facts from all facts")
+                logger.debug(f"Inferred {len(implied_facts)} implied facts from all facts")
 
-    for fact in all_implied_facts:
-        fact['generation'] = CURRENT_GENERATION
+        for fact in all_implied_facts:
+            fact['generation'] = CURRENT_GENERATION
+    else:
+        logger.info("Skipping zoom-in (zoom_in_enabled=False)")
 
     all_facts = all_facts + all_implied_facts
 
