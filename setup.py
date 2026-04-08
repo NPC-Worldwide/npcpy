@@ -30,7 +30,7 @@ base_requirements = [
     "PyMuPDF",
     "pyautogui",
     "pydantic", 
-    "pygments",
+    "pygments>=2.20.0",
     "sqlalchemy",
     "termcolor",
     "rich",
