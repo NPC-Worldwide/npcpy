@@ -42,6 +42,9 @@ def search_searxng(query: str, num_results: int = 5, instance_url: str = None):
         'https://search.sapti.me',
         'https://searx.work',
         'https://search.ononoki.org',
+        'https://searx.tiekoetter.com',
+        'https://search.bus-hit.me',
+        'https://priv.au',
     ]
     instances = [i for i in instances if i]
 
@@ -197,35 +200,43 @@ def search_web(
         perplexity_kwargs = {}
     results = []
     if provider is None:
-        provider = 'duckduckgo'
+        provider = 'startpage'
 
     if provider == "perplexity":
         search_result = search_perplexity(query, api_key=api_key, **perplexity_kwargs)
-        
+
         return search_result
+
+    if provider == "startpage":
+        results = search_startpage(query, num_results=num_results)
+        if results:
+            return results
+        print("Startpage failed, falling back to searxng")
+        provider = 'searxng'
+
+    if provider == "searxng":
+        results = search_searxng(query, num_results=num_results)
+        if results:
+            return results
+        print("SearXNG failed, falling back to duckduckgo")
+        provider = 'duckduckgo'
 
     if provider == "duckduckgo":
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
         }
-        ddgs = DDGS(headers=headers)
-
         try:
+            ddgs = DDGS(headers=headers)
             search_results = ddgs.text(query, max_results=num_results)
-            urls = [r["href"] for r in search_results]
             results = [
                 {"title": r["title"], "link": r["href"], "content": r["body"]}
                 for r in search_results
             ]
-        except DuckDuckGoSearchException as e:
+        except Exception as e:
             print("DuckDuckGo search failed: ", e)
-            urls = []
             results = []
     elif provider == 'exa':
         return search_exa(query, api_key=api_key, top_k=num_results)
-
-    elif provider == 'searxng':
-        results = search_searxng(query, num_results=num_results)
 
     elif provider == 'startpage':
         results = search_startpage(query, num_results=num_results)
