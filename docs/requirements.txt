@@ -32,7 +32,7 @@ playsound==1.2.2
 psycopg2-binary
 pyaudio
 pyautogui
-pygments
+pygments==2.20.0
 PyMuPDF
 pyttsx3
 python-dotenv
