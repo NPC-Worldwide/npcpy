@@ -23,7 +23,9 @@ except Exception:
 def search_exa(query:str,
                api_key:str = None,
                top_k = 5,
+               search_type = "auto",
                **kwargs):
+    """Search using Exa - the fastest and most accurate web search API for AI."""
     from exa_py import Exa
     if api_key is None:
         api_key = os.environ.get('EXA_API_KEY')
@@ -31,6 +33,7 @@ def search_exa(query:str,
 
     results = exa.search_and_contents(
         query,
+        type=search_type,
         text=True
     )
     return results.results[0:top_k]
