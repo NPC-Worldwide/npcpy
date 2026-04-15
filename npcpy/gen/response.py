@@ -1506,7 +1506,7 @@ def get_litellm_response(
             }
 
         if stream:
-            result["response"] = resp  
+            result["response"] = resp
             return result
         else:
             

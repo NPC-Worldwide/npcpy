@@ -154,7 +154,8 @@ def _step_diamond(
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
-    ckpt = torch.load(ckpt_path, map_location=device)
+    # DIAMOND checkpoints contain OmegaConf/Hydra config objects; weights_only=True would fail.
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     cfg = ckpt.get("config")
     if cfg is None:
@@ -462,7 +463,8 @@ def load_diamond_model(
     from omegaconf import OmegaConf
 
     ckpt_path = Path(model_path)
-    ckpt = torch.load(ckpt_path, map_location=device)
+    # DIAMOND checkpoints contain OmegaConf/Hydra config objects; weights_only=False required.
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     cfg = ckpt.get("config")
 
     agent_cfg = OmegaConf.create(cfg["agent"]) if isinstance(cfg, dict) else cfg.agent

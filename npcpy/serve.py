@@ -2166,8 +2166,8 @@ def test_jinx():
     
     jinx = Jinx(jinx_data=jinx_data)
     
-    from jinja2 import Environment
-    temp_env = Environment()
+    from jinja2.sandbox import SandboxedEnvironment
+    temp_env = SandboxedEnvironment()
     jinx.render_first_pass(temp_env, {})
     
     conversation_id = f"jinx_test_{uuid.uuid4().hex[:8]}"

@@ -33,9 +33,11 @@ def generate_image_diffusers(
             if os.path.exists(checkpoint_path):
                 print(f"🌋 Found model_final.pt at {checkpoint_path}.")
                 
-                checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-                
-                if 'config' in checkpoint and hasattr(checkpoint['config'], 'image_size'):
+                checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+
+                cfg = checkpoint.get('config')
+                has_image_size = (isinstance(cfg, dict) and 'image_size' in cfg) or hasattr(cfg, 'image_size')
+                if 'config' in checkpoint and has_image_size:
                     print(f"🌋 Detected custom SimpleUNet model, using custom generation")
                     from npcpy.ft.diff import generate_image as custom_generate_image
                     
