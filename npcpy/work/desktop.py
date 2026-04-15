@@ -15,6 +15,7 @@ try:
     import pyautogui
 except Exception:
     print('could not import pyautogui')
+import shlex
 import time
 import subprocess
 
@@ -38,7 +39,7 @@ def perform_action(action):
         elif action_type in ("shell", "bash"):
             command = action.get("command", "")
             print(f"Executing shell command: {command}")
-            subprocess.Popen(command, shell=True)
+            subprocess.Popen(shlex.split(command), shell=False)
             return {"status": "success", "output": f"Launched '{command}'."}
         
         elif action_type == "type":

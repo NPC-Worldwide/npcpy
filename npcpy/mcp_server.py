@@ -140,8 +140,8 @@ class NPCServerState:
         # steps contain the engine's code which reads action/args from context.
         # Reconstruct those from _raw_steps and render templates with the MCP args.
         if hasattr(jinx, '_raw_steps') and jinx._raw_steps:
-            from jinja2 import Environment
-            env = Environment()
+            from jinja2.sandbox import SandboxedEnvironment
+            env = SandboxedEnvironment()
             for raw_step in jinx._raw_steps:
                 if raw_step.get('engine') and raw_step['engine'] not in ('python', 'bash'):
                     for k, v in raw_step.items():

@@ -83,10 +83,20 @@ print(coder.run("Write a script that finds duplicate files by hash in the curren
 
 ```python
 from npcpy import get_llm_response
+from npcpy.streaming import parse_stream_chunk
 
 response = get_llm_response("Explain quantum entanglement.", model='qwen3.5:2b', provider='ollama', stream=True)
 for chunk in response['response']:
-    print(chunk.get('message', {}).get('content', ''), end='', flush=True)
+    content, _, _ = parse_stream_chunk(chunk, provider='ollama')
+    if content:
+        print(content, end='', flush=True)
+
+# Works the same with any provider
+response = get_llm_response("Explain quantum entanglement.", model='gemini-2.5-flash', provider='gemini', stream=True)
+for chunk in response['response']:
+    content, _, _ = parse_stream_chunk(chunk, provider='gemini')
+    if content:
+        print(content, end='', flush=True)
 ```
 
 ### JSON output
@@ -115,7 +125,8 @@ result = response['response']
 print(result['tone'], result['key_phrases'])
 ```
 
-### Pydantic structured output
+<details>
+<summary><b>Pydantic structured output</b></summary>
 
 Pass a Pydantic model and the JSON schema is sent to the LLM directly.
 
@@ -141,7 +152,10 @@ for p in response['response']['planets']:
     print(f"{p['name']}: {p['distance_au']} AU, {p['num_moons']} moons")
 ```
 
-### Image, audio, and video generation
+</details>
+
+<details>
+<summary><b>Image, audio, and video generation</b></summary>
 
 ```python
 from npcpy.llm_funcs import gen_image, gen_video
@@ -160,6 +174,8 @@ with open("hello.wav", "wb") as f:
 result = gen_video("A cat riding a skateboard", model='veo-3.1-fast-generate-preview', provider='gemini')
 print(result['output'])
 ```
+
+</details>
 
 ### Multi-agent team
 
@@ -185,7 +201,8 @@ result = team.orchestrate("What are the trends in renewable energy adoption?")
 print(result['output'])
 ```
 
-### Team from files
+<details>
+<summary><b>Team from files — .npc, .jinx, team.ctx</b></summary>
 
 **team.ctx:**
 ```yaml
@@ -276,7 +293,10 @@ my_project/
 ./npc_team/jinxes/lib/sh.jinx bash_command="echo hello"
 ```
 
-### MCP server integration
+</details>
+
+<details>
+<summary><b>MCP server integration</b></summary>
 
 Add MCP servers to your team for external tool access:
 
@@ -311,7 +331,10 @@ if __name__ == "__main__":
 
 The team's NPCs automatically get access to MCP tools alongside their jinxes.
 
-### Agent definitions in markdown
+</details>
+
+<details>
+<summary><b>Agent definitions in markdown &amp; Skills</b></summary>
 
 **agents.md** — multiple agents in one file:
 ```markdown
@@ -332,8 +355,6 @@ provider: gemini
 ---
 You translate content between languages while preserving tone and idiom.
 ```
-
-### Skills
 
 Skills are knowledge-content jinxes that provide instructional sections to agents on demand.
 
@@ -360,6 +381,8 @@ jinxes:
   - {{ Jinx('skills/code-review') }}
 ```
 
+</details>
+
 ### CLI tools
 
 ```bash
@@ -379,7 +402,40 @@ npc-opencode / npc-aider / npc-amp
 npc-plugin claude
 ```
 
-### Knowledge graphs
+### NPCArray — parallel jinx across multiple NPCs
+
+Run any jinx in parallel across a list of NPC instances and collect results as an array:
+
+```python
+from npcpy import NPC
+from npcpy.npc_array import NPCArray
+
+# Three NPCs with different models/providers
+npcs = [
+    NPC(name='drafter', primary_directive='Draft concise commit messages.', model='qwen3:4b', provider='ollama'),
+    NPC(name='reviewer', primary_directive='Review and improve commit messages for clarity.', model='gemini-2.5-flash', provider='gemini'),
+    NPC(name='enforcer', primary_directive='Check commit messages follow Conventional Commits spec.', model='gemini-2.5-flash', provider='gemini'),
+]
+
+arr = NPCArray.from_npcs(npcs)
+
+# Run the same jinx on all three in parallel, collect results
+results = arr.jinx('summarize', inputs={'topic': 'fix auth middleware to propagate clerkUserId through GraphQL resolvers'}).collect()
+for npc, result in zip(npcs, results.data):
+    print(f"[{npc.name}] {result}")
+```
+
+You can also pass a list directly to `jinx.execute()`:
+
+```python
+from npcpy.npc_compiler import load_jinx_from_file
+
+jinx = load_jinx_from_file('npc_team/jinxes/analyze.jinx')
+results = jinx.execute({'topic': 'rate limiting'}, npc=npcs)  # list → parallel NPCArray run
+```
+
+<details>
+<summary><b>Knowledge graphs</b></summary>
 
 Build, evolve, and search knowledge graphs from text. The KG grows through waking (assimilation), sleeping (consolidation), and dreaming (speculative synthesis).
 
@@ -410,15 +466,6 @@ kg, _ = kg_evolve_incremental(
     model="qwen3:4b", provider="ollama", get_concepts=True,
 )
 
-kg, _ = kg_evolve_incremental(
-    kg,
-    new_content_text=(
-        "PR #418: Fixed GraphQL resolver auth context — clerkUserId now propagated "
-        "through dataloader chain. Added integration tests for nested query auth."
-    ),
-    model="qwen3:4b", provider="ollama", get_concepts=True,
-)
-
 # Consolidate — merge redundant nodes, strengthen high-frequency edges
 kg, sleep_report = kg_sleep_process(kg, model="qwen3:4b", provider="ollama")
 
@@ -433,9 +480,7 @@ for r in results:
 print(f"{len(kg['facts'])} facts, {len(kg['concepts'])} concepts")
 ```
 
-### Memory extraction
-
-Extract structured memories from conversations with a self-improving quality loop.
+Extract structured memories from conversations:
 
 ```python
 from npcpy.llm_funcs import get_facts
@@ -446,10 +491,6 @@ User: We're ripping out Stripe entirely and moving auth to Clerk. The JWT verifi
 Assistant: Got it. I'll update the middleware chain. What about the existing session store?
 User: Kill the Redis session cache — Clerk handles session state on their end.
       Also, the CSP headers need clerk.accounts.dev and clerk.enpisi.com added to connect-src.
-Assistant: Makes sense. Should I keep the rate limiter on /api/auth endpoints?
-User: Switch it from the per-session token bucket to a per-IP sliding window.
-      The Stripe webhook endpoint at /api/stripe/webhook can be deleted entirely.
-Assistant: Will do. I'll also remove the STRIPE_SECRET_KEY from the env template.
 """
 
 facts = get_facts(conversation, model="qwen3:4b", provider="ollama")
@@ -458,11 +499,12 @@ for f in facts:
 # [architecture] Auth provider migrated from Stripe to Clerk with JWT verification via ClerkMiddleware
 # [infrastructure] Redis session cache removed — Clerk manages session state
 # [security] CSP connect-src updated to include clerk.accounts.dev and clerk.enpisi.com
-# [architecture] Rate limiter changed from per-session token bucket to per-IP sliding window
-# [cleanup] /api/stripe/webhook endpoint deleted; STRIPE_SECRET_KEY removed from env template
 ```
 
-### Sememolution (population-based KG evolution)
+</details>
+
+<details>
+<summary><b>Sememolution — population-based KG evolution</b></summary>
 
 Maintain a population of KG variants that evolve independently. Each individual has Poisson-sampled search parameters, producing different traversals each query. Selection pressure from response ranking drives convergence toward useful graph structures.
 
@@ -498,7 +540,10 @@ print(f"Generation {stats['generation']} | avg fitness {stats['avg_fitness']:.3f
       f"best fitness {stats['best_fitness']:.3f} | diversity {stats['diversity']:.3f}")
 ```
 
-### Fine-tuning (SFT, RL, MLX)
+</details>
+
+<details>
+<summary><b>Fine-tuning (SFT, RL, MLX)</b></summary>
 
 ```python
 from npcpy.ft.sft import run_sft
@@ -535,6 +580,8 @@ y_train = [
 
 model_path = run_sft(X_train=X_train, y_train=y_train)
 ```
+
+</details>
 
 ## Features
 

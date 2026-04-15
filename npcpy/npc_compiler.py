@@ -692,14 +692,20 @@ class Jinx:
                 messages: Optional[List[Dict[str, str]]] = None,
                 extra_globals: Optional[Dict[str, Any]] = None,
                 jinja_env: Optional[Environment] = None):
-        
+
         if jinja_env is None:
             jinja_env = SandboxedEnvironment(
                 loader=DictLoader({}),
                 undefined=SilentUndefined,
             )
-        
+
         active_npc = self.npc if self.npc else npc
+
+        # If npc is a list or NPCArray, run this jinx in parallel across all instances
+        from npcpy.npc_array import NPCArray
+        if isinstance(active_npc, (list, NPCArray)):
+            arr = NPCArray.from_npcs(active_npc) if isinstance(active_npc, list) else active_npc
+            return arr.jinx(self.jinx_name, inputs=input_values).collect()
         
         context = (
             active_npc.shared_context.copy() 
@@ -3687,9 +3693,11 @@ class Agent(NPC):
         agents_md: str = None,
         skills_dir: str = None,
         mcp_servers: list = None,
+        safe_tools: bool = False,
         **kwargs,
     ):
-        all_tools = list(_DEFAULT_AGENT_TOOLS)
+        _EXEC_TOOLS = {_tool_sh, _tool_python}
+        all_tools = [t for t in _DEFAULT_AGENT_TOOLS if not safe_tools or t not in _EXEC_TOOLS]
         if extra_tools:
             all_tools.extend(extra_tools)
         if tools is not None:

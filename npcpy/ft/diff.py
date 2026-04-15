@@ -16,6 +16,7 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 import math
+import dataclasses
 from dataclasses import dataclass, field
 from typing import List, Optional
 import numpy as np
@@ -260,7 +261,7 @@ if TORCH_AVAILABLE:
             )
             torch.save({
                 'model_state_dict': self.model.state_dict(),
-                'config': self.config,
+                'config': dataclasses.asdict(self.config),
             }, final_path)
             
             return self.config.output_model_path
@@ -335,7 +336,7 @@ def train_diffusion(image_paths, captions=None, config=None,
     trainer = DiffusionTrainer(config)
 
     if resume_from and os.path.exists(resume_from):
-        checkpoint = torch.load(resume_from, map_location=trainer.device)
+        checkpoint = torch.load(resume_from, map_location=trainer.device, weights_only=True)
         trainer.model.load_state_dict(checkpoint['model_state_dict'])
         print(f'Resumed from {resume_from}')
 
@@ -355,10 +356,11 @@ def generate_image(model_path, prompt=None, num_samples=1, image_size=128):
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    
+    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+
     if 'config' in checkpoint:
-        config = checkpoint['config']
+        cfg = checkpoint['config']
+        config = DiffusionConfig(**cfg) if isinstance(cfg, dict) else cfg
     else:
         config = DiffusionConfig(image_size=image_size)
     
