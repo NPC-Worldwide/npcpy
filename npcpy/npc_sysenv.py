@@ -548,9 +548,9 @@ def get_locally_available_models(project_directory, airplane_mode=False):
             data = response.json()
             for model in data.get('data', []):
                 model_id = model.get('id', model.get('name', 'unknown'))
-                available_models[model_id] = "mlx"
+                available_models[model_id] = "omlx"
     except Exception as e:
-        logging.debug(f"MLX server not available: {e}")
+        logging.debug(f"OMLX server not available: {e}")
 
     try:
         import requests
@@ -560,9 +560,9 @@ def get_locally_available_models(project_directory, airplane_mode=False):
             for model in data.get('data', []):
                 model_id = model.get('id', model.get('name', 'unknown'))
                 if model_id not in available_models:
-                    available_models[model_id] = "mlx"
+                    available_models[model_id] = "omlx"
     except Exception as e:
-        logging.debug(f"MLX server (port 5000) not available: {e}")
+        logging.debug(f"OMLX server (port 5000) not available: {e}")
 
     lora_dirs = [
         get_models_dir(),

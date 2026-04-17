@@ -21,6 +21,7 @@ except OSError:
 try:
     import litellm
     from litellm import completion
+    litellm.suppress_debug_info = True
 except ImportError:
     pass
 except OSError:
@@ -1318,6 +1319,12 @@ def get_litellm_response(
         api_url = api_url or "http://127.0.0.1:8080/v1"
         provider = "openai"
         api_key = api_key or "llamacpp"
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = 300
+    elif provider == 'omlx':
+        api_url = api_url or "http://127.0.0.1:8000/v1"
+        provider = "openai"
+        api_key = api_key or "omlx"
         if 'timeout' not in kwargs:
             kwargs['timeout'] = 300
 
