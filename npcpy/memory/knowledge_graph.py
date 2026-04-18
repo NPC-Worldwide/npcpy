@@ -1331,7 +1331,7 @@ def kg_backfill_from_memories(
 
     with engine.connect() as conn:
         result = conn.execute(text("""
-            SELECT npc, team, directory_path, initial_memory, final_memory
+            SELECT id, npc, team, directory_path, initial_memory, final_memory
             FROM memory_lifecycle
             WHERE status IN ('human-approved', 'human-edited')
             ORDER BY npc, team, directory_path
@@ -1344,7 +1344,10 @@ def kg_backfill_from_memories(
             scope = (row.npc or 'default', row.team or 'global_team', row.directory_path or os.getcwd())
             memories_by_scope[scope].append({
                 'statement': statement,
-                'source_text': '',
+                # Memory IS the fact — keep source_text populated so any existing consumer that
+                # only reads source_text still gets the memory text.
+                'source_text': statement,
+                'memory_id': row.id,
                 'type': 'explicit',
                 'generation': 0
             })
