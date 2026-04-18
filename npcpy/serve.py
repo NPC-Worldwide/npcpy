@@ -1031,7 +1031,8 @@ def search_kg_semantic():
 
 @app.route('/api/kg/facts')
 def get_kg_facts():
-    """Get facts, optionally filtered by generation"""
+    """Get facts, optionally filtered by generation. Includes memory_id + memory_status when the
+    fact was produced from an approved memory (FK: kg_facts.memory_id -> memory_lifecycle.id)."""
     try:
         generation = request.args.get('generation', type=int)
         limit = request.args.get('limit', 100, type=int)
@@ -1039,14 +1040,38 @@ def get_kg_facts():
 
         _, facts_df, _ = load_kg_data(generation)
 
+        # Collect memory_id lookup in one shot, avoid N+1 on memory_lifecycle.
+        memory_status_by_id = {}
+        try:
+            memory_ids = [
+                int(mid) for mid in facts_df.get('memory_id', pd.Series(dtype='Int64')).dropna().unique().tolist()
+            ] if 'memory_id' in facts_df.columns else []
+            if memory_ids:
+                engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+                with engine.connect() as conn:
+                    rows = conn.execute(
+                        text("SELECT id, status FROM memory_lifecycle WHERE id IN (" + ",".join(str(i) for i in memory_ids) + ")")
+                    ).fetchall()
+                    for r in rows:
+                        memory_status_by_id[r[0]] = r[1]
+        except Exception:
+            pass
+
         facts = []
         for i, row in facts_df.iloc[offset:offset+limit].iterrows():
+            mid = row.get('memory_id') if 'memory_id' in facts_df.columns else None
+            try:
+                mid_int = int(mid) if mid is not None and not pd.isna(mid) else None
+            except Exception:
+                mid_int = None
             facts.append({
                 "statement": row.get('statement'),
                 "source_text": row.get('source_text'),
                 "type": row.get('type'),
                 "generation": row.get('generation'),
-                "origin": row.get('origin')
+                "origin": row.get('origin'),
+                "memory_id": mid_int,
+                "memory_status": memory_status_by_id.get(mid_int) if mid_int is not None else None,
             })
 
         return jsonify({
