@@ -500,6 +500,17 @@ def write_yaml_file(file_path, data):
         print(f"Error writing YAML file {file_path}: {e}")
         return False
 
+
+# Default jinx set for markdown-loaded agents (agents.md / AGENTS.md / CLAUDE.md /
+# agents/*.md) when no explicit frontmatter or team-level spec is given. These
+# are generic tools that any Claude-Code-style agent expects to have available.
+# Only jinxes actually present in the team's jinxes_dict are applied.
+DEFAULT_MD_AGENT_JINXES = [
+    'sh', 'python', 'edit_file', 'load_file', 'file_search',
+    'web_search', 'ask_form', 'chat', 'stop',
+]
+
+
 class Jinx:
     ''' 
     Jinx represents a workflow template with Jinja-rendered steps.
@@ -1517,6 +1528,24 @@ class NPC:
                     for jinx_name in matched_names:
                         if jinx_name in self.team.jinxes_dict:
                             self.jinxes_dict[jinx_name] = self.team.jinxes_dict[jinx_name]
+
+        # Additively merge team-level jinxes (from team .ctx `jinxes:`) on top of
+        # whatever this NPC resolved from its own spec. This eliminates the need
+        # to list universal jinxes (chat, stop, ask_form) in every .npc file.
+        team_jinxes_spec = getattr(self.team, 'team_jinxes_spec', None) if self.team else None
+        if team_jinxes_spec and hasattr(self.team, 'jinxes_dict') and self.team.jinxes_dict:
+            jinxes_base_dir = None
+            if hasattr(self.team, 'team_path') and self.team.team_path:
+                jinxes_base_dir = os.path.join(self.team.team_path, 'jinxes')
+            path_map = getattr(self.team, '_jinx_path_map', None)
+            for jinx_spec in team_jinxes_spec:
+                if jinxes_base_dir:
+                    matched_names = match_jinx_spec_to_names(jinx_spec, self.team.jinxes_dict, jinxes_base_dir, jinx_path_map=path_map)
+                else:
+                    matched_names = [jinx_spec] if jinx_spec in self.team.jinxes_dict else []
+                for jinx_name in matched_names:
+                    if jinx_name in self.team.jinxes_dict and jinx_name not in self.jinxes_dict:
+                        self.jinxes_dict[jinx_name] = self.team.jinxes_dict[jinx_name]
 
         should_load_from_directory = False
         if hasattr(self, 'npc_jinxes_directory') and self.npc_jinxes_directory and os.path.exists(self.npc_jinxes_directory):
@@ -2948,6 +2977,11 @@ class Team:
             **self._jinx_path_map,
         }
 
+        # Resolve team-level `jinxes:` from the .ctx (Jinja-rendered) now that
+        # the Jinx() macro is available. Every NPC on this team merges these
+        # into its own jinxes_dict during initialize_jinxes.
+        self._resolve_team_jinxes_spec()
+
         # Now load NPCs with jinx path context available
         for filename in os.listdir(self.team_path):
             if filename.endswith(".npc"):
@@ -2955,11 +2989,13 @@ class Team:
                 npc = NPC(npc_path, db_conn=self.db_conn, team=self)
                 self.npcs[npc.name] = npc
 
-        # Load agents from agents.md and agents/ at the project root (parent of npc_team/)
+        # Load markdown agents from the project root (parent of npc_team/).
+        # Accepts agents.md, AGENTS.md, CLAUDE.md, and an agents/ directory.
         project_root = os.path.dirname(os.path.abspath(self.team_path))
-        agents_md_path = os.path.join(project_root, "agents.md")
-        if os.path.exists(agents_md_path):
-            self._load_agents_from_md(agents_md_path)
+        for md_name in ("agents.md", "AGENTS.md", "CLAUDE.md"):
+            md_path = os.path.join(project_root, md_name)
+            if os.path.exists(md_path):
+                self._load_agents_from_md(md_path)
 
         agents_dir = os.path.join(project_root, "agents")
         if os.path.isdir(agents_dir):
@@ -2976,11 +3012,17 @@ class Team:
         self._load_sub_teams()
 
     def _load_team_context_file(self) -> Dict[str, Any]:
-        """Loads team context from .ctx file and updates team attributes."""
+        """Loads team context from .ctx file and updates team attributes.
+
+        Runs before the full Jinja context (Jinx()/NPC()/jinxes_list()) is built,
+        so we pass an empty context with SilentUndefined — any `{{ Jinx('x') }}`
+        inside jinxes: renders to empty on this pass. The real resolution happens
+        in _resolve_team_jinxes_spec after jinx discovery.
+        """
         ctx_data = {}
         for fname in os.listdir(self.team_path):
             if fname.endswith('.ctx'):
-                ctx_data = load_yaml_file(os.path.join(self.team_path, fname))                
+                ctx_data = load_yaml_file(os.path.join(self.team_path, fname), jinja_context={})
                 if ctx_data is not None:
                     self.model = ctx_data.get('model', self.model)
                     self.provider = ctx_data.get('provider', self.provider)
@@ -3158,27 +3200,68 @@ class Team:
                         yaml.dump(ctx_data, f)
             
     def _load_sub_teams(self):
-        """Load sub-teams from subdirectories"""
+        """Load sub-teams from subdirectories.
+
+        A subdirectory becomes a sub-team if it contains either:
+          - one or more .npc files (npcsh-native team), or
+          - agents.md / AGENTS.md / CLAUDE.md / an agents/ directory
+            (markdown-declared team — inherits this team's jinxes).
+        """
         for item in os.listdir(self.team_path):
             item_path = os.path.join(self.team_path, item)
-            if (os.path.isdir(item_path) and
-                not item.startswith('.') and
-                item not in ("jinxes", "agents")):
-                
-                if any(f.endswith(".npc") for f in os.listdir(item_path) 
-                        if os.path.isfile(os.path.join(item_path, f))):
-                    sub_team = Team(team_path=item_path, db_conn=self.db_conn, team_jinxes=self._raw_jinxes_list)
-                    self.sub_teams[item] = sub_team
+            if not (os.path.isdir(item_path) and
+                    not item.startswith('.') and
+                    item not in ("jinxes", "agents")):
+                continue
+
+            entries = os.listdir(item_path)
+            has_npc = any(f.endswith(".npc") for f in entries
+                          if os.path.isfile(os.path.join(item_path, f)))
+            has_md_team = (
+                any(f in ("agents.md", "AGENTS.md", "CLAUDE.md") for f in entries) or
+                os.path.isdir(os.path.join(item_path, "agents"))
+            )
+            if has_npc or has_md_team:
+                sub_team = Team(team_path=item_path, db_conn=self.db_conn, team_jinxes=self._raw_jinxes_list)
+                self.sub_teams[item] = sub_team
         
+    def _resolve_team_jinxes_spec(self):
+        """Jinja-render the `jinxes:` field from the team .ctx file.
+
+        The first pass of .ctx parsing runs before the Jinx()/NPC()/jinxes_list()
+        macros exist, so jinxes: can't be resolved there. This second pass reads
+        the .ctx again with the full npc_jinja_context and stores the resolved
+        spec on self.team_jinxes_spec — a list of rendered strings (jinx names or
+        relative paths) that every NPC on the team will pick up via
+        initialize_jinxes.
+        """
+        self.team_jinxes_spec = []
+        if not hasattr(self, 'team_path') or not self.team_path:
+            return
+        try:
+            for fname in os.listdir(self.team_path):
+                if not fname.endswith('.ctx'):
+                    continue
+                ctx_path = os.path.join(self.team_path, fname)
+                rendered = load_yaml_file(ctx_path, jinja_context=self._npc_jinja_context)
+                if isinstance(rendered, dict):
+                    spec = rendered.get('jinxes', [])
+                    if isinstance(spec, list):
+                        self.team_jinxes_spec = [s for s in spec if s]
+                return
+        except Exception as e:
+            print(f"Warning: failed to resolve team-level jinxes from .ctx: {e}")
+
     def _load_agents_from_md(self, path: str):
-        """Load agents from an agents.md file.
+        """Load agents from an agents.md / AGENTS.md / CLAUDE.md file.
 
         Format:
             ## agent_name
             directive body text...
 
         Each H2 heading becomes an NPC with that name and the body as its directive.
-        Agents loaded this way get the team's default model/provider and all jinxes.
+        Agents loaded this way pick up the team's .ctx jinxes; if none are defined
+        they fall back to DEFAULT_MD_AGENT_JINXES.
         """
         with open(path, 'r') as f:
             content = f.read()
@@ -3203,7 +3286,8 @@ class Team:
 
         Each .md file defines an agent:
         - Filename (without extension) = agent name
-        - File content = directive (optionally with YAML frontmatter for model/provider)
+        - File content = directive (optionally with YAML frontmatter for
+          model/provider/name and a jinxes: or tools: list for per-agent tool spec)
         """
         for fname in os.listdir(agents_dir):
             if not fname.endswith('.md'):
@@ -3218,6 +3302,7 @@ class Team:
             # Check for YAML frontmatter
             model = self.model
             provider = self.provider
+            jinxes_spec = None
             directive = content
             if content.startswith('---'):
                 parts = content.split('---', 2)
@@ -3228,23 +3313,61 @@ class Team:
                             model = fm.get('model', model)
                             provider = fm.get('provider', provider)
                             name = fm.get('name', name)
+                            # Accept either `jinxes:` (npcsh native) or `tools:`
+                            # (Claude-Code / Agents-md convention).
+                            fm_jinxes = fm.get('jinxes', fm.get('tools'))
+                            if isinstance(fm_jinxes, list):
+                                jinxes_spec = [str(s) for s in fm_jinxes if s]
                         directive = parts[2].strip()
                     except Exception:
                         directive = content
 
-            self._register_md_agent(name, directive, model=model, provider=provider)
+            self._register_md_agent(name, directive, model=model, provider=provider, jinxes_spec=jinxes_spec)
 
-    def _register_md_agent(self, name: str, directive: str, model=None, provider=None):
-        """Create an NPC from a markdown agent definition and add to team."""
+    def _register_or_prompt_agent(self, name: str, directive: str, source_path: str):
+        """Register a markdown-declared agent, skipping names that collide with an
+        existing .npc-declared NPC so curated definitions always win.
+
+        ``source_path`` is accepted for logging/traceability; agents.md / AGENTS.md /
+        CLAUDE.md all feed through here.
+        """
+        if not name or name in self.npcs:
+            return
+        self._register_md_agent(name, directive)
+
+    def _register_md_agent(self, name: str, directive: str, model=None, provider=None, jinxes_spec=None):
+        """Create an NPC from a markdown agent definition and add to team.
+
+        Markdown agents don't have a strict .npc jinxes: spec. Resolution order:
+          1. Explicit frontmatter `jinxes:`/`tools:` list, if provided.
+          2. Team-level `jinxes:` from .ctx, if any.
+          3. DEFAULT_MD_AGENT_JINXES fallback — a generic agent toolkit.
+        Team-level jinxes are then additively merged on top in initialize_jinxes.
+        """
+        if jinxes_spec is None:
+            if getattr(self, 'team_jinxes_spec', None):
+                jinxes_spec = list(self.team_jinxes_spec)
+            else:
+                jinxes_spec = [
+                    name for name in DEFAULT_MD_AGENT_JINXES
+                    if name in self.jinxes_dict
+                ]
         npc = NPC(
             name=name,
             primary_directive=directive,
             model=model or self.model,
             provider=provider or self.provider,
+            jinxes=jinxes_spec,
             db_conn=self.db_conn,
         )
         npc.team = self
         self.npcs[name] = npc
+        # Markdown agents never get initialize_jinxes called via the .npc load path,
+        # so call it here so their jinxes_dict is actually populated.
+        try:
+            npc.initialize_jinxes(team_raw_jinxes=self._raw_jinxes_list)
+        except Exception as e:
+            print(f"Warning: failed to initialize jinxes for markdown agent '{name}': {e}")
 
     def get_forenpc(self) -> Optional['NPC']:
         """
