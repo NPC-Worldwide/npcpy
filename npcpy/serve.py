@@ -773,15 +773,27 @@ def list_generations():
 def get_graph_data():
     generation_str = request.args.get('generation')
     generation = int(generation_str) if generation_str and generation_str != 'null' else None
-    
+
     concepts_df, facts_df, links_df = load_kg_data(generation)
-    
+
     nodes = []
     nodes.extend([{'id': name, 'type': 'concept'} for name in concepts_df['name']])
-    nodes.extend([{'id': statement, 'type': 'fact'} for statement in facts_df['statement']])
-    
+
+    # Fact nodes carry memory_id when the fact was produced from a memory (FK -> memory_lifecycle).
+    has_memory_id = 'memory_id' in facts_df.columns
+    for _, row in facts_df.iterrows():
+        node = {'id': row['statement'], 'type': 'fact'}
+        if has_memory_id:
+            mid = row.get('memory_id')
+            try:
+                if mid is not None and not pd.isna(mid):
+                    node['memory_id'] = int(mid)
+            except Exception:
+                pass
+        nodes.append(node)
+
     links = [{'source': row['source'], 'target': row['target']} for _, row in links_df.iterrows()]
-    
+
     return jsonify(graph={'nodes': nodes, 'links': links})
 
 @app.route('/api/kg/network-stats')
@@ -1031,7 +1043,8 @@ def search_kg_semantic():
 
 @app.route('/api/kg/facts')
 def get_kg_facts():
-    """Get facts, optionally filtered by generation"""
+    """Get facts, optionally filtered by generation. Includes memory_id + memory_status when the
+    fact was produced from an approved memory (FK: kg_facts.memory_id -> memory_lifecycle.id)."""
     try:
         generation = request.args.get('generation', type=int)
         limit = request.args.get('limit', 100, type=int)
@@ -1039,14 +1052,38 @@ def get_kg_facts():
 
         _, facts_df, _ = load_kg_data(generation)
 
+        # Collect memory_id lookup in one shot, avoid N+1 on memory_lifecycle.
+        memory_status_by_id = {}
+        try:
+            memory_ids = [
+                int(mid) for mid in facts_df.get('memory_id', pd.Series(dtype='Int64')).dropna().unique().tolist()
+            ] if 'memory_id' in facts_df.columns else []
+            if memory_ids:
+                engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+                with engine.connect() as conn:
+                    rows = conn.execute(
+                        text("SELECT id, status FROM memory_lifecycle WHERE id IN (" + ",".join(str(i) for i in memory_ids) + ")")
+                    ).fetchall()
+                    for r in rows:
+                        memory_status_by_id[r[0]] = r[1]
+        except Exception:
+            pass
+
         facts = []
         for i, row in facts_df.iloc[offset:offset+limit].iterrows():
+            mid = row.get('memory_id') if 'memory_id' in facts_df.columns else None
+            try:
+                mid_int = int(mid) if mid is not None and not pd.isna(mid) else None
+            except Exception:
+                mid_int = None
             facts.append({
                 "statement": row.get('statement'),
                 "source_text": row.get('source_text'),
                 "type": row.get('type'),
                 "generation": row.get('generation'),
-                "origin": row.get('origin')
+                "origin": row.get('origin'),
+                "memory_id": mid_int,
+                "memory_status": memory_status_by_id.get(mid_int) if mid_int is not None else None,
             })
 
         return jsonify({
@@ -1313,11 +1350,22 @@ def ingest_to_kg():
 
 @app.route('/api/kg/query', methods=['POST'])
 def query_kg():
-    """Query the knowledge graph with a natural language question. Returns an LLM response grounded in KG facts."""
+    """Query the knowledge graph with a natural language question. Returns an LLM response grounded in KG facts.
+
+    Modes:
+      - "keyword" (default): plain keyword-overlap scoring (original behavior)
+      - "traversal": Poisson-sampled depth/breadth traversal via an ephemeral KGIndividual
+      - "sememolution": delegate to a persisted population by population_id; ranks multiple candidates
+    """
     try:
         data = request.get_json() or {}
         question = data.get('question', '')
         top_k = data.get('top_k', 15)
+        mode = (data.get('mode') or 'keyword').lower()
+        lambda_depth = float(data.get('lambda_depth', 2.0))
+        lambda_breadth = float(data.get('lambda_breadth', 5.0))
+        similarity_threshold = float(data.get('similarity_threshold', 0.6))
+        population_id = data.get('population_id')
 
         if not question.strip():
             return jsonify({"error": "question is required"}), 400
@@ -1328,33 +1376,76 @@ def query_kg():
         model = app.config.get('DEFAULT_MODEL', None)
         provider = app.config.get('DEFAULT_PROVIDER', None)
 
+        # Sememolution: route to a population for ranked multi-candidate answer
+        if mode == 'sememolution' and population_id:
+            from npcpy.memory.kg_population import load_population, save_population
+            mgr = load_population(engine, population_id)
+            if not mgr:
+                return jsonify({"error": f"population '{population_id}' not found"}), 404
+            if model: mgr.model = model
+            if provider: mgr.provider = provider
+            rankings = mgr.query_and_rank(question)
+            # Persist fitness updates
+            try: save_population(engine, population_id, population_id, mgr)
+            except Exception: pass
+            return jsonify({
+                "mode": "sememolution",
+                "population_id": population_id,
+                "candidates": [
+                    {
+                        "rank": c.get('rank'),
+                        "individual_id": c['individual'].individual_id,
+                        "response": c['response'],
+                        "n_facts": c['n_facts'],
+                        "context_facts": c['context_facts'],
+                        "genome": {
+                            "lambda_depth": c['individual'].genome.lambda_depth,
+                            "lambda_breadth": c['individual'].genome.lambda_breadth,
+                            "similarity_threshold": c['individual'].genome.similarity_threshold,
+                        },
+                    }
+                    for c in rankings
+                ],
+            })
+
         from npcpy.memory.command_history import load_kg_from_db
         existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
 
         if not existing_kg or not existing_kg.get('facts'):
             return jsonify({"error": "Knowledge graph is empty. Ingest some data first."}), 400
 
-        # Gather relevant facts via keyword matching
         facts = existing_kg.get('facts', [])
         concepts = existing_kg.get('concepts', [])
-        q_lower = question.lower()
-        q_words = set(q_lower.split())
 
-        scored_facts = []
-        for f in facts:
-            stmt = (f.get('statement', '') or '').lower()
-            score = sum(1 for w in q_words if w in stmt)
-            if score > 0:
-                scored_facts.append((score, f))
-        scored_facts.sort(key=lambda x: -x[0])
-        relevant_facts = [f['statement'] for _, f in scored_facts[:top_k]]
-
-        # Also include concept names for context
-        relevant_concepts = [c.get('name', '') for c in concepts[:20]]
-
-        if not relevant_facts:
-            # Fallback: take most recent facts
-            relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
+        # Traversal: reuse Poisson-sampled search logic via an ephemeral individual
+        if mode == 'traversal':
+            from npcpy.memory.kg_population import KGGenome, KGIndividual, SememolutionPopulation
+            genome = KGGenome(
+                lambda_depth=lambda_depth,
+                lambda_breadth=lambda_breadth,
+                similarity_threshold=similarity_threshold,
+            )
+            ind = KGIndividual(individual_id='ephemeral', genome=genome, kg_data=existing_kg)
+            # SememolutionPopulation.search_individual is stateless w.r.t. the population; instantiate a trivial one to reuse it
+            mgr = SememolutionPopulation(engine=engine, model=model or "gemma3:4b", provider=provider or "ollama", population_size=1, sample_size=1)
+            relevant_facts = mgr.search_individual(ind, question)[:top_k]
+            relevant_concepts = [c.get('name', '') for c in concepts[:20]]
+            if not relevant_facts:
+                relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
+        else:
+            # keyword mode (default)
+            q_words = set(question.lower().split())
+            scored_facts = []
+            for f in facts:
+                stmt = (f.get('statement', '') or '').lower()
+                score = sum(1 for w in q_words if w in stmt)
+                if score > 0:
+                    scored_facts.append((score, f))
+            scored_facts.sort(key=lambda x: -x[0])
+            relevant_facts = [f['statement'] for _, f in scored_facts[:top_k]]
+            relevant_concepts = [c.get('name', '') for c in concepts[:20]]
+            if not relevant_facts:
+                relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
 
         kg_context = "Known facts:\n" + "\n".join(f"- {f}" for f in relevant_facts)
         if relevant_concepts:
@@ -1431,6 +1522,174 @@ def rollback_kg():
             "success": True,
             "generation": target_generation
         })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Sememolution: KG population management ─────────────────────────────
+# Endpoints for managing populations of KGIndividuals: create, list, get,
+# delete, evolve generation, update genome, query-with-ranking. All state
+# persists in kg_populations / kg_individuals (no command_history touch).
+
+@app.route('/api/kg/populations', methods=['GET'])
+def list_kg_populations():
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import list_populations
+        return jsonify({"populations": list_populations(engine)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population', methods=['POST'])
+def create_kg_population():
+    """Create a fresh population of KGIndividuals with random genomes.
+
+    Body:
+      { "name": "my_pop", "population_size": 20, "model": "...", "provider": "...",
+        "sample_size": 10, "seed_from_kg": true, "mutation_rate": 0.15, ... }
+    """
+    try:
+        data = request.get_json() or {}
+        name = (data.get('name') or '').strip() or f"pop_{int(time.time())}"
+        population_id = (data.get('id') or name).replace(' ', '_')
+        pop_size = int(data.get('population_size', 20))
+        sample_size = int(data.get('sample_size', 10))
+        model = data.get('model') or app.config.get('DEFAULT_MODEL') or "gemma3:4b"
+        provider = data.get('provider') or app.config.get('DEFAULT_PROVIDER') or "ollama"
+        seed_from_kg = bool(data.get('seed_from_kg', True))
+
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import SememolutionPopulation, save_population, _ensure_population_schema
+        _ensure_population_schema(engine)
+
+        mgr = SememolutionPopulation(
+            engine=engine, model=model, provider=provider,
+            population_size=pop_size, sample_size=sample_size,
+        )
+        # Override GAConfig fields if caller provided them
+        for k_src, k_dst in (('mutation_rate', 'mutation_rate'),
+                             ('crossover_rate', 'crossover_rate'),
+                             ('tournament_size', 'tournament_size'),
+                             ('elitism_count', 'elitism_count')):
+            if k_src in data:
+                setattr(mgr.ga.config, k_dst, type(getattr(mgr.ga.config, k_dst))(data[k_src]))
+
+        mgr.initialize()
+
+        if seed_from_kg:
+            # Prime each individual with a copy of the current global KG, so searches have something to traverse.
+            from npcpy.memory.command_history import load_kg_from_db
+            existing = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
+            import copy as _copy
+            for ind in mgr.ga.population:
+                ind.kg_data = _copy.deepcopy(existing)
+
+        save_population(engine, population_id, name, mgr)
+        return jsonify({"success": True, "id": population_id, "name": name, "stats": mgr.get_stats()})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>', methods=['GET'])
+def get_kg_population(population_id):
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import load_population, _genome_to_dict
+        mgr = load_population(engine, population_id)
+        if not mgr:
+            return jsonify({"error": "not found"}), 404
+        individuals = [
+            {
+                'individual_id': ind.individual_id,
+                'fitness': ind.fitness,
+                'wins': ind.wins,
+                'total_queries': ind.total_queries,
+                'facts': len(ind.kg_data.get('facts', [])),
+                'concepts': len(ind.kg_data.get('concepts', [])),
+                'generation': ind.kg_data.get('generation', 0),
+                'genome': _genome_to_dict(ind.genome),
+            }
+            for ind in mgr.ga.population
+        ]
+        return jsonify({
+            "id": population_id,
+            "model": mgr.model,
+            "provider": mgr.provider,
+            "sample_size": mgr.sample_size,
+            "stats": mgr.get_stats(),
+            "individuals": individuals,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>', methods=['DELETE'])
+def delete_kg_population(population_id):
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import delete_population
+        return jsonify({"success": delete_population(engine, population_id)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>/individual/<individual_id>', methods=['GET'])
+def get_kg_individual(population_id, individual_id):
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import load_population, _genome_to_dict
+        mgr = load_population(engine, population_id)
+        if not mgr:
+            return jsonify({"error": "population not found"}), 404
+        ind = next((i for i in mgr.ga.population if i.individual_id == individual_id), None)
+        if not ind:
+            return jsonify({"error": "individual not found"}), 404
+        return jsonify({
+            'individual_id': ind.individual_id,
+            'fitness': ind.fitness,
+            'wins': ind.wins,
+            'total_queries': ind.total_queries,
+            'genome': _genome_to_dict(ind.genome),
+            'kg_data': ind.kg_data,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>/individual/<individual_id>/genome', methods=['PUT'])
+def update_kg_individual_genome(population_id, individual_id):
+    try:
+        data = request.get_json() or {}
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import update_individual_genome
+        ok = update_individual_genome(engine, population_id, individual_id, data)
+        if not ok:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"success": True})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>/evolve', methods=['POST'])
+def evolve_kg_population(population_id):
+    """Advance the population by one generation (select, crossover, mutate)."""
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import load_population, save_population
+        mgr = load_population(engine, population_id)
+        if not mgr:
+            return jsonify({"error": "not found"}), 404
+        mgr.evolve_generation()
+        save_population(engine, population_id, population_id, mgr)
+        return jsonify({"success": True, "stats": mgr.get_stats()})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500

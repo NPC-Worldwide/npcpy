@@ -416,11 +416,203 @@ class SememolutionPopulation:
 
         return {
             'total': len(pop),
-            'avg_fitness': np.mean(fitnesses),
-            'max_fitness': max(fitnesses),
-            'total_facts': sum(fact_counts),
-            'avg_facts_per_individual': np.mean(fact_counts),
-            'lambda_depth': {'mean': np.mean(depths), 'std': np.std(depths)},
-            'lambda_breadth': {'mean': np.mean(breadths), 'std': np.std(breadths)},
+            'avg_fitness': float(np.mean(fitnesses)),
+            'max_fitness': float(max(fitnesses)),
+            'total_facts': int(sum(fact_counts)),
+            'avg_facts_per_individual': float(np.mean(fact_counts)),
+            'lambda_depth': {'mean': float(np.mean(depths)), 'std': float(np.std(depths))},
+            'lambda_breadth': {'mean': float(np.mean(breadths)), 'std': float(np.std(breadths))},
             'unique_sleep_configs': len(set(tuple(ind.genome.sleep_ops) for ind in pop)),
         }
+
+
+# ---------------------------------------------------------------------------
+# Persistence: SQLite-backed population store. No command_history schema churn.
+# ---------------------------------------------------------------------------
+
+def _ensure_population_schema(engine):
+    """Create the kg_populations + kg_individuals tables if missing."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS kg_populations (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                model TEXT,
+                provider TEXT,
+                sample_size INTEGER NOT NULL DEFAULT 10,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS kg_individuals (
+                individual_id TEXT NOT NULL,
+                population_id TEXT NOT NULL,
+                genome_json TEXT NOT NULL,
+                kg_data_json TEXT NOT NULL,
+                fitness REAL NOT NULL DEFAULT 0.0,
+                wins INTEGER NOT NULL DEFAULT 0,
+                total_queries INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (population_id, individual_id),
+                FOREIGN KEY (population_id) REFERENCES kg_populations(id) ON DELETE CASCADE
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_kg_individuals_population ON kg_individuals(population_id)"
+        ))
+
+
+def _genome_to_dict(g: KGGenome) -> Dict:
+    return {
+        'lambda_depth': float(g.lambda_depth),
+        'lambda_breadth': float(g.lambda_breadth),
+        'similarity_threshold': float(g.similarity_threshold),
+        'sleep_ops': list(g.sleep_ops),
+        'dream_seeds': int(g.dream_seeds),
+        'dream_probability': float(g.dream_probability),
+        'get_concepts': bool(g.get_concepts),
+        'link_facts_facts': bool(g.link_facts_facts),
+        'link_concepts_facts': bool(g.link_concepts_facts),
+        'link_concepts_concepts': bool(g.link_concepts_concepts),
+    }
+
+
+def _genome_from_dict(d: Dict) -> KGGenome:
+    default = KGGenome()
+    return KGGenome(
+        lambda_depth=float(d.get('lambda_depth', default.lambda_depth)),
+        lambda_breadth=float(d.get('lambda_breadth', default.lambda_breadth)),
+        similarity_threshold=float(d.get('similarity_threshold', default.similarity_threshold)),
+        sleep_ops=list(d.get('sleep_ops', default.sleep_ops)),
+        dream_seeds=int(d.get('dream_seeds', default.dream_seeds)),
+        dream_probability=float(d.get('dream_probability', default.dream_probability)),
+        get_concepts=bool(d.get('get_concepts', default.get_concepts)),
+        link_facts_facts=bool(d.get('link_facts_facts', default.link_facts_facts)),
+        link_concepts_facts=bool(d.get('link_concepts_facts', default.link_concepts_facts)),
+        link_concepts_concepts=bool(d.get('link_concepts_concepts', default.link_concepts_concepts)),
+    )
+
+
+def save_population(engine, population_id: str, name: str, mgr: 'SememolutionPopulation'):
+    _ensure_population_schema(engine)
+    import time as _time
+
+    config_json = json.dumps({
+        'population_size': mgr.ga.config.population_size,
+        'mutation_rate': mgr.ga.config.mutation_rate,
+        'crossover_rate': mgr.ga.config.crossover_rate,
+        'tournament_size': mgr.ga.config.tournament_size,
+        'elitism_count': mgr.ga.config.elitism_count,
+    })
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO kg_populations (id, name, model, provider, sample_size, config_json, updated_at)
+            VALUES (:id, :name, :model, :provider, :sample_size, :config_json, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                model = excluded.model,
+                provider = excluded.provider,
+                sample_size = excluded.sample_size,
+                config_json = excluded.config_json,
+                updated_at = CURRENT_TIMESTAMP
+        """), {
+            'id': population_id, 'name': name,
+            'model': mgr.model, 'provider': mgr.provider,
+            'sample_size': mgr.sample_size, 'config_json': config_json,
+        })
+
+        # Drop and re-insert all individuals (simpler than diff).
+        conn.execute(text("DELETE FROM kg_individuals WHERE population_id = :pid"),
+                     {'pid': population_id})
+        for ind in mgr.ga.population:
+            conn.execute(text("""
+                INSERT INTO kg_individuals
+                (individual_id, population_id, genome_json, kg_data_json, fitness, wins, total_queries, updated_at)
+                VALUES (:iid, :pid, :genome, :kg, :fit, :wins, :tq, CURRENT_TIMESTAMP)
+            """), {
+                'iid': ind.individual_id, 'pid': population_id,
+                'genome': json.dumps(_genome_to_dict(ind.genome)),
+                'kg': json.dumps(ind.kg_data),
+                'fit': float(ind.fitness), 'wins': int(ind.wins), 'tq': int(ind.total_queries),
+            })
+
+
+def load_population(engine, population_id: str) -> Optional['SememolutionPopulation']:
+    _ensure_population_schema(engine)
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT name, model, provider, sample_size, config_json FROM kg_populations WHERE id = :id"),
+                           {'id': population_id}).fetchone()
+        if not row:
+            return None
+        cfg = json.loads(row.config_json or '{}')
+
+        inds_rows = conn.execute(text("""
+            SELECT individual_id, genome_json, kg_data_json, fitness, wins, total_queries
+            FROM kg_individuals WHERE population_id = :pid
+            ORDER BY fitness DESC, individual_id ASC
+        """), {'pid': population_id}).fetchall()
+
+    mgr = SememolutionPopulation(
+        engine=engine,
+        model=row.model or "gemma3:4b",
+        provider=row.provider or "ollama",
+        population_size=int(cfg.get('population_size', max(1, len(inds_rows) or 10))),
+        sample_size=int(row.sample_size or 10),
+    )
+    mgr.ga.config.mutation_rate = float(cfg.get('mutation_rate', mgr.ga.config.mutation_rate))
+    mgr.ga.config.crossover_rate = float(cfg.get('crossover_rate', mgr.ga.config.crossover_rate))
+    mgr.ga.config.tournament_size = int(cfg.get('tournament_size', mgr.ga.config.tournament_size))
+    mgr.ga.config.elitism_count = int(cfg.get('elitism_count', mgr.ga.config.elitism_count))
+
+    mgr.ga.population = [
+        KGIndividual(
+            individual_id=r.individual_id,
+            genome=_genome_from_dict(json.loads(r.genome_json)),
+            kg_data=json.loads(r.kg_data_json),
+            fitness=float(r.fitness or 0.0),
+            wins=int(r.wins or 0),
+            total_queries=int(r.total_queries or 0),
+        )
+        for r in inds_rows
+    ]
+    return mgr
+
+
+def list_populations(engine) -> List[Dict]:
+    _ensure_population_schema(engine)
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT p.id, p.name, p.model, p.provider, p.sample_size, p.created_at, p.updated_at,
+                   COUNT(i.individual_id) AS individual_count,
+                   COALESCE(AVG(i.fitness), 0) AS avg_fitness,
+                   COALESCE(MAX(i.fitness), 0) AS max_fitness
+            FROM kg_populations p
+            LEFT JOIN kg_individuals i ON i.population_id = p.id
+            GROUP BY p.id
+            ORDER BY p.updated_at DESC
+        """)).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def delete_population(engine, population_id: str) -> bool:
+    _ensure_population_schema(engine)
+    with engine.begin() as conn:
+        r = conn.execute(text("DELETE FROM kg_populations WHERE id = :id"),
+                         {'id': population_id})
+        return (r.rowcount or 0) > 0
+
+
+def update_individual_genome(engine, population_id: str, individual_id: str, genome: Dict) -> bool:
+    _ensure_population_schema(engine)
+    with engine.begin() as conn:
+        r = conn.execute(text("""
+            UPDATE kg_individuals
+            SET genome_json = :g, updated_at = CURRENT_TIMESTAMP
+            WHERE population_id = :pid AND individual_id = :iid
+        """), {'g': json.dumps(_genome_to_dict(_genome_from_dict(genome))),
+               'pid': population_id, 'iid': individual_id})
+        return (r.rowcount or 0) > 0
