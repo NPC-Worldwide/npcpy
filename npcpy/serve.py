@@ -773,15 +773,27 @@ def list_generations():
 def get_graph_data():
     generation_str = request.args.get('generation')
     generation = int(generation_str) if generation_str and generation_str != 'null' else None
-    
+
     concepts_df, facts_df, links_df = load_kg_data(generation)
-    
+
     nodes = []
     nodes.extend([{'id': name, 'type': 'concept'} for name in concepts_df['name']])
-    nodes.extend([{'id': statement, 'type': 'fact'} for statement in facts_df['statement']])
-    
+
+    # Fact nodes carry memory_id when the fact was produced from a memory (FK -> memory_lifecycle).
+    has_memory_id = 'memory_id' in facts_df.columns
+    for _, row in facts_df.iterrows():
+        node = {'id': row['statement'], 'type': 'fact'}
+        if has_memory_id:
+            mid = row.get('memory_id')
+            try:
+                if mid is not None and not pd.isna(mid):
+                    node['memory_id'] = int(mid)
+            except Exception:
+                pass
+        nodes.append(node)
+
     links = [{'source': row['source'], 'target': row['target']} for _, row in links_df.iterrows()]
-    
+
     return jsonify(graph={'nodes': nodes, 'links': links})
 
 @app.route('/api/kg/network-stats')
