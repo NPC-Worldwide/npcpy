@@ -227,9 +227,12 @@ def load_yaml_file(file_path, jinja_context=None):
         with open(os.path.expanduser(file_path), 'r', encoding="utf-8") as f:
             content = f.read()
 
-        # Only trigger Jinja on {{ }} if jinja_context is provided (NPC files).
-        # Jinx files use {{ }} for runtime templating and should NOT be rendered at load time.
-        has_jinja = '{%' in content or (jinja_context and '{{' in content and '}}' in content)
+        # Only trigger Jinja on {{ }} if jinja_context is provided (NPC and team
+        # .ctx files). Callers signal "render Jinja" by passing ANY jinja_context,
+        # including {}, so first-pass .ctx loads can use SilentUndefined without
+        # supplying the full macro set. Jinx files use {{ }} for runtime templating
+        # and should NOT be rendered at load time, so they pass None.
+        has_jinja = '{%' in content or (jinja_context is not None and '{{' in content and '}}' in content)
         if not has_jinja:
             return yaml.safe_load(content)
 
@@ -3038,9 +3041,10 @@ class Team:
     def _load_team_context_into_shared_context(self):
         """Loads team context into shared_context after forenpc is determined."""
         ctx_data = {}
+        jinja_ctx = getattr(self, '_npc_jinja_context', None)
         for fname in os.listdir(self.team_path):
             if fname.endswith('.ctx'):
-                ctx_data = load_yaml_file(os.path.join(self.team_path, fname))                
+                ctx_data = load_yaml_file(os.path.join(self.team_path, fname), jinja_context=jinja_ctx if jinja_ctx is not None else {})
                 if ctx_data is not None:
                     self.context = ctx_data.get('context', '')
                     self.shared_context['context'] = self.context
