@@ -204,7 +204,7 @@ def kg_initial(content,
                verbose=True,
                embedding_model=None,
                embedding_provider=None,
-               zoom_in_enabled=False):
+               zoom_in_enabled=True):
 
     if generation is None:
         CURRENT_GENERATION = 0
