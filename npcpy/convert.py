@@ -292,13 +292,24 @@ def _iter_dir_agents(path: str) -> List[Tuple[str, Dict[str, Any], str]]:
     return agents
 
 
-def agents_to_npc(agents_path: str, out_dir: str) -> List[str]:
+def agents_to_npc(
+    agents_path: str,
+    out_dir: str,
+    team_path: Optional[str] = None,
+    interactive: bool = False,
+) -> List[str]:
     """Convert markdown agents into one .npc per agent.
 
     Accepts a single file (H2-delimited) or a directory of per-agent .md.
     Frontmatter `tools:` / `jinxes:` pass through as bare names in the output
     `jinxes:` list — no Jinja wrapping, since the compiler accepts bare names
     as jinxes_spec entries.
+
+    When team_path + interactive are set, any tool name in the agent
+    frontmatter that doesn't exist as a jinx on the referenced team gets
+    resolved via the translate_tools jinx (ask_form prompt). The caller
+    must be on an interactive terminal — translate_tools short-circuits
+    otherwise and the unknown names pass through unchanged.
     """
     if os.path.isfile(agents_path):
         agents = _iter_inline_agents_md(agents_path)
@@ -306,6 +317,48 @@ def agents_to_npc(agents_path: str, out_dir: str) -> List[str]:
         agents = _iter_dir_agents(agents_path)
     else:
         return []
+
+    tool_mapping: Dict[str, str] = {}
+    translate_jinx = None
+    npc_for_translate = None
+    if interactive and team_path:
+        try:
+            from npcpy.npc_compiler import Team
+            translate_team = Team(team_path=team_path)
+            translate_jinx = translate_team.jinxes_dict.get('translate_tools')
+            npc_for_translate = translate_team.forenpc
+        except Exception as exc:
+            print(f"Warning: failed to load team for interactive translation: {exc}", file=sys.stderr)
+
+    if translate_jinx is not None and npc_for_translate is not None:
+        unknown: List[str] = []
+        known_jinxes = set(translate_team.jinxes_dict.keys())
+        for _name, fm, _body in agents:
+            spec = fm.get('jinxes', fm.get('tools'))
+            if isinstance(spec, list):
+                for raw in spec:
+                    t = str(raw)
+                    if t and t not in known_jinxes and t not in unknown:
+                        unknown.append(t)
+        if unknown:
+            try:
+                result = translate_jinx.execute(
+                    input_values={
+                        'foreign_tools': json.dumps(unknown),
+                        'title': 'Resolve imported agent tool names',
+                    },
+                    npc=npc_for_translate,
+                    messages=[],
+                )
+                raw_output = result.get('output', '{}') if isinstance(result, dict) else result
+                parsed = json.loads(raw_output) if isinstance(raw_output, str) else raw_output
+                if isinstance(parsed, dict) and not parsed.get('cancelled'):
+                    tool_mapping = {
+                        k: v for k, v in parsed.items()
+                        if isinstance(v, str) and v and v != 'skip'
+                    }
+            except Exception as exc:
+                print(f"Warning: translate_tools invocation failed: {exc}", file=sys.stderr)
 
     written: List[str] = []
     for name, fm, body in agents:
@@ -319,7 +372,15 @@ def agents_to_npc(agents_path: str, out_dir: str) -> List[str]:
             npc_data['provider'] = fm['provider']
         spec = fm.get('jinxes', fm.get('tools'))
         if isinstance(spec, list):
-            npc_data['jinxes'] = [str(j) for j in spec if j]
+            resolved: List[str] = []
+            for raw in spec:
+                t = str(raw).strip()
+                if not t:
+                    continue
+                mapped = tool_mapping.get(t, t)
+                resolved.append(mapped)
+            if resolved:
+                npc_data['jinxes'] = resolved
 
         out_path = os.path.join(out_dir, name + '.npc')
         _write(out_path, yaml.safe_dump(npc_data, sort_keys=False, default_flow_style=False))
@@ -424,8 +485,12 @@ def _cli_agents_to_npc(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog='agents2npc', description='Convert markdown agent files into .npc files.')
     p.add_argument('agents_path', help='Path to agents.md / AGENTS.md / CLAUDE.md or a directory of agent .md files.')
     p.add_argument('-o', '--out-dir', default='npc_team', help='Output directory (default: ./npc_team).')
+    p.add_argument('--team', default=None, help='Team directory for resolving unknown tool names against.')
+    p.add_argument('--interactive', action='store_true', help='Prompt via ask_form (translate_tools) to map unknown tool names. Requires --team.')
     args = p.parse_args(argv)
-    for path in agents_to_npc(args.agents_path, args.out_dir):
+    if args.interactive and not args.team:
+        p.error('--interactive requires --team')
+    for path in agents_to_npc(args.agents_path, args.out_dir, team_path=args.team, interactive=args.interactive):
         print(path)
     return 0
 
