@@ -58,7 +58,15 @@ def _identity_jinja_context() -> Dict[str, Any]:
 
 
 def _load_compiled_yaml(path: str) -> Dict[str, Any]:
-    """Load a .jinx or .npc file with Jinja fully resolved. No `{{ }}` survives."""
+    """Load a .npc file with Jinja fully resolved. For .npc, `{{ Jinx('x') }}`
+    in the jinxes list collapses to the bare name 'x'. For .jinx, we bypass
+    Jinja entirely — jinx code bodies carry their own runtime `{{ }}` that
+    must survive to load-time untouched."""
+    if path.endswith('.jinx'):
+        with open(path, 'r', encoding='utf-8') as f:
+            raw = f.read()
+        data = yaml.safe_load(raw)
+        return data if isinstance(data, dict) else {}
     data = load_yaml_file(path, jinja_context=_identity_jinja_context())
     return data if isinstance(data, dict) else {}
 
@@ -374,10 +382,31 @@ def npc_to_agents(npc_path: str, out_dir: str, combined: bool = False) -> List[s
 
 
 def _cli_jinx_to_skill(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(prog='jinx2skill', description='Compile a .jinx into a skill folder (SKILL.md + one .py per step).')
-    p.add_argument('jinx_path', help='Path to the .jinx file.')
+    p = argparse.ArgumentParser(prog='jinx2skill', description='Compile a .jinx into a skill folder (SKILL.md + one .py per step). Accepts a single .jinx file or a directory (recursed for bulk regen).')
+    p.add_argument('jinx_path', help='Path to a .jinx file or a directory of jinxes.')
     p.add_argument('-o', '--out-dir', default='skills', help='Output skills root (default: ./skills).')
     args = p.parse_args(argv)
+
+    if os.path.isdir(args.jinx_path):
+        wrote, failed = [], []
+        for dirpath, _, filenames in os.walk(args.jinx_path):
+            for f in filenames:
+                if not f.endswith('.jinx'):
+                    continue
+                src = os.path.join(dirpath, f)
+                try:
+                    wrote.append(jinx_to_skill(src, args.out_dir))
+                except Exception as exc:
+                    failed.append((src, str(exc)))
+        for path in wrote:
+            print(path)
+        if failed:
+            print(f"\n{len(failed)} failures:", file=sys.stderr)
+            for src, err in failed:
+                print(f"  {src}: {err}", file=sys.stderr)
+            return 1
+        return 0
+
     print(jinx_to_skill(args.jinx_path, args.out_dir))
     return 0
 
