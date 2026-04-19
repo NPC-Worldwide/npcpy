@@ -2,11 +2,11 @@ import json
 import os
 import yaml
 
-name = ""
-desc = ""
-inputs_raw = ""
-body = ""
-subdir = ""
+name = {{ jinx_name | tojson }}
+desc = {{ description | tojson }}
+inputs_raw = {{ inputs_spec | tojson }}
+body = {{ python_code | tojson }}
+subdir = {{ target_subdir | tojson }}
 
 try:
     inputs_list = json.loads(inputs_raw) if isinstance(inputs_raw, str) else inputs_raw

@@ -1,8 +1,8 @@
 import json
 import os
 
-ref = ""
-values_raw = ""
+ref = {{ jinx_ref | tojson }}
+values_raw = {{ input_values | tojson }}
 
 try:
     values = json.loads(values_raw) if isinstance(values_raw, str) else values_raw
