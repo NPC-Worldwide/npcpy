@@ -672,13 +672,22 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
         if not npc_directory or not os.path.exists(npc_directory):
             continue
         npc_path = os.path.join(npc_directory, f"{name}.npc")
-        if os.path.exists(npc_path):
-            try:
-                npc = NPC(file=npc_path, db_conn=db_conn)
-                return npc
-            except Exception as e:
-                print(f"Error loading NPC {name} from {npc_path}: {str(e)}")
+        if not os.path.exists(npc_path):
+            # Also check agents/ subdirectory and markdown-declared agents
+            if not any(os.path.exists(os.path.join(npc_directory, p)) for p in (
+                'agents.md', 'AGENTS.md', 'CLAUDE.md', 'agents'
+            )):
                 continue
+        try:
+            # Route NPC loading through a Team so the _npc_jinja_context is
+            # built and Jinja templates in .npc files render before YAML parse.
+            team = Team(team_path=npc_directory, db_conn=db_conn)
+            npc = team.npcs.get(name)
+            if npc is not None:
+                return npc
+        except Exception as e:
+            print(f"Error loading team from {npc_directory} while resolving NPC {name}: {str(e)}")
+            continue
 
     print(f"NPC file not found: {name}.npc in {directories}")
     return None
@@ -3368,11 +3377,15 @@ def save_npc():
         npc_data = data.get("npc")
         is_global = data.get("isGlobal")
         current_path = data.get("currentPath")
+        team = data.get("team")  # 'npcsh' | 'incognide' | 'project'
 
         if not npc_data or "name" not in npc_data:
             return jsonify({"error": "Invalid NPC data"}), 400
 
-        if is_global:
+        # Prefer explicit team, fall back to isGlobal
+        if team == "incognide":
+            npc_directory = os.path.expanduser("~/.npcsh/incognide/npc_team")
+        elif team == "npcsh" or (team is None and is_global):
             npc_directory = os.path.expanduser("~/.npcsh/npc_team")
         else:
             npc_directory = os.path.join(current_path, "npc_team")
@@ -3384,6 +3397,7 @@ def save_npc():
             provider=npc_data.get("provider", ""),
             api_url=npc_data.get("api_url", ""),
             use_global_jinxes=npc_data.get("use_global_jinxes", True),
+            jinxes=npc_data.get("jinxes"),
         )
         npc.save(npc_directory)
 
@@ -3662,11 +3676,11 @@ def get_npc_team_global():
     seen_names = set()
 
     team_dirs = [
-        os.path.expanduser("~/.npcsh/npc_team"),
-        os.path.expanduser("~/.npcsh/incognide/npc_team"),
+        ("npcsh", os.path.expanduser("~/.npcsh/npc_team")),
+        ("incognide", os.path.expanduser("~/.npcsh/incognide/npc_team")),
     ]
 
-    for team_dir in team_dirs:
+    for team_name, team_dir in team_dirs:
         if not os.path.exists(team_dir):
             continue
         try:
@@ -3674,7 +3688,9 @@ def get_npc_team_global():
             for name, npc in team.npcs.items():
                 if name not in seen_names:
                     seen_names.add(name)
-                    npc_data.append(npc.to_dict())
+                    d = npc.to_dict()
+                    d["team"] = team_name
+                    npc_data.append(d)
         except Exception as e:
             print(f"Error loading team from {team_dir}: {e}")
 
@@ -3697,7 +3713,11 @@ def get_npc_team_project():
 
     try:
         team = Team(team_path=project_npc_directory, db_conn=get_db_connection())
-        npc_data = [npc.to_dict() for npc in team.npcs.values()]
+        npc_data = []
+        for npc in team.npcs.values():
+            d = npc.to_dict()
+            d["team"] = "project"
+            npc_data.append(d)
     except Exception as e:
         print(f"Error loading project team from {project_npc_directory}: {e}")
         npc_data = []
@@ -4566,64 +4586,66 @@ def inpaint_openai(image, mask, prompt, model):
     from openai import OpenAI
     from PIL import Image
     import base64
-    
+
     client = OpenAI()
-    
+
     original_size = image.size
-    
+
     if model == 'dall-e-2':
-        valid_sizes = ['256x256', '512x512', '1024x1024']
         max_dim = max(image.width, image.height)
-        
         if max_dim <= 256:
-            target_size = (256, 256)
-            size_str = '256x256'
+            target_size = (256, 256); size_str = '256x256'
         elif max_dim <= 512:
-            target_size = (512, 512)
-            size_str = '512x512'
+            target_size = (512, 512); size_str = '512x512'
         else:
-            target_size = (1024, 1024)
-            size_str = '1024x1024'
+            target_size = (1024, 1024); size_str = '1024x1024'
     else:
         valid_sizes = {
             (1024, 1024): "1024x1024",
-            (1024, 1536): "1024x1536", 
-            (1536, 1024): "1536x1024"
+            (1024, 1536): "1024x1536",
+            (1536, 1024): "1536x1024",
         }
-        
         target_size = (1024, 1024)
         for size in valid_sizes.keys():
             if image.width > image.height and size == (1536, 1024):
-                target_size = size
-                break
+                target_size = size; break
             elif image.height > image.width and size == (1024, 1536):
-                target_size = size
-                break
-        
+                target_size = size; break
         size_str = valid_sizes[target_size]
-    
+
     resized_image = image.resize(target_size, Image.Resampling.LANCZOS)
-    resized_mask = mask.resize(target_size, Image.Resampling.LANCZOS)
-    
+    # Our incoming mask is a classic "white = edit here" L-mode PNG.
+    # OpenAI's images.edit expects an RGBA PNG whose TRANSPARENT pixels are
+    # the edit region — opaque pixels are preserved. Convert accordingly.
+    mask_l = mask.convert('L').resize(target_size, Image.Resampling.NEAREST)
+    edit_rgba = Image.new('RGBA', target_size, (255, 255, 255, 255))
+    # Where mask is white (edit), set alpha=0 so OpenAI edits there.
+    alpha = mask_l.point(lambda v: 0 if v > 128 else 255)
+    edit_rgba.putalpha(alpha)
+
+    # Image sent to OpenAI should be RGBA too (transparent hole over edit area).
+    rgba_image = resized_image.convert('RGBA')
+    rgba_image.putalpha(alpha)
+
     img_bytes = io.BytesIO()
-    resized_image.save(img_bytes, format='PNG')
+    rgba_image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
     img_bytes.name = 'image.png'
-    
+
     mask_bytes = io.BytesIO()
-    resized_mask.save(mask_bytes, format='PNG')
+    edit_rgba.save(mask_bytes, format='PNG')
     mask_bytes.seek(0)
     mask_bytes.name = 'mask.png'
-    
+
     response = client.images.edit(
         model=model,
         image=img_bytes,
         mask=mask_bytes,
         prompt=prompt,
         n=1,
-        size=size_str
+        size=size_str,
     )
-    
+
     if response.data[0].url:
         import requests
         img_data = requests.get(response.data[0].url).content
@@ -4631,9 +4653,17 @@ def inpaint_openai(image, mask, prompt, model):
         img_data = base64.b64decode(response.data[0].b64_json)
     else:
         raise Exception("No image data in response")
-    
+
     result_image = Image.open(io.BytesIO(img_data))
-    return result_image.resize(original_size, Image.Resampling.LANCZOS)
+    result_image = result_image.resize(original_size, Image.Resampling.LANCZOS)
+
+    # Hard-enforce "only masked pixels change" locally, matching the Gemini
+    # path, since providers occasionally regenerate more than requested.
+    full_mask_l = mask.convert('L').resize(original_size, Image.Resampling.NEAREST)
+    base = image.convert('RGBA')
+    over = result_image.convert('RGBA')
+    composed = Image.composite(over, base, full_mask_l)
+    return composed.convert(image.mode if image.mode in ('RGB', 'RGBA') else 'RGB')
 
 def inpaint_diffusers(image, mask, prompt, model):
     from diffusers import StableDiffusionInpaintPipeline
@@ -4656,48 +4686,68 @@ def inpaint_gemini(image, mask, prompt, model):
     from npcpy.gen.image_gen import generate_image
     import io
     import numpy as np
-    
-    mask_np = np.array(mask.convert('L'))
+    from PIL import Image as PILImage
+
+    # Gemini image models don't honor masks; they re-imagine the whole frame.
+    # We prompt-engineer a region hint and then enforce the mask locally by
+    # compositing the Gemini output ONLY into the masked pixels — so the
+    # unmasked area is byte-identical to the input.
+    mask_l = mask.convert('L').resize(image.size, PILImage.NEAREST)
+    mask_np = np.array(mask_l)
     ys, xs = np.where(mask_np > 128)
-    
     if len(xs) == 0:
         return image
-    
+
     x_center = int(np.mean(xs))
     y_center = int(np.mean(ys))
     width_pct = (xs.max() - xs.min()) / image.width * 100
     height_pct = (ys.max() - ys.min()) / image.height * 100
-    
+
     position = "center"
     if y_center < image.height / 3:
         position = "top"
     elif y_center > 2 * image.height / 3:
         position = "bottom"
-    
     if x_center < image.width / 3:
         position += " left"
     elif x_center > 2 * image.width / 3:
         position += " right"
-    
+
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
-    
-    full_prompt =  f"""Using the provided image, change only the region in the {position} 
-        approximately {int(width_pct)}% wide by {int(height_pct)}% tall) to: {prompt}. 
-        
-        Keep everything else exactly the same, matching the original lighting and style.
-        You are in-painting the image. You should not be changing anything other than what was requested in prompt: {prompt}
-        """    
+
+    full_prompt = (
+        f"Using the provided image, change only the region in the {position} "
+        f"(approximately {int(width_pct)}% wide by {int(height_pct)}% tall) to: {prompt}.\n\n"
+        "Keep everything else exactly the same, matching the original lighting and style. "
+        "You are in-painting the image. Do NOT alter anything outside that region. "
+        "Return an image with the same dimensions as the input."
+    )
+
     results = generate_image(
         prompt=full_prompt,
         model=model,
         provider='gemini',
         attachments=[img_bytes],
-        n_images=1
+        n_images=1,
     )
-    
-    return results[0] if results else None
+    if not results:
+        return None
+
+    gen = results[0]
+    # Resize the generation to match the original exactly.
+    if gen.size != image.size:
+        gen = gen.resize(image.size, PILImage.LANCZOS)
+
+    # Composite: unmasked pixels come from the original, masked pixels from
+    # the generation. This hard-enforces the "only masked area changed"
+    # contract regardless of how much Gemini re-imagined.
+    base = image.convert('RGBA')
+    over = gen.convert('RGBA')
+    alpha = mask_l  # L-mode mask: white = replace, black = keep
+    composed = PILImage.composite(over, base, alpha)
+    return composed.convert(image.mode if image.mode in ('RGB', 'RGBA') else 'RGB')
 
 @app.route('/api/generate_images', methods=['POST'])
 def generate_images():
