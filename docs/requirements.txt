@@ -33,7 +33,6 @@ psycopg2-binary
 pyaudio
 pyautogui
 pygments==2.20.0
-PyMuPDF
 pyttsx3
 python-dotenv
 PyYAML
