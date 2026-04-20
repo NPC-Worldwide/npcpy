@@ -4847,7 +4847,42 @@ def generate_images():
                 img_str = base64.b64encode(img_data).decode("utf-8")
                 generated_images_base64.append(f"data:image/png;base64,{img_str}")
             else:
-                print(f"Warning: gen_image returned non-PIL object ({type(pil_image)}). Skipping image conversion.")
+                # Newer OpenAI SDKs (and possibly others) return wrapper objects
+                # with `.b64_json` or `.url` instead of a raw PIL.Image. Unwrap
+                # them to a PIL.Image so the rest of the save path works.
+                converted = None
+                try:
+                    b64 = getattr(pil_image, "b64_json", None)
+                    url = getattr(pil_image, "url", None)
+                    if b64:
+                        converted = Image.open(BytesIO(base64.b64decode(b64)))
+                    elif url:
+                        import requests as _req
+                        resp = _req.get(url, timeout=30)
+                        resp.raise_for_status()
+                        converted = Image.open(BytesIO(resp.content))
+                except Exception as _e:
+                    print(f"Warning: failed to unwrap image object ({type(pil_image)}): {_e}")
+
+                if converted is not None:
+                    filename = f"{base_filename_with_time}_{i+1:03d}.png" if n > 1 else f"{base_filename_with_time}.png"
+                    filepath = os.path.join(save_dir, filename)
+                    converted.save(filepath, format="PNG")
+                    generated_filenames.append(filepath)
+                    buffered = BytesIO()
+                    converted.save(buffered, format="PNG")
+                    img_data = buffered.getvalue()
+                    generated_attachments.append({
+                        "name": filename,
+                        "type": "images",
+                        "data": img_data,
+                        "size": len(img_data),
+                    })
+                    img_str = base64.b64encode(img_data).decode("utf-8")
+                    generated_images_base64.append(f"data:image/png;base64,{img_str}")
+                    print(f"saved file to {filepath} (unwrapped from {type(pil_image).__name__})")
+                else:
+                    print(f"Warning: gen_image returned non-PIL object ({type(pil_image)}). Skipping image conversion.")
 
         
         generation_id = generate_message_id()
@@ -7363,6 +7398,60 @@ def download_hf_file():
     except Exception as e:
         print(f"Error downloading HF file: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/generate_music', methods=['POST'])
+def generate_music_endpoint():
+    """Generate music from a text prompt.
+
+    JSON body: { prompt, provider, model?, duration?, api_key?, currentPath? }
+    Providers: 'local' (MusicGen via transformers), 'replicate' (musicgen/stable-audio/riffusion),
+    'elevenlabs' (sound-generation, <=22s).
+    """
+    try:
+        import base64 as _b64
+        from npcpy.gen.audio_gen import generate_music
+
+        data = request.json or {}
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            return jsonify({'success': False, 'error': 'prompt is required'}), 400
+
+        provider = data.get('provider', 'replicate')
+        model = data.get('model')
+        duration = int(data.get('duration', 10))
+        api_key = data.get('api_key')
+        current_path = data.get('currentPath') or data.get('current_path') or os.path.expanduser('~/.npcsh/audio')
+
+        result = generate_music(
+            prompt=prompt,
+            provider=provider,
+            model=model,
+            duration=duration,
+            api_key=api_key,
+        )
+
+        save_dir = os.path.abspath(os.path.expanduser(current_path))
+        os.makedirs(save_dir, exist_ok=True)
+        ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'scherzo_gen_{ts}.{result["format"]}'
+        filepath = os.path.join(save_dir, filename)
+        with open(filepath, 'wb') as f:
+            f.write(result['audio'])
+
+        return jsonify({
+            'success': True,
+            'filename': filepath,
+            'format': result['format'],
+            'provider': result['provider'],
+            'model': result['model'],
+            'audio': _b64.b64encode(result['audio']).decode('utf-8'),
+        })
+
+    except Exception as e:
+        print(f"Music generation error: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/audio/tts', methods=['POST'])
 def text_to_speech_endpoint():
