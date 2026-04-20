@@ -1,0 +1,51 @@
+name: Verify skills/ is up to date
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'npcpy/npc_team/jinxes/**'
+      - 'skills/**'
+      - 'npcpy/convert.py'
+      - '.github/workflows/verify-skills.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'npcpy/npc_team/jinxes/**'
+      - 'skills/**'
+      - 'npcpy/convert.py'
+      - '.github/workflows/verify-skills.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Regenerate and diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[lite]"
+
+      - name: Regenerate skills into temp dir
+        run: |
+          rm -rf _regenerated_skills
+          jinx2skill npcpy/npc_team/jinxes -o _regenerated_skills
+
+      - name: Diff regenerated against committed skills/
+        run: |
+          if ! diff -r -q skills _regenerated_skills > diff.out 2>&1; then
+            echo "::error::skills/ is out of date. Regenerate with: jinx2skill npcpy/npc_team/jinxes -o skills"
+            cat diff.out
+            exit 1
+          fi
+          echo "skills/ is up to date."

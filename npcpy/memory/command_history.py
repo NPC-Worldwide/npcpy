@@ -174,6 +174,10 @@ def init_kg_schema(engine: Engine):
         Column('type', String(100)),
         Column('generation', Integer),
         Column('origin', String(100)),
+        # FK to memory_lifecycle(id). Facts produced directly from an approved memory
+        # carry the memory's id so consumers can trace back to the source memory and its
+        # approval history. Nullable — facts synthesized without a source memory leave it NULL.
+        Column('memory_id', Integer),
         UniqueConstraint('statement', 'team_name', 'npc_name', 'directory_path'),
     )
 
@@ -230,6 +234,16 @@ def init_kg_schema(engine: Engine):
     )
 
     metadata.create_all(engine, checkfirst=True)
+
+    # Idempotent column add for DBs that predate memory_id on kg_facts.
+    try:
+        with engine.begin() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(kg_facts)")).fetchall()]
+            if 'memory_id' not in cols:
+                conn.execute(text("ALTER TABLE kg_facts ADD COLUMN memory_id INTEGER"))
+    except Exception:
+        # Non-SQLite engines use create_all's DDL directly; migration not required there.
+        pass
 
 def load_kg_from_db(engine: Engine, team_name: str, npc_name: str, directory_path: str) -> Dict[str, Any]:
     """Loads the KG for a specific scope (team, npc, path) from database."""
@@ -331,25 +345,26 @@ def save_kg_to_db(engine: Engine, kg_data: Dict[str, Any], team_name: str, npc_n
                     "source_text": fact.get('source_text', ''),
                     "type": fact.get('type', ''),
                     "generation": fact.get('generation', 0),
-                    "origin": fact.get('origin', 'organic')
+                    "origin": fact.get('origin', 'organic'),
+                    "memory_id": fact.get('memory_id')
                 }
                 for fact in kg_data.get("facts", [])
             ]
 
             if facts_to_save:
-
                 if 'sqlite' in str(engine.url):
                     stmt = text("""
                         INSERT OR IGNORE INTO kg_facts
-                        (statement, team_name, npc_name, directory_path, source_text, type, generation, origin)
-                        VALUES (:statement, :team_name, :npc_name, :directory_path, :source_text, :type, :generation, :origin)
+                        (statement, team_name, npc_name, directory_path, source_text, type, generation, origin, memory_id)
+                        VALUES (:statement, :team_name, :npc_name, :directory_path, :source_text, :type, :generation, :origin, :memory_id)
                     """)
                 else:
                     stmt = text("""
                         INSERT INTO kg_facts
-                        (statement, team_name, npc_name, directory_path, source_text, type, generation, origin)
-                        VALUES (:statement, :team_name, :npc_name, :directory_path, :source_text, :type, :generation, :origin)
-                        ON CONFLICT (statement, team_name, npc_name, directory_path) DO NOTHING
+                        (statement, team_name, npc_name, directory_path, source_text, type, generation, origin, memory_id)
+                        VALUES (:statement, :team_name, :npc_name, :directory_path, :source_text, :type, :generation, :origin, :memory_id)
+                        ON CONFLICT (statement, team_name, npc_name, directory_path) DO UPDATE SET
+                            memory_id = COALESCE(EXCLUDED.memory_id, kg_facts.memory_id)
                     """)
 
                 for fact in facts_to_save:
