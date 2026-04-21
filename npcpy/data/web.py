@@ -30,6 +30,7 @@ def search_exa(query:str,
     if api_key is None:
         api_key = os.environ.get('EXA_API_KEY')
     exa = Exa(api_key)
+    exa.headers["x-exa-integration"] = "npcpy"
 
     results = exa.search_and_contents(
         query,

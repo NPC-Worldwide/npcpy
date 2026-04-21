@@ -809,34 +809,6 @@ def base64_to_audio(b64_string: str) -> bytes:
 
 # ─── Music generation ─────────────────────────────────────────────────
 
-def music_musicgen_mlx(
-    prompt: str,
-    duration: int = 10,
-    model: str = "facebook/musicgen-medium",
-) -> bytes:
-    """Generate music natively on Apple Silicon via MLX.
-
-    Uses Apple's mlx-examples MusicGen port (vendored into npcpy.gen.mlx_musicgen).
-    Runs on the Apple GPU via MLX — no CUDA/MPS/CPU fallback needed.
-    Returns WAV bytes at 32 kHz.
-    """
-    import numpy as np
-    import scipy.io.wavfile as wavfile
-    import mlx.core as mx
-    from npcpy.gen.mlx_musicgen.musicgen import MusicGen
-
-    mg = MusicGen.from_pretrained(model)
-    # MusicGen's MLX port uses ~50 tokens/sec; max_steps maps linearly to duration
-    max_steps = max(50, int(duration * 50))
-    audio = mg.generate(prompt, max_steps=max_steps)
-    # audio is mx.array in [-1, 1]; convert to int16 WAV
-    arr = np.array(mx.clip(audio, -1, 1))
-    pcm = (arr * 32767).astype(np.int16)
-    buf = io.BytesIO()
-    wavfile.write(buf, mg.sampling_rate, pcm)
-    return buf.getvalue()
-
-
 def music_musicgen_local(
     prompt: str,
     duration: int = 10,
@@ -969,18 +941,10 @@ def music_elevenlabs_sfx(
 
 def _music_one(provider: str, prompt: str, model: Optional[str], duration: int, api_key: Optional[str]) -> dict:
     p = (provider or "").lower()
-    if p in ("local", "musicgen", "transformers", "meta", "mlx", "apple"):
-        # Pick the best local backend for this machine: MLX on Apple Silicon,
-        # CUDA/CPU via transformers elsewhere.
-        try:
-            import mlx.core as _mx  # noqa: F401
-            m = model or "facebook/musicgen-medium"
-            return {"audio": music_musicgen_mlx(prompt, duration=duration, model=m),
-                    "format": "wav", "provider": "musicgen-local-mlx", "model": m}
-        except ImportError:
-            m = model or "facebook/musicgen-small"
-            return {"audio": music_musicgen_local(prompt, duration=duration, model=m),
-                    "format": "wav", "provider": "musicgen-local-torch", "model": m}
+    if p in ("local", "musicgen", "transformers", "meta"):
+        m = model or "facebook/musicgen-small"
+        return {"audio": music_musicgen_local(prompt, duration=duration, model=m),
+                "format": "wav", "provider": "musicgen-local", "model": m}
     if p in ("replicate",):
         m = model or "meta/musicgen"
         return {"audio": music_replicate(prompt, duration=duration, model=m, api_key=api_key),
