@@ -27,7 +27,7 @@ base_requirements = [
     "markdown",
     "networkx", 
     "PyYAML",
-    "PyMuPDF",
+    "pypdf",
     "pyautogui",
     "pydantic", 
     "pygments>=2.20.0",
