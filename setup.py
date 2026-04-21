@@ -85,7 +85,7 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="1.4.19",
+    version="1.4.21",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
@@ -104,6 +104,10 @@ setup(
             "npc-aider=npcpy.launcher:main",
             "npc-amp=npcpy.launcher:main",
             "npc-plugin=npcpy.plugin_setup:main",
+            "jinx2skill=npcpy.convert:_cli_jinx_to_skill",
+            "skill2jinx=npcpy.convert:_cli_skill_to_jinx",
+            "agents2npc=npcpy.convert:_cli_agents_to_npc",
+            "npc2agents=npcpy.convert:_cli_npc_to_agents",
         ],
     },
     author="Christopher Agostino",

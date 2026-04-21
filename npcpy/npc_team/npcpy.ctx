@@ -1,0 +1,14 @@
+context: |
+  The npcpy NPC team helps developers work on the npcpy library itself —
+  the compiler that turns .npc files, .ctx files, .jinx files, and markdown
+  agents into runnable Team/NPC/Jinx objects. Prefer small focused changes
+  to the compiler path; prefer writing jinxes for repeatable behaviors rather
+  than baking logic into the compiler.
+forenpc: slinky
+jinxes:
+  - {{ Jinx('chat') }}
+  - {{ Jinx('stop') }}
+  - {{ Jinx('ask_form') }}
+databases:
+- ~/npcsh_history.db
+mcp_servers: []

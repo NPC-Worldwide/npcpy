@@ -13,10 +13,28 @@ logger = logging.getLogger(__name__)
 
 try:
     import ollama
+    HAS_OLLAMA = True
 except ImportError:
-    pass
+    ollama = None
+    HAS_OLLAMA = False
 except OSError:
+    ollama = None
+    HAS_OLLAMA = False
     logger.warning("Ollama is not installed or not available.")
+
+
+def _require_ollama() -> None:
+    """Raise a clear ImportError when the optional ``ollama`` package is absent.
+
+    Called at each entry point into the ollama provider so that users get a
+    descriptive error instead of a bare ``NameError: name 'ollama' is not
+    defined`` at an arbitrary call site.
+    """
+    if not HAS_OLLAMA:
+        raise ImportError(
+            "The 'ollama' package is required for the ollama provider. "
+            "Install it with: pip install ollama"
+        )
 
 try:
     import litellm
@@ -362,6 +380,7 @@ def get_ollama_response(
     """
     Generates a response using the Ollama API, supporting both streaming and non-streaming.
     """
+    _require_ollama()
 
     options = {}
 

@@ -672,13 +672,22 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
         if not npc_directory or not os.path.exists(npc_directory):
             continue
         npc_path = os.path.join(npc_directory, f"{name}.npc")
-        if os.path.exists(npc_path):
-            try:
-                npc = NPC(file=npc_path, db_conn=db_conn)
-                return npc
-            except Exception as e:
-                print(f"Error loading NPC {name} from {npc_path}: {str(e)}")
+        if not os.path.exists(npc_path):
+            # Also check agents/ subdirectory and markdown-declared agents
+            if not any(os.path.exists(os.path.join(npc_directory, p)) for p in (
+                'agents.md', 'AGENTS.md', 'CLAUDE.md', 'agents'
+            )):
                 continue
+        try:
+            # Route NPC loading through a Team so the _npc_jinja_context is
+            # built and Jinja templates in .npc files render before YAML parse.
+            team = Team(team_path=npc_directory, db_conn=db_conn)
+            npc = team.npcs.get(name)
+            if npc is not None:
+                return npc
+        except Exception as e:
+            print(f"Error loading team from {npc_directory} while resolving NPC {name}: {str(e)}")
+            continue
 
     print(f"NPC file not found: {name}.npc in {directories}")
     return None
@@ -773,15 +782,27 @@ def list_generations():
 def get_graph_data():
     generation_str = request.args.get('generation')
     generation = int(generation_str) if generation_str and generation_str != 'null' else None
-    
+
     concepts_df, facts_df, links_df = load_kg_data(generation)
-    
+
     nodes = []
     nodes.extend([{'id': name, 'type': 'concept'} for name in concepts_df['name']])
-    nodes.extend([{'id': statement, 'type': 'fact'} for statement in facts_df['statement']])
-    
+
+    # Fact nodes carry memory_id when the fact was produced from a memory (FK -> memory_lifecycle).
+    has_memory_id = 'memory_id' in facts_df.columns
+    for _, row in facts_df.iterrows():
+        node = {'id': row['statement'], 'type': 'fact'}
+        if has_memory_id:
+            mid = row.get('memory_id')
+            try:
+                if mid is not None and not pd.isna(mid):
+                    node['memory_id'] = int(mid)
+            except Exception:
+                pass
+        nodes.append(node)
+
     links = [{'source': row['source'], 'target': row['target']} for _, row in links_df.iterrows()]
-    
+
     return jsonify(graph={'nodes': nodes, 'links': links})
 
 @app.route('/api/kg/network-stats')
@@ -1338,11 +1359,22 @@ def ingest_to_kg():
 
 @app.route('/api/kg/query', methods=['POST'])
 def query_kg():
-    """Query the knowledge graph with a natural language question. Returns an LLM response grounded in KG facts."""
+    """Query the knowledge graph with a natural language question. Returns an LLM response grounded in KG facts.
+
+    Modes:
+      - "keyword" (default): plain keyword-overlap scoring (original behavior)
+      - "traversal": Poisson-sampled depth/breadth traversal via an ephemeral KGIndividual
+      - "sememolution": delegate to a persisted population by population_id; ranks multiple candidates
+    """
     try:
         data = request.get_json() or {}
         question = data.get('question', '')
         top_k = data.get('top_k', 15)
+        mode = (data.get('mode') or 'keyword').lower()
+        lambda_depth = float(data.get('lambda_depth', 2.0))
+        lambda_breadth = float(data.get('lambda_breadth', 5.0))
+        similarity_threshold = float(data.get('similarity_threshold', 0.6))
+        population_id = data.get('population_id')
 
         if not question.strip():
             return jsonify({"error": "question is required"}), 400
@@ -1353,33 +1385,76 @@ def query_kg():
         model = app.config.get('DEFAULT_MODEL', None)
         provider = app.config.get('DEFAULT_PROVIDER', None)
 
+        # Sememolution: route to a population for ranked multi-candidate answer
+        if mode == 'sememolution' and population_id:
+            from npcpy.memory.kg_population import load_population, save_population
+            mgr = load_population(engine, population_id)
+            if not mgr:
+                return jsonify({"error": f"population '{population_id}' not found"}), 404
+            if model: mgr.model = model
+            if provider: mgr.provider = provider
+            rankings = mgr.query_and_rank(question)
+            # Persist fitness updates
+            try: save_population(engine, population_id, population_id, mgr)
+            except Exception: pass
+            return jsonify({
+                "mode": "sememolution",
+                "population_id": population_id,
+                "candidates": [
+                    {
+                        "rank": c.get('rank'),
+                        "individual_id": c['individual'].individual_id,
+                        "response": c['response'],
+                        "n_facts": c['n_facts'],
+                        "context_facts": c['context_facts'],
+                        "genome": {
+                            "lambda_depth": c['individual'].genome.lambda_depth,
+                            "lambda_breadth": c['individual'].genome.lambda_breadth,
+                            "similarity_threshold": c['individual'].genome.similarity_threshold,
+                        },
+                    }
+                    for c in rankings
+                ],
+            })
+
         from npcpy.memory.command_history import load_kg_from_db
         existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
 
         if not existing_kg or not existing_kg.get('facts'):
             return jsonify({"error": "Knowledge graph is empty. Ingest some data first."}), 400
 
-        # Gather relevant facts via keyword matching
         facts = existing_kg.get('facts', [])
         concepts = existing_kg.get('concepts', [])
-        q_lower = question.lower()
-        q_words = set(q_lower.split())
 
-        scored_facts = []
-        for f in facts:
-            stmt = (f.get('statement', '') or '').lower()
-            score = sum(1 for w in q_words if w in stmt)
-            if score > 0:
-                scored_facts.append((score, f))
-        scored_facts.sort(key=lambda x: -x[0])
-        relevant_facts = [f['statement'] for _, f in scored_facts[:top_k]]
-
-        # Also include concept names for context
-        relevant_concepts = [c.get('name', '') for c in concepts[:20]]
-
-        if not relevant_facts:
-            # Fallback: take most recent facts
-            relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
+        # Traversal: reuse Poisson-sampled search logic via an ephemeral individual
+        if mode == 'traversal':
+            from npcpy.memory.kg_population import KGGenome, KGIndividual, SememolutionPopulation
+            genome = KGGenome(
+                lambda_depth=lambda_depth,
+                lambda_breadth=lambda_breadth,
+                similarity_threshold=similarity_threshold,
+            )
+            ind = KGIndividual(individual_id='ephemeral', genome=genome, kg_data=existing_kg)
+            # SememolutionPopulation.search_individual is stateless w.r.t. the population; instantiate a trivial one to reuse it
+            mgr = SememolutionPopulation(engine=engine, model=model or "gemma3:4b", provider=provider or "ollama", population_size=1, sample_size=1)
+            relevant_facts = mgr.search_individual(ind, question)[:top_k]
+            relevant_concepts = [c.get('name', '') for c in concepts[:20]]
+            if not relevant_facts:
+                relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
+        else:
+            # keyword mode (default)
+            q_words = set(question.lower().split())
+            scored_facts = []
+            for f in facts:
+                stmt = (f.get('statement', '') or '').lower()
+                score = sum(1 for w in q_words if w in stmt)
+                if score > 0:
+                    scored_facts.append((score, f))
+            scored_facts.sort(key=lambda x: -x[0])
+            relevant_facts = [f['statement'] for _, f in scored_facts[:top_k]]
+            relevant_concepts = [c.get('name', '') for c in concepts[:20]]
+            if not relevant_facts:
+                relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
 
         kg_context = "Known facts:\n" + "\n".join(f"- {f}" for f in relevant_facts)
         if relevant_concepts:
@@ -1456,6 +1531,174 @@ def rollback_kg():
             "success": True,
             "generation": target_generation
         })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Sememolution: KG population management ─────────────────────────────
+# Endpoints for managing populations of KGIndividuals: create, list, get,
+# delete, evolve generation, update genome, query-with-ranking. All state
+# persists in kg_populations / kg_individuals (no command_history touch).
+
+@app.route('/api/kg/populations', methods=['GET'])
+def list_kg_populations():
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import list_populations
+        return jsonify({"populations": list_populations(engine)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population', methods=['POST'])
+def create_kg_population():
+    """Create a fresh population of KGIndividuals with random genomes.
+
+    Body:
+      { "name": "my_pop", "population_size": 20, "model": "...", "provider": "...",
+        "sample_size": 10, "seed_from_kg": true, "mutation_rate": 0.15, ... }
+    """
+    try:
+        data = request.get_json() or {}
+        name = (data.get('name') or '').strip() or f"pop_{int(time.time())}"
+        population_id = (data.get('id') or name).replace(' ', '_')
+        pop_size = int(data.get('population_size', 20))
+        sample_size = int(data.get('sample_size', 10))
+        model = data.get('model') or app.config.get('DEFAULT_MODEL') or "gemma3:4b"
+        provider = data.get('provider') or app.config.get('DEFAULT_PROVIDER') or "ollama"
+        seed_from_kg = bool(data.get('seed_from_kg', True))
+
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import SememolutionPopulation, save_population, _ensure_population_schema
+        _ensure_population_schema(engine)
+
+        mgr = SememolutionPopulation(
+            engine=engine, model=model, provider=provider,
+            population_size=pop_size, sample_size=sample_size,
+        )
+        # Override GAConfig fields if caller provided them
+        for k_src, k_dst in (('mutation_rate', 'mutation_rate'),
+                             ('crossover_rate', 'crossover_rate'),
+                             ('tournament_size', 'tournament_size'),
+                             ('elitism_count', 'elitism_count')):
+            if k_src in data:
+                setattr(mgr.ga.config, k_dst, type(getattr(mgr.ga.config, k_dst))(data[k_src]))
+
+        mgr.initialize()
+
+        if seed_from_kg:
+            # Prime each individual with a copy of the current global KG, so searches have something to traverse.
+            from npcpy.memory.command_history import load_kg_from_db
+            existing = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
+            import copy as _copy
+            for ind in mgr.ga.population:
+                ind.kg_data = _copy.deepcopy(existing)
+
+        save_population(engine, population_id, name, mgr)
+        return jsonify({"success": True, "id": population_id, "name": name, "stats": mgr.get_stats()})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>', methods=['GET'])
+def get_kg_population(population_id):
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import load_population, _genome_to_dict
+        mgr = load_population(engine, population_id)
+        if not mgr:
+            return jsonify({"error": "not found"}), 404
+        individuals = [
+            {
+                'individual_id': ind.individual_id,
+                'fitness': ind.fitness,
+                'wins': ind.wins,
+                'total_queries': ind.total_queries,
+                'facts': len(ind.kg_data.get('facts', [])),
+                'concepts': len(ind.kg_data.get('concepts', [])),
+                'generation': ind.kg_data.get('generation', 0),
+                'genome': _genome_to_dict(ind.genome),
+            }
+            for ind in mgr.ga.population
+        ]
+        return jsonify({
+            "id": population_id,
+            "model": mgr.model,
+            "provider": mgr.provider,
+            "sample_size": mgr.sample_size,
+            "stats": mgr.get_stats(),
+            "individuals": individuals,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>', methods=['DELETE'])
+def delete_kg_population(population_id):
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import delete_population
+        return jsonify({"success": delete_population(engine, population_id)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>/individual/<individual_id>', methods=['GET'])
+def get_kg_individual(population_id, individual_id):
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import load_population, _genome_to_dict
+        mgr = load_population(engine, population_id)
+        if not mgr:
+            return jsonify({"error": "population not found"}), 404
+        ind = next((i for i in mgr.ga.population if i.individual_id == individual_id), None)
+        if not ind:
+            return jsonify({"error": "individual not found"}), 404
+        return jsonify({
+            'individual_id': ind.individual_id,
+            'fitness': ind.fitness,
+            'wins': ind.wins,
+            'total_queries': ind.total_queries,
+            'genome': _genome_to_dict(ind.genome),
+            'kg_data': ind.kg_data,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>/individual/<individual_id>/genome', methods=['PUT'])
+def update_kg_individual_genome(population_id, individual_id):
+    try:
+        data = request.get_json() or {}
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import update_individual_genome
+        ok = update_individual_genome(engine, population_id, individual_id, data)
+        if not ok:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"success": True})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/population/<population_id>/evolve', methods=['POST'])
+def evolve_kg_population(population_id):
+    """Advance the population by one generation (select, crossover, mutate)."""
+    try:
+        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
+        from npcpy.memory.kg_population import load_population, save_population
+        mgr = load_population(engine, population_id)
+        if not mgr:
+            return jsonify({"error": "not found"}), 404
+        mgr.evolve_generation()
+        save_population(engine, population_id, population_id, mgr)
+        return jsonify({"success": True, "stats": mgr.get_stats()})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -3134,11 +3377,15 @@ def save_npc():
         npc_data = data.get("npc")
         is_global = data.get("isGlobal")
         current_path = data.get("currentPath")
+        team = data.get("team")  # 'npcsh' | 'incognide' | 'project'
 
         if not npc_data or "name" not in npc_data:
             return jsonify({"error": "Invalid NPC data"}), 400
 
-        if is_global:
+        # Prefer explicit team, fall back to isGlobal
+        if team == "incognide":
+            npc_directory = os.path.expanduser("~/.npcsh/incognide/npc_team")
+        elif team == "npcsh" or (team is None and is_global):
             npc_directory = os.path.expanduser("~/.npcsh/npc_team")
         else:
             npc_directory = os.path.join(current_path, "npc_team")
@@ -3150,6 +3397,7 @@ def save_npc():
             provider=npc_data.get("provider", ""),
             api_url=npc_data.get("api_url", ""),
             use_global_jinxes=npc_data.get("use_global_jinxes", True),
+            jinxes=npc_data.get("jinxes"),
         )
         npc.save(npc_directory)
 
@@ -3428,11 +3676,11 @@ def get_npc_team_global():
     seen_names = set()
 
     team_dirs = [
-        os.path.expanduser("~/.npcsh/npc_team"),
-        os.path.expanduser("~/.npcsh/incognide/npc_team"),
+        ("npcsh", os.path.expanduser("~/.npcsh/npc_team")),
+        ("incognide", os.path.expanduser("~/.npcsh/incognide/npc_team")),
     ]
 
-    for team_dir in team_dirs:
+    for team_name, team_dir in team_dirs:
         if not os.path.exists(team_dir):
             continue
         try:
@@ -3440,7 +3688,9 @@ def get_npc_team_global():
             for name, npc in team.npcs.items():
                 if name not in seen_names:
                     seen_names.add(name)
-                    npc_data.append(npc.to_dict())
+                    d = npc.to_dict()
+                    d["team"] = team_name
+                    npc_data.append(d)
         except Exception as e:
             print(f"Error loading team from {team_dir}: {e}")
 
@@ -3463,7 +3713,11 @@ def get_npc_team_project():
 
     try:
         team = Team(team_path=project_npc_directory, db_conn=get_db_connection())
-        npc_data = [npc.to_dict() for npc in team.npcs.values()]
+        npc_data = []
+        for npc in team.npcs.values():
+            d = npc.to_dict()
+            d["team"] = "project"
+            npc_data.append(d)
     except Exception as e:
         print(f"Error loading project team from {project_npc_directory}: {e}")
         npc_data = []
@@ -4332,64 +4586,66 @@ def inpaint_openai(image, mask, prompt, model):
     from openai import OpenAI
     from PIL import Image
     import base64
-    
+
     client = OpenAI()
-    
+
     original_size = image.size
-    
+
     if model == 'dall-e-2':
-        valid_sizes = ['256x256', '512x512', '1024x1024']
         max_dim = max(image.width, image.height)
-        
         if max_dim <= 256:
-            target_size = (256, 256)
-            size_str = '256x256'
+            target_size = (256, 256); size_str = '256x256'
         elif max_dim <= 512:
-            target_size = (512, 512)
-            size_str = '512x512'
+            target_size = (512, 512); size_str = '512x512'
         else:
-            target_size = (1024, 1024)
-            size_str = '1024x1024'
+            target_size = (1024, 1024); size_str = '1024x1024'
     else:
         valid_sizes = {
             (1024, 1024): "1024x1024",
-            (1024, 1536): "1024x1536", 
-            (1536, 1024): "1536x1024"
+            (1024, 1536): "1024x1536",
+            (1536, 1024): "1536x1024",
         }
-        
         target_size = (1024, 1024)
         for size in valid_sizes.keys():
             if image.width > image.height and size == (1536, 1024):
-                target_size = size
-                break
+                target_size = size; break
             elif image.height > image.width and size == (1024, 1536):
-                target_size = size
-                break
-        
+                target_size = size; break
         size_str = valid_sizes[target_size]
-    
+
     resized_image = image.resize(target_size, Image.Resampling.LANCZOS)
-    resized_mask = mask.resize(target_size, Image.Resampling.LANCZOS)
-    
+    # Our incoming mask is a classic "white = edit here" L-mode PNG.
+    # OpenAI's images.edit expects an RGBA PNG whose TRANSPARENT pixels are
+    # the edit region — opaque pixels are preserved. Convert accordingly.
+    mask_l = mask.convert('L').resize(target_size, Image.Resampling.NEAREST)
+    edit_rgba = Image.new('RGBA', target_size, (255, 255, 255, 255))
+    # Where mask is white (edit), set alpha=0 so OpenAI edits there.
+    alpha = mask_l.point(lambda v: 0 if v > 128 else 255)
+    edit_rgba.putalpha(alpha)
+
+    # Image sent to OpenAI should be RGBA too (transparent hole over edit area).
+    rgba_image = resized_image.convert('RGBA')
+    rgba_image.putalpha(alpha)
+
     img_bytes = io.BytesIO()
-    resized_image.save(img_bytes, format='PNG')
+    rgba_image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
     img_bytes.name = 'image.png'
-    
+
     mask_bytes = io.BytesIO()
-    resized_mask.save(mask_bytes, format='PNG')
+    edit_rgba.save(mask_bytes, format='PNG')
     mask_bytes.seek(0)
     mask_bytes.name = 'mask.png'
-    
+
     response = client.images.edit(
         model=model,
         image=img_bytes,
         mask=mask_bytes,
         prompt=prompt,
         n=1,
-        size=size_str
+        size=size_str,
     )
-    
+
     if response.data[0].url:
         import requests
         img_data = requests.get(response.data[0].url).content
@@ -4397,9 +4653,17 @@ def inpaint_openai(image, mask, prompt, model):
         img_data = base64.b64decode(response.data[0].b64_json)
     else:
         raise Exception("No image data in response")
-    
+
     result_image = Image.open(io.BytesIO(img_data))
-    return result_image.resize(original_size, Image.Resampling.LANCZOS)
+    result_image = result_image.resize(original_size, Image.Resampling.LANCZOS)
+
+    # Hard-enforce "only masked pixels change" locally, matching the Gemini
+    # path, since providers occasionally regenerate more than requested.
+    full_mask_l = mask.convert('L').resize(original_size, Image.Resampling.NEAREST)
+    base = image.convert('RGBA')
+    over = result_image.convert('RGBA')
+    composed = Image.composite(over, base, full_mask_l)
+    return composed.convert(image.mode if image.mode in ('RGB', 'RGBA') else 'RGB')
 
 def inpaint_diffusers(image, mask, prompt, model):
     from diffusers import StableDiffusionInpaintPipeline
@@ -4422,48 +4686,68 @@ def inpaint_gemini(image, mask, prompt, model):
     from npcpy.gen.image_gen import generate_image
     import io
     import numpy as np
-    
-    mask_np = np.array(mask.convert('L'))
+    from PIL import Image as PILImage
+
+    # Gemini image models don't honor masks; they re-imagine the whole frame.
+    # We prompt-engineer a region hint and then enforce the mask locally by
+    # compositing the Gemini output ONLY into the masked pixels — so the
+    # unmasked area is byte-identical to the input.
+    mask_l = mask.convert('L').resize(image.size, PILImage.NEAREST)
+    mask_np = np.array(mask_l)
     ys, xs = np.where(mask_np > 128)
-    
     if len(xs) == 0:
         return image
-    
+
     x_center = int(np.mean(xs))
     y_center = int(np.mean(ys))
     width_pct = (xs.max() - xs.min()) / image.width * 100
     height_pct = (ys.max() - ys.min()) / image.height * 100
-    
+
     position = "center"
     if y_center < image.height / 3:
         position = "top"
     elif y_center > 2 * image.height / 3:
         position = "bottom"
-    
     if x_center < image.width / 3:
         position += " left"
     elif x_center > 2 * image.width / 3:
         position += " right"
-    
+
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
-    
-    full_prompt =  f"""Using the provided image, change only the region in the {position} 
-        approximately {int(width_pct)}% wide by {int(height_pct)}% tall) to: {prompt}. 
-        
-        Keep everything else exactly the same, matching the original lighting and style.
-        You are in-painting the image. You should not be changing anything other than what was requested in prompt: {prompt}
-        """    
+
+    full_prompt = (
+        f"Using the provided image, change only the region in the {position} "
+        f"(approximately {int(width_pct)}% wide by {int(height_pct)}% tall) to: {prompt}.\n\n"
+        "Keep everything else exactly the same, matching the original lighting and style. "
+        "You are in-painting the image. Do NOT alter anything outside that region. "
+        "Return an image with the same dimensions as the input."
+    )
+
     results = generate_image(
         prompt=full_prompt,
         model=model,
         provider='gemini',
         attachments=[img_bytes],
-        n_images=1
+        n_images=1,
     )
-    
-    return results[0] if results else None
+    if not results:
+        return None
+
+    gen = results[0]
+    # Resize the generation to match the original exactly.
+    if gen.size != image.size:
+        gen = gen.resize(image.size, PILImage.LANCZOS)
+
+    # Composite: unmasked pixels come from the original, masked pixels from
+    # the generation. This hard-enforces the "only masked area changed"
+    # contract regardless of how much Gemini re-imagined.
+    base = image.convert('RGBA')
+    over = gen.convert('RGBA')
+    alpha = mask_l  # L-mode mask: white = replace, black = keep
+    composed = PILImage.composite(over, base, alpha)
+    return composed.convert(image.mode if image.mode in ('RGB', 'RGBA') else 'RGB')
 
 @app.route('/api/generate_images', methods=['POST'])
 def generate_images():
@@ -4563,7 +4847,42 @@ def generate_images():
                 img_str = base64.b64encode(img_data).decode("utf-8")
                 generated_images_base64.append(f"data:image/png;base64,{img_str}")
             else:
-                print(f"Warning: gen_image returned non-PIL object ({type(pil_image)}). Skipping image conversion.")
+                # Newer OpenAI SDKs (and possibly others) return wrapper objects
+                # with `.b64_json` or `.url` instead of a raw PIL.Image. Unwrap
+                # them to a PIL.Image so the rest of the save path works.
+                converted = None
+                try:
+                    b64 = getattr(pil_image, "b64_json", None)
+                    url = getattr(pil_image, "url", None)
+                    if b64:
+                        converted = Image.open(BytesIO(base64.b64decode(b64)))
+                    elif url:
+                        import requests as _req
+                        resp = _req.get(url, timeout=30)
+                        resp.raise_for_status()
+                        converted = Image.open(BytesIO(resp.content))
+                except Exception as _e:
+                    print(f"Warning: failed to unwrap image object ({type(pil_image)}): {_e}")
+
+                if converted is not None:
+                    filename = f"{base_filename_with_time}_{i+1:03d}.png" if n > 1 else f"{base_filename_with_time}.png"
+                    filepath = os.path.join(save_dir, filename)
+                    converted.save(filepath, format="PNG")
+                    generated_filenames.append(filepath)
+                    buffered = BytesIO()
+                    converted.save(buffered, format="PNG")
+                    img_data = buffered.getvalue()
+                    generated_attachments.append({
+                        "name": filename,
+                        "type": "images",
+                        "data": img_data,
+                        "size": len(img_data),
+                    })
+                    img_str = base64.b64encode(img_data).decode("utf-8")
+                    generated_images_base64.append(f"data:image/png;base64,{img_str}")
+                    print(f"saved file to {filepath} (unwrapped from {type(pil_image).__name__})")
+                else:
+                    print(f"Warning: gen_image returned non-PIL object ({type(pil_image)}). Skipping image conversion.")
 
         
         generation_id = generate_message_id()
@@ -7079,6 +7398,60 @@ def download_hf_file():
     except Exception as e:
         print(f"Error downloading HF file: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/generate_music', methods=['POST'])
+def generate_music_endpoint():
+    """Generate music from a text prompt.
+
+    JSON body: { prompt, provider, model?, duration?, api_key?, currentPath? }
+    Providers: 'local' (MusicGen via transformers), 'replicate' (musicgen/stable-audio/riffusion),
+    'elevenlabs' (sound-generation, <=22s).
+    """
+    try:
+        import base64 as _b64
+        from npcpy.gen.audio_gen import generate_music
+
+        data = request.json or {}
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            return jsonify({'success': False, 'error': 'prompt is required'}), 400
+
+        provider = data.get('provider', 'replicate')
+        model = data.get('model')
+        duration = int(data.get('duration', 10))
+        api_key = data.get('api_key')
+        current_path = data.get('currentPath') or data.get('current_path') or os.path.expanduser('~/.npcsh/audio')
+
+        result = generate_music(
+            prompt=prompt,
+            provider=provider,
+            model=model,
+            duration=duration,
+            api_key=api_key,
+        )
+
+        save_dir = os.path.abspath(os.path.expanduser(current_path))
+        os.makedirs(save_dir, exist_ok=True)
+        ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'scherzo_gen_{ts}.{result["format"]}'
+        filepath = os.path.join(save_dir, filename)
+        with open(filepath, 'wb') as f:
+            f.write(result['audio'])
+
+        return jsonify({
+            'success': True,
+            'filename': filepath,
+            'format': result['format'],
+            'provider': result['provider'],
+            'model': result['model'],
+            'audio': _b64.b64encode(result['audio']).decode('utf-8'),
+        })
+
+    except Exception as e:
+        print(f"Music generation error: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/audio/tts', methods=['POST'])
 def text_to_speech_endpoint():

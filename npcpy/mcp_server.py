@@ -63,16 +63,28 @@ class NPCServerState:
             db_conn=self.command_history.engine,
         )
 
-        # Resolve active NPC: explicit arg > state file > forenpc > first
-        if npc_name and npc_name in self.team.npcs:
-            self.active_npc = self.team.npcs[npc_name]
-        else:
-            if self.team.forenpc:
-                self.active_npc = self.team.forenpc
-            elif self.team.npcs:
-                self.active_npc = next(iter(self.team.npcs.values()))
+        # Resolve active NPC: explicit arg > forenpc > first NPC.
+        # If caller asked for a specific NPC that's NOT in this team, fail loudly
+        # — silent fallback to forenpc is what makes the incognide MCP picker look
+        # empty when a user picks an NPC whose team doesn't match the selected server.
+        if npc_name:
+            if npc_name in self.team.npcs:
+                self.active_npc = self.team.npcs[npc_name]
             else:
-                self.active_npc = None
+                available = list(self.team.npcs.keys())
+                print(
+                    f"[npc-mcp] ERROR: NPC '{npc_name}' is not in team at '{team_path}'. "
+                    f"Available NPCs: {available}. Pick an MCP server whose team includes this NPC, "
+                    f"or omit --npc to use the team's forenpc.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+        elif self.team.forenpc:
+            self.active_npc = self.team.forenpc
+        elif self.team.npcs:
+            self.active_npc = next(iter(self.team.npcs.values()))
+        else:
+            self.active_npc = None
 
         # Track which jinx tool names are currently registered
         self._registered_jinx_names = set()
