@@ -1,4 +1,4 @@
-import fitz
+import pypdf
 import pandas as pd
 import json
 import io
@@ -55,10 +55,10 @@ def load_image(file_path):
     return df
 
 def load_pdf(file_path):
-    pdf_document = fitz.open(file_path)
+    reader = pypdf.PdfReader(file_path)
     full_text = ""
-    for page in pdf_document:
-        full_text += page.get_text() + "\n"
+    for page in reader.pages:
+        full_text += (page.extract_text() or "") + "\n"
     return full_text
 
 def load_docx(file_path):

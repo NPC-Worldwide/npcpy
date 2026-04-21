@@ -27,6 +27,7 @@ base_requirements = [
     "markdown",
     "networkx", 
     "PyYAML",
+    "pypdf",
     "pyautogui",
     "pydantic", 
     "pygments>=2.20.0",
@@ -84,7 +85,7 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="1.4.20",
+    version="1.4.21",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={

@@ -196,19 +196,21 @@ def openai_image_gen(
 
     collected_images = []
     for item_data in result.data:
-        if model == 'gpt-image-1':
-            image_base64 = item_data.b64_json
-            image_bytes = base64.b64decode(image_base64)
+        b64 = getattr(item_data, 'b64_json', None)
+        url = getattr(item_data, 'url', None)
+        if b64:
+            image_bytes = base64.b64decode(b64)
             image = Image.open(io.BytesIO(image_bytes))
-        elif model == 'dall-e-2' or model == 'dall-e-3':
-            image_url = item_data.url
-            response = requests.get(image_url)
+        elif url:
+            response = requests.get(url)
             response.raise_for_status()
             image = Image.open(io.BytesIO(response.content))
         else:
-            image = item_data
+            raise ValueError(
+                f"OpenAI image response had neither b64_json nor url for model={model}: {item_data!r}"
+            )
         collected_images.append(image)
-        
+
     return collected_images
 
 def gemini_image_gen(
