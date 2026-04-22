@@ -5,7 +5,7 @@
 
 # npcpy
 
-`npcpy` is a flexible agent framework for building AI applications and conducting research with LLMs. It supports local and cloud providers, multi-agent teams, tool calling, image/audio/video generation, knowledge graphs, fine-tuning, and more.
+`npcpy` is a library that provides key functional primitives for conducting research in multimodal language models, agentic AI, and knowledge graphs. This flexible framework makes it easy to develop and engineer powerful AI applications, with support for local (`ollama`, `llama.cpp`, `omlx`, `LM Studio`) and cloud providers. Build multi-agent teams and simplify your context engineering through the NPC Context-Agent-Tool data layer with compliance engineered natively rather than an afterthought.
 
 ```bash
 pip install npcpy
@@ -21,11 +21,13 @@ from npcpy import NPC
 simon = NPC(
     name='Simon Bolivar',
     primary_directive='Liberate South America from the Spanish Royalists.',
-    model='gemma3:4b',
+    model='minimax-m2.7:cloud',
     provider='ollama'
 )
 response = simon.get_llm_response("What is the most important territory to retain in the Andes?")
 print(response['response'])
+# The question of strategic terrain in the Andes is fundamental to the liberation cause. In my view, the most critical territory to retain is the **highland corridor running through Ecuador and New Granada**.
+
 
 ```
 
@@ -34,13 +36,17 @@ print(response['response'])
 ```python
 from npcpy import get_llm_response
 
-response = get_llm_response("Who was the celtic messenger god?", model='qwen3:4b', provider='ollama')
-print(response['response'])
-# or use ollama's cloud models
+response = get_llm_response("Who was the celtic messenger god?", model='gemma4:31b', provider='ollama')
+print(response['response']).
+# Unlike the Greeks (Hermes) or the Romans (Mercury), the Celts **did not have one single, dedicated "messenger god"** who served that specific role for the entire pantheon.
+# Celtic mythology is decentralized and varies significantly between different tribes and regions (such as the Gauls in France versus the Celts in Ireland), so they didn't organize their gods into the same rigid "job descriptions" as the Mediterranean cultures.
 
-test = get_llm_response('who is john wick', model='minimax-m2.7:cloud', provider='ollama',)
+# or use ollama's cloud models
+test = get_llm_response('what does alicanto the bird show travelers in the night?', model='minimax-m2.7:cloud', provider='ollama',)
 
 print(test['response'])
+
+# The legend of the **Alicanto** says that at night the bird’s feathers glow like lanterns. When a traveler sees that soft, phosphorescent light, it isn’t just a pretty sight – it’s a sign‑post. The bird **shows the way to hidden water (and sometimes to buried silver or gold)** in the Atacama Desert.
 ```
 
 ### Agent with tools
@@ -51,6 +57,13 @@ from npcpy import Agent, ToolAgent, CodingAgent
 # Agent — comes with default tools (sh, python, edit_file, web_search, etc.)
 agent = Agent(name='ops', model='qwen3.5:2b', provider='ollama')
 print(agent.run("Find all Python files over 500 lines in this repo and list them"))
+# The following Python files contain more than 500 lines:
+# - `./npcpy/npc_sysenv.py` (1486 lines)
+# - `./npcpy/memory/knowledge_graph.py` (1449 lines)
+# - `./npcpy/memory/kg_vis.py` (767 lines)
+# - `./npcpy/memory/kg_population.py` (618 lines)
+# ...
+
 
 # ToolAgent — add your own tools alongside defaults
 import subprocess
