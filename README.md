@@ -21,14 +21,15 @@ from npcpy import NPC
 simon = NPC(
     name='Simon Bolivar',
     primary_directive='Liberate South America from the Spanish Royalists.',
-    model='minimax-m2.7:cloud',
+    model='qwen3.5:9b',
     provider='ollama'
 )
 response = simon.get_llm_response("What is the most important territory to retain in the Andes?")
 print(response['response'])
-# The question of strategic terrain in the Andes is fundamental to the liberation cause. In my view, the most critical territory to retain is the **highland corridor running through Ecuador and New Granada**.
-
-
+# My friend, you speak of the highlands where our liberty is carved in stone. If we must speak of the most critical territory to hold within these mountains, it is the **Viceroyalty of Peru** and the heart of the **Republic of Gran Colombia** united. 
+# To lose the passes of the Andes or the cities of Lima and Quito would be to hand the crown its final stronghold in the south. The Spanish crown built its power upon the wealth and control of these highlands. If the Andes are to be truly ours, the people of the **Peruvian** and **New Grancolombian** highlands must stand as one, free from the Bourbons. 
+# The mountain peaks themselves are the fortress we guard. Without the full liberation of the southern Andes, our revolution is incomplete. We fight not for land's sake, but for the soul of the continent. Every square mile of the Andes that bears the name of the Republic is a step forward in our quest for eternal freedom.
+# *Long live the liberty of the Andes!*
 ```
 
 ### Direct LLM call
@@ -36,15 +37,15 @@ print(response['response'])
 ```python
 from npcpy import get_llm_response
 
-response = get_llm_response("Who was the celtic messenger god?", model='gemma4:31b', provider='ollama')
-print(response['response']).
-# Unlike the Greeks (Hermes) or the Romans (Mercury), the Celts **did not have one single, dedicated "messenger god"** who served that specific role for the entire pantheon.
-# Celtic mythology is decentralized and varies significantly between different tribes and regions (such as the Gauls in France versus the Celts in Ireland), so they didn't organize their gods into the same rigid "job descriptions" as the Mediterranean cultures.
+
+response = get_llm_response("Who was the celtic god that helped cuchulainn in his time of need as the forces of medb descended upon the men of ulster?", model='gemma4:31b', provider='ollama')
+print(response['response'])
+# Cú Chulainn was primarily aided by his divine father, the god Lugh, and his foster-father, the warrior-god Fergus mac Róich, as well as the magical support of his teacher Scáthach.
 
 # or use ollama's cloud models
-test = get_llm_response('what does alicanto the bird show travelers in the night?', model='minimax-m2.7:cloud', provider='ollama',)
+alicanto_test = get_llm_response('what does alicanto the bird show travelers in the night?', model='minimax-m2.7:cloud', provider='ollama',)
 
-print(test['response'])
+print(alicanto_test['response'])
 
 # The legend of the **Alicanto** says that at night the bird’s feathers glow like lanterns. When a traveler sees that soft, phosphorescent light, it isn’t just a pretty sight – it’s a sign‑post. The bird **shows the way to hidden water (and sometimes to buried silver or gold)** in the Atacama Desert.
 ```
@@ -52,10 +53,10 @@ print(test['response'])
 ### Agent with tools
 
 ```python
-from npcpy import Agent, ToolAgent, CodingAgent
+from npcpy import Agent
 
 # Agent — comes with default tools (sh, python, edit_file, web_search, etc.)
-agent = Agent(name='ops', model='qwen3.5:2b', provider='ollama')
+agent = Agent(name='File Operator', model='qwen3.5:2b', provider='ollama')
 print(agent.run("Find all Python files over 500 lines in this repo and list them"))
 # The following Python files contain more than 500 lines:
 # - `./npcpy/npc_sysenv.py` (1486 lines)
@@ -63,10 +64,18 @@ print(agent.run("Find all Python files over 500 lines in this repo and list them
 # - `./npcpy/memory/kg_vis.py` (767 lines)
 # - `./npcpy/memory/kg_population.py` (618 lines)
 # ...
+```
 
 
-# ToolAgent — add your own tools alongside defaults
+
+
+### ToolAgent — add your own tools in addition to the default (sh, python, edit_file, web_search)
+```python
 import subprocess
+from npcpy import ToolAgent, gen_image
+
+from npcpy import gen_image
+
 
 def run_tests(test_path: str = "tests/") -> str:
     """Run pytest on the given path and return results."""
@@ -86,10 +95,31 @@ reviewer = ToolAgent(
     model='qwen3.5:2b', provider='ollama'
 )
 print(reviewer.run("Run the tests and summarize any failures"))
+```
 
-# CodingAgent — auto-executes code blocks from LLM responses
+
+
+### CodingAgent — auto-executes code blocks from LLM responses
+```python
+from npcpy import CodingAgent
+
 coder = CodingAgent(name='coder', language='python', model='qwen3.5:2b', provider='ollama')
 print(coder.run("Write a script that finds duplicate files by hash in the current directory"))
+
+```
+```
+#The script has been created and executed successfully. Here's a summary of the findings:
+
+## Duplicate Files Found
+
+| Group | Hash (truncated) | Size | Files |
+|-------|------------------|------|-------|
+| 1 | `2b517326bf7c31b7...` | 81 bytes | `npcpy/main.py` ↔ `build/lib/npcpy/main.py` |
+| 2 | `d41d8cd98f00b204...` | 0 bytes (empty) | 15 empty `__init__.py` files across `npcpy/`, `build/lib/npcpy/`, `examples/`, and `tests/` || 3 | `0d591b661cb1c619...` | 9,019 bytes | `npcpy/mix/debate.py` ↔ `build/lib/npcpy/mix/debate.py` |
+| 4 | `a5059f37eb682a16...` | 747 bytes | SQL files in `examples/factory/` ↔ `examples/npc_team/factory/` |
+```
+
+
 ```
 
 ### Streaming
