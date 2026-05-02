@@ -616,15 +616,30 @@ from npcpy.npc_array import NPCArray
 
 # Three NPCs with different models/providers
 npcs = [
-    NPC(name='hillary', primary_directive='You are Edmund Hillary in 1953. Argue the decision to turn back was correct given the equipment and weather data available.', model='qwen3:4b', provider='ollama'),
-    NPC(name='hillary_2024', primary_directive='You are Edmund Hillary with 70 years of hindsight. Critique the 1953 decision with knowledge of later summits and gear advances.', model='gemini-2.5-flash', provider='gemini'),
-    NPC(name='bottleneck', primary_directive='You are a route analyst who has studied every K2 ascent. Analyze the specific risks at the Bottleneck that influenced the 1953 decision.', model='gemini-2.5-flash', provider='gemini'),
+    NPC(name='gramsci_1930', primary_directive='''
+        You are Antonio Gramsci writing in his Prison Notebook in 1930.
+        Defend the concept of hegemony as the predominance of one social group
+        over others through cultural and ideological leadership rather than
+        mere force. Argue that consent is more durable than coercion.
+    ''', model='qwen3:4b', provider='ollama'),
+    NPC(name='critic_1970', primary_directive='''
+        You are a post-structuralist critic in 1970 responding to Gramsci.
+        Question whether hegemony can truly explain contemporary power structures
+        or if it relies on an outdated base-superstructure model that
+        underestimates the autonomy of cultural production.
+    ''', model='qwen3:4b', provider='ollama'),
+    NPC(name='historian_present', primary_directive='''
+        You are a contemporary historian with access to the complete Prison
+        Notebooks and subsequent scholarship. Evaluate both Gramsci's original
+        formulation and the post-structuralist critique in light of the
+        collapse of actually existing socialism and the rise of neoliberalism.
+    ''', model='qwen3:4b', provider='ollama'),
 ]
 
 arr = NPCArray.from_npcs(npcs)
 
 # Run the same jinx on all three in parallel, collect results
-results = arr.jinx('solve', inputs={'problem': 'GSM8k: James buys a jar of hot sauce with 5 peppers and triples the peppers every year. How many after 4 years?'}).collect()
+results = arr.jinx('analyze', inputs={'topic': 'Has the concept of hegemony become more or less relevant in the age of digital platforms and algorithmic governance?'}).collect()
 for npc, result in zip(npcs, results.data):
     print(f"[{npc.name}] {result}")
 ```
@@ -649,21 +664,28 @@ from npcpy.memory.knowledge_graph import (
     kg_dream_process, kg_hybrid_search,
 )
 
-# Seed the KG with inline content
+# Seed the KG with Gramsci's Prison Notebooks
 kg = kg_initial(
     content="""
-        The Moon formed 4.5 billion years ago when a Mars-sized object
-        collided with Earth. The debris coalesced into the lunar body.
+        The crisis consists precisely in the fact that the old is dying and the new
+        cannot be born. In this interregnum a great variety of morbid symptoms appear.
+        The traditional ruling class has lost its consensus, that is, the consent of
+        those over whom it rules. Force alone is not sufficient; what is needed is the
+        construction of a new hegemony, the creation of a new collective will.
     """,
     model="qwen3:4b", provider="ollama",
 )
 
-# Assimilate new content
+# Assimilate more content on organic vs traditional intellectuals
 kg, _ = kg_evolve_incremental(
     kg,
     new_content_text="""
-        The phone call, when it comes, rips easily across the room.
-        Pirate knows it's got to be for him.
+        The distinction between organic and traditional intellectuals is fundamental.
+        Traditional intellectuals conceive of themselves as autonomous from ruling
+        groups, yet every social group has its own category of organic intellectuals
+        that give it homogeneity and awareness of its own function. The organic
+        intellectual emerges from within the class itself, while the traditional
+        sees himself as existing above the social structure.
     """,
     model="qwen3:4b", provider="ollama", get_concepts=True,
 )
@@ -675,7 +697,7 @@ kg, sleep_report = kg_sleep_process(kg, model="qwen3:4b", provider="ollama")
 kg, dream_report = kg_dream_process(kg, model="qwen3:4b", provider="ollama")
 
 # Search across facts, concepts, and speculative edges
-results = kg_hybrid_search(kg, "What is the significance of the rocket?",
+results = kg_hybrid_search(kg, "What constitutes hegemony in Gramsci's framework?",
                            model="qwen3:4b", provider="ollama")
 for r in results:
     print(r['score'], r['text'])
@@ -687,20 +709,18 @@ Extract structured memories:
 ```python
 from npcpy.llm_funcs import get_facts
 
-lunar_text = """
-    The selenological community remains divided on the precise chronology
-    of the Late Heavy Bombardment period, with competing isotopic models
-    yielding estimates that diverge by as much as 300 million years. While
-    some researchers point to zircon analysis supporting an earlier
-    cataclysmic peak around 4.1 billion years ago, others argue that impact
-    melt breccias tell a different story—one where the flux of planetesimals
-    declined more gradually than previously assumed. What is clear,
-    however, is that the resulting cratering record encodes information
-    about the dynamical evolution of the outer solar system during its
-    most chaotic epoch.
+prison_notebooks = """
+    Civil society is the sphere of hegemony, the terrain where the dominant
+    group exercises consent through cultural and ideological leadership.
+    Unlike political society which operates through coercion and state apparatus,
+    civil society comprises the church, schools, trade unions, and media.
+    The ruling class maintains power not merely through force but through the
+    production of consent, shaping common sense itself through cultural institutions.
+    War of position requires patient trench warfare on this terrain, building
+    counter-hegemonic institutions rather than frontal assault on the state.
 """
 
-facts = get_facts(lunar_text, model="qwen3:4b", provider="ollama")
+facts = get_facts(prison_notebooks, model="qwen3:4b", provider="ollama")
 for f in facts:
     print(f"[{f.get('type', 'general')}] {f['statement']}")
 ```
