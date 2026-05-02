@@ -650,23 +650,21 @@ from npcpy.memory.knowledge_graph import (
 )
 from npcpy.data.load_file import load_file_contents
 
-# Seed the KG from expedition records and field notes
-basecamp_logs = load_file_contents("archives/k2_1953/basecamp_diaries.pdf")
-summit_photos = load_file_contents("archives/k2_1953/aerial_survey.jpg")
+# Seed the KG from a text corpus
+corpus_text = load_file_contents("gravitys_rainbow.txt")
 
 kg = kg_initial(
-    content=basecamp_logs + "\n\n" + summit_photos,
+    content=corpus_text,
     model="qwen3:4b", provider="ollama",
 )
 
-# Assimilate expedition follow-up reports and field notes
+# Assimilate new content
 kg, _ = kg_evolve_incremental(
     kg,
-    new_content_text=(
-        "July 31 - Camp VII established at 7800m. Severe wind damage to tents. "
-        "Team member injured in crevasse fall. Descending with improvised stretcher. "
-        "Storm prevents evacuation."
-    ),
+    new_content_text="""
+        The phone call, when it comes, rips easily across the room.
+        Pirate knows it's got to be for him.
+    """,
     model="qwen3:4b", provider="ollama", get_concepts=True,
 )
 
@@ -677,33 +675,26 @@ kg, sleep_report = kg_sleep_process(kg, model="qwen3:4b", provider="ollama")
 kg, dream_report = kg_dream_process(kg, model="qwen3:4b", provider="ollama")
 
 # Search across facts, concepts, and speculative edges
-results = kg_hybrid_search(kg, "What factors contributed to the 1953 K2 expedition outcome?",
+results = kg_hybrid_search(kg, "What is the significance of the rocket?",
                            model="qwen3:4b", provider="ollama")
 for r in results:
     print(r['score'], r['text'])
 print(f"{len(kg['facts'])} facts, {len(kg['concepts'])} concepts")
 ```
 
-Extract structured memories from expedition logs:
+Extract structured memories:
 
 ```python
 from npcpy.llm_funcs import get_facts
 
-expedition_log = """
-July 31: Camp VII established at 7800m after a grueling climb from Camp VI. Winds exceeded
-60 knots overnight, causing severe damage to three tents. During descent to retrieve
-supplies, a team member fell into a crevasse, sustaining leg injuries. The team
-improvised a stretcher from skis and tent poles. Storm conditions prevent helicopter
-evacuation. We are rationing oxygen and awaiting a weather window.
+text_segment = """
+Pirate Prentice is in the lavatory stands pissing. Then he threads himself
+into a wool robe he wears inside out. The day feels like rain.
 """
 
-facts = get_facts(expedition_log, model="qwen3:4b", provider="ollama")
+facts = get_facts(text_segment, model="qwen3:4b", provider="ollama")
 for f in facts:
     print(f"[{f.get('type', 'general')}] {f['statement']}")
-# [explicit] Camp VII was established at an altitude of 7800 meters
-# [explicit] Wind speeds exceeded 60 knots during the night
-# [inferred] The expedition is experiencing a medical emergency requiring evacuation
-# [inferred] Weather conditions are life-threatening and unpredictable
 ```
 
 </details>
@@ -721,8 +712,8 @@ from npcpy.data.load_file import load_file_contents
 pop = SememolutionPopulation(population_size=100, sample_size=10)
 pop.initialize()
 
-# Ingest a heterogeneous corpus — expedition logs, maps, field notes, photographs
-corpus_dirs = [Path("archives/k2_1953/basecamp_diaries"), Path("archives/k2_1953/weather_logs"), Path("archives/k2_1953/photos")]
+# Ingest a heterogeneous corpus — text files, PDFs, images
+corpus_dirs = [Path("corpus/texts"), Path("corpus/pdfs"), Path("corpus/images")]
 for d in corpus_dirs:
     for f in sorted(d.glob("*")):
         if f.suffix in (".pdf", ".txt", ".md", ".jpg", ".png"):
@@ -733,7 +724,7 @@ for d in corpus_dirs:
 pop.sleep_cycle()
 
 # Query: sample 10 individuals, generate competing responses, rank them
-rankings = pop.query_and_rank("What combination of factors led to the failure of the 1953 K2 summit attempt?")
+rankings = pop.query_and_rank("What are the central themes connecting these documents?")
 for rank, entry in enumerate(rankings[:3], 1):
     print(f"#{rank} (individual {entry['id']}, score {entry['score']:.3f}): {entry['response'][:120]}...")
 
