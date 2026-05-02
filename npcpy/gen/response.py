@@ -554,6 +554,9 @@ def get_ollama_response(
     
 
     
+    api_params["messages"] = sanitize_messages(api_params["messages"])
+    result["messages"] = api_params["messages"]
+
     if not auto_process_tool_calls or not (tools and tool_map):
         res = ollama.chat(**api_params, options=options)
         result["raw_response"] = res
@@ -575,10 +578,12 @@ def get_ollama_response(
         message = res.get("message", {})
         response_content = message.get("content", "")
         result["response"] = response_content
-        result["messages"].append({"role": "assistant", "content": response_content})
 
+        assistant_msg = {"role": "assistant", "content": response_content}
         if message.get('tool_calls'):
             result["tool_calls"] = message['tool_calls']
+            assistant_msg["tool_calls"] = message['tool_calls']
+        result["messages"].append(assistant_msg)
 
         if format == "json":
             try:
