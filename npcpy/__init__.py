@@ -14,7 +14,7 @@ from . import tools
 from .npc_compiler import NPC, Team, Jinx, Agent, ToolAgent, CodingAgent
 
 # LLM
-from .llm_funcs import get_llm_response, check_llm_command, execute_llm_command
+from .llm_funcs import get_llm_response, check_llm_command, execute_llm_command, gen_image, gen_video
 
 # ML
 from .ml_funcs import fit_model, predict_model, score_model, ensemble_predict

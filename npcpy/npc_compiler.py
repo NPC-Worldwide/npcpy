@@ -4033,23 +4033,162 @@ class Agent(NPC):
                 except Exception as e:
                     print(f"Warning: Failed to load skill {fname}: {e}")
 
-    def run(self, input_text: str, **kwargs):
-        """Run the agent on an input and return the response string."""
+    def run(
+        self,
+        input_text: str,
+        max_iterations: int = 10,
+        verbose: bool = False,
+        require_permission: bool = True,
+        allow_tools: list = None,
+        **kwargs,
+    ):
+        """Run the agent in a tool-calling loop until it stops calling tools.
+
+        Each iteration: call the model with tools; if it emits tool_calls, execute
+        them and feed the results back; if it emits plain content, return it.
+
+        Args:
+            input_text: initial user prompt.
+            max_iterations: hard cap on tool-calling turns.
+            verbose: print each turn's tool calls and results.
+            require_permission: if True (default), prompt the user before each
+                tool call. Answer [y]es / [n]o / [a]ll (allow the rest of this
+                run). Non-TTY environments auto-allow so scripts don't hang.
+            allow_tools: optional list of tool names that bypass the prompt.
+        """
+        import sys
+        import json as _json
+        import uuid as _uuid
         from npcpy.llm_funcs import get_llm_response
 
-        result = get_llm_response(
-            input_text,
-            npc=self,
-            model=self.model,
-            provider=self.provider,
-            tools=self.tools,
-            tool_map=self.tool_map,
-            messages=kwargs.get("messages", []),
-            stream=kwargs.get("stream", False),
-        )
-        if isinstance(result, dict):
-            return result.get("output", result.get("response", str(result)))
-        return str(result)
+        messages = list(kwargs.get("messages", []) or [])
+        stream = kwargs.get("stream", False)
+        prompt = input_text
+        last_content = ""
+        allow_tools = set(allow_tools or [])
+        approve_all = [False]
+        is_tty = sys.stdin.isatty()
+
+        def _log(msg):
+            if verbose:
+                print(msg, flush=True)
+
+        def _ask(tool_name, args):
+            if not require_permission or tool_name in allow_tools or approve_all[0]:
+                return True
+            if not is_tty:
+                _log(f"[agent:{self.name}] non-TTY: auto-allow {tool_name}")
+                return True
+            args_str = str(args)
+            if len(args_str) > 300:
+                args_str = args_str[:300] + "…"
+            print(f"\n[agent:{self.name}] allow tool: {tool_name}({args_str})?", flush=True)
+            resp = input("  [y]es / [n]o / [a]ll: ").strip().lower()
+            if resp == "a":
+                approve_all[0] = True
+                return True
+            return resp.startswith("y")
+
+        def _extract_tc(tc):
+            if isinstance(tc, dict):
+                tc_id = tc.get("id") or str(_uuid.uuid4())
+                fn = tc.get("function", {}) or {}
+                name = fn.get("name", "")
+                args_raw = fn.get("arguments", "{}")
+            else:
+                tc_id = getattr(tc, "id", None) or str(_uuid.uuid4())
+                fn_obj = getattr(tc, "function", None)
+                name = getattr(fn_obj, "name", "") if fn_obj else ""
+                args_raw = getattr(fn_obj, "arguments", "{}") if fn_obj else "{}"
+            if isinstance(args_raw, str):
+                try:
+                    args = _json.loads(args_raw)
+                except (_json.JSONDecodeError, TypeError):
+                    args = {"raw_arguments": args_raw}
+            else:
+                args = args_raw or {}
+            return tc_id, name, args
+
+        _log(f"[agent:{self.name}] run start | model={self.model} provider={self.provider} | prompt={input_text!r}")
+
+        for iteration in range(max_iterations):
+            _log(f"[agent:{self.name}] iter {iteration+1}/{max_iterations} → calling model")
+            result = get_llm_response(
+                prompt,
+                npc=self,
+                model=self.model,
+                provider=self.provider,
+                tools=self.tools,
+                tool_map=self.tool_map,
+                messages=messages,
+                stream=stream,
+            )
+            if not isinstance(result, dict):
+                return str(result)
+
+            tool_calls = result.get("tool_calls")
+            content = result.get("output", result.get("response", "")) or ""
+            if content:
+                last_content = content
+
+            if not tool_calls:
+                _log(f"[agent:{self.name}] no tool_calls → returning content ({len(last_content)} chars)")
+                return last_content
+
+            messages = result.get("messages", messages)
+            # Drop the empty assistant turn get_ollama_response appends when the
+            # model only emitted tool_calls — we'll add a proper one below.
+            if (messages and messages[-1].get("role") == "assistant"
+                    and not messages[-1].get("content")
+                    and "tool_calls" not in messages[-1]):
+                messages = messages[:-1]
+
+            extracted = [_extract_tc(tc) for tc in tool_calls]
+            _log(f"[agent:{self.name}] tool_calls: {[name for _, name, _ in extracted]}")
+
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": args},
+                    }
+                    for tc_id, name, args in extracted
+                ],
+            })
+
+            for tc_id, name, args in extracted:
+                if not _ask(name, args):
+                    result_str = "[permission denied by user]"
+                elif name in self.tool_map:
+                    try:
+                        tool_result = self.tool_map[name](**args)
+                        result_str = _json.dumps(tool_result, default=str) if not isinstance(tool_result, str) else tool_result
+                    except Exception as e:
+                        result_str = f"Error executing {name}: {e}"
+                else:
+                    result_str = f"Unknown tool: {name}"
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": result_str,
+                })
+
+                disp_args = str(args)
+                disp_res = result_str
+                if len(disp_args) > 200:
+                    disp_args = disp_args[:200] + "…"
+                if len(disp_res) > 400:
+                    disp_res = disp_res[:400] + "…"
+                _log(f"[agent:{self.name}]   → {name}({disp_args}) = {disp_res}")
+
+            prompt = None
+
+        _log(f"[agent:{self.name}] hit max_iterations={max_iterations}")
+        return last_content or "Max iterations reached without a final answer."
 
 
 class ToolAgent(Agent):
