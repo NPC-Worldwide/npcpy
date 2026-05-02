@@ -140,12 +140,12 @@ def finetune_diffusion_model(
 # Create an agent with image generation and fine-tuning capabilities
 creative_agent = ToolAgent(
     name='creative_diffusion',
-    primary_directive="You help users generate images and fine-tune diffusion models. "
-                      "You can: 1) Generate images using gen_image() with various prompts, "
-                      "2) Fetch image datasets from HuggingFace, "
-                      "3) Fine-tune diffusion models on custom image sets. "
-                      "When a user submits an image or describes a style they like, "
-                      "offer to fetch similar images from a dataset and fine-tune a model.",
+    primary_directive="""You help users generate images and fine-tune diffusion models.
+You can: 1) Generate images using gen_image() with various prompts,
+2) Fetch image datasets from HuggingFace,
+3) Fine-tune diffusion models on custom image sets.
+When a user submits an image or describes a style they like,
+offer to fetch similar images from a dataset and fine-tune a model.""",
     tools=[fetch_image_dataset, finetune_diffusion_model, gen_image],
     model='qwen3.5:2b',
     provider='ollama'
