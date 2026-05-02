@@ -687,12 +687,14 @@ Extract structured memories:
 ```python
 from npcpy.llm_funcs import get_facts
 
-text_segment = """
-Pirate Prentice is in the lavatory stands pissing. Then he threads himself
-into a wool robe he wears inside out. The day feels like rain.
+lunar_text = """
+The Moon formed 4.5 billion years ago when a Mars-sized object collided
+with Earth. The debris coalesced into the lunar body we see today.
+Tidal forces gradually slow Earth's rotation and push the Moon outward
+by 3.8 centimeters per year.
 """
 
-facts = get_facts(text_segment, model="qwen3:4b", provider="ollama")
+facts = get_facts(lunar_text, model="qwen3:4b", provider="ollama")
 for f in facts:
     print(f"[{f.get('type', 'general')}] {f['statement']}")
 ```
