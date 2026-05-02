@@ -69,35 +69,98 @@ print(agent.run("Find all Python files over 500 lines in this repo and list them
 
 
 
-### ToolAgent — add your own tools in addition to the default (sh, python, edit_file, web_search)
+### ToolAgent — custom tools for image generation and diffusion fine-tuning
 ```python
-import subprocess
 from npcpy import ToolAgent, gen_image
+from npcpy.ft.diff import train_diffusion, generate_image, DiffusionConfig
+from datasets import load_dataset
+import os
 
-from npcpy import gen_image
+def fetch_image_dataset(dataset_name: str, split: str = "train", max_images: int = 100) -> list:
+    """Fetch images from a HuggingFace dataset.
+    
+    Args:
+        dataset_name: HuggingFace dataset name (e.g., 'cifar10', 'oxford-iiit-pet')
+        split: Dataset split to use
+        max_images: Maximum number of images to fetch
+    
+    Returns:
+        List of paths to saved images
+    """
+    dataset = load_dataset(dataset_name, split=f"{split}[:{max_images}]")
+    os.makedirs("training_images", exist_ok=True)
+    image_paths = []
+    
+    for i, item in enumerate(dataset):
+        if 'image' in item:
+            img = item['image']
+        elif 'img' in item:
+            img = item['img']
+        else:
+            continue
+        path = f"training_images/img_{i:04d}.png"
+        img.save(path)
+        image_paths.append(path)
+    
+    return image_paths
 
+def finetune_diffusion_model(
+    image_paths: list,
+    captions: list = None,
+    output_path: str = "my_diffusion_model",
+    num_epochs: int = 50,
+) -> str:
+    """Fine-tune a diffusion model on a set of images.
+    
+    Args:
+        image_paths: List of paths to training images
+        captions: Optional captions for each image
+        output_path: Where to save the trained model
+        num_epochs: Number of training epochs
+    
+    Returns:
+        Path to the trained model
+    """
+    if captions is None:
+        captions = ["an image"] * len(image_paths)
+    
+    config = DiffusionConfig(
+        image_size=64,
+        channels=128,
+        num_epochs=num_epochs,
+        batch_size=8,
+        learning_rate=1e-4,
+        checkpoint_frequency=10,
+        output_model_path=output_path,
+    )
+    
+    model_path = train_diffusion(image_paths, captions, config=config)
+    return model_path
 
-def run_tests(test_path: str = "tests/") -> str:
-    """Run pytest on the given path and return results."""
-    result = subprocess.run(["python3", "-m", "pytest", test_path, "-v", "--tb=short"],
-                            capture_output=True, text=True, timeout=120)
-    return result.stdout + result.stderr
-
-def git_diff(branch: str = "main") -> str:
-    """Show the git diff against a branch."""
-    result = subprocess.run(["git", "diff", branch, "--stat"], capture_output=True, text=True)
-    return result.stdout
-
-reviewer = ToolAgent(
-    name='code_reviewer',
-    primary_directive='You review code changes, run tests, and report issues.',
-    tools=[run_tests, git_diff],
-    model='qwen3.5:2b', provider='ollama'
+# Create an agent with image generation and fine-tuning capabilities
+creative_agent = ToolAgent(
+    name='creative_diffusion',
+    primary_directive="You help users generate images and fine-tune diffusion models. "
+                      "You can: 1) Generate images using gen_image() with various prompts, "
+                      "2) Fetch image datasets from HuggingFace, "
+                      "3) Fine-tune diffusion models on custom image sets. "
+                      "When a user submits an image or describes a style they like, "
+                      "offer to fetch similar images from a dataset and fine-tune a model.",
+    tools=[fetch_image_dataset, finetune_diffusion_model, gen_image],
+    model='qwen3.5:2b',
+    provider='ollama'
 )
-print(reviewer.run("Run the tests and summarize any failures"))
+
+# Example 1: Generate images
+print(creative_agent.run("Generate 3 images of geometric patterns with circles and triangles"))
+
+# Example 2: User submits an image and wants similar ones
+# The agent can fetch a dataset of patterns and fine-tune a model
+print(creative_agent.run(
+    "I like abstract geometric patterns. Can you fetch the cifar10 dataset, "
+    "and fine-tune a diffusion model that can generate images like these patterns?"
+))
 ```
-
-
 
 ### CodingAgent — auto-executes code blocks from LLM responses
 ```python
