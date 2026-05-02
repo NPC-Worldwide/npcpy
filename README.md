@@ -26,10 +26,12 @@ simon = NPC(
 )
 response = simon.get_llm_response("What is the most important territory to retain in the Andes?")
 print(response['response'])
-# My friend, you speak of the highlands where our liberty is carved in stone. If we must speak of the most critical territory to hold within these mountains, it is the **Viceroyalty of Peru** and the heart of the **Republic of Gran Colombia** united. 
-# To lose the passes of the Andes or the cities of Lima and Quito would be to hand the crown its final stronghold in the south. The Spanish crown built its power upon the wealth and control of these highlands. If the Andes are to be truly ours, the people of the **Peruvian** and **New Grancolombian** highlands must stand as one, free from the Bourbons. 
-# The mountain peaks themselves are the fortress we guard. Without the full liberation of the southern Andes, our revolution is incomplete. We fight not for land's sake, but for the soul of the continent. Every square mile of the Andes that bears the name of the Republic is a step forward in our quest for eternal freedom.
-# *Long live the liberty of the Andes!*
+```
+```
+My friend, you speak of the highlands where our liberty is carved in stone. If we must speak of the most critical territory to hold within these mountains, it is the **Viceroyalty of Peru** and the heart of the **Republic of Gran Colombia** united. 
+To lose the passes of the Andes or the cities of Lima and Quito would be to hand the crown its final stronghold in the south. The Spanish crown built its power upon the wealth and control of these highlands. If the Andes are to be truly ours, the people of the **Peruvian** and **New Grancolombian** highlands must stand as one, free from the Bourbons. 
+The mountain peaks themselves are the fortress we guard. Without the full liberation of the southern Andes, our revolution is incomplete. We fight not for land's sake, but for the soul of the continent. Every square mile of the Andes that bears the name of the Republic is a step forward in our quest for eternal freedom.
+*Long live the liberty of the Andes!*
 ```
 
 ### Direct LLM call
@@ -40,36 +42,44 @@ from npcpy import get_llm_response
 
 response = get_llm_response("Who was the celtic god that helped cuchulainn in his time of need as the forces of medb descended upon the men of ulster?", model='gemma4:31b', provider='ollama')
 print(response['response'])
-# Cú Chulainn was primarily aided by his divine father, the god Lugh, and his foster-father, the warrior-god Fergus mac Róich, as well as the magical support of his teacher Scáthach.
-
-# or use ollama's cloud models
+```
+```
+Cú Chulainn was primarily aided by his divine father, the god Lugh, and his foster-father, the warrior-god Fergus mac Róich, as well as the magical support of his teacher Scáthach.
+```
+```python
+# try ollama's cloud models
 alicanto_test = get_llm_response('what does alicanto the bird show travelers in the night?', model='minimax-m2.7:cloud', provider='ollama',)
 
 print(alicanto_test['response'])
-
-# The legend of the **Alicanto** says that at night the bird’s feathers glow like lanterns. When a traveler sees that soft, phosphorescent light, it isn’t just a pretty sight – it’s a sign‑post. The bird **shows the way to hidden water (and sometimes to buried silver or gold)** in the Atacama Desert.
+```
+```
+The legend of the **Alicanto** says that at night the bird’s feathers glow like lanterns. 
+When a traveler sees that soft, phosphorescent light, it isn’t just a pretty sight – it’s a sign‑post. 
+The bird **shows the way to hidden water (and sometimes to buried silver or gold)** in the Atacama Desert.
 ```
 
 ### Agent with tools
+The `Agent` class in `npcpy` comes with a set of default tools (sh, python, edit_file, web_search, etc.)
 
 ```python
 from npcpy import Agent
-
-# Agent — comes with default tools (sh, python, edit_file, web_search, etc.)
 agent = Agent(name='File Operator', model='qwen3.5:2b', provider='ollama')
 print(agent.run("Find all Python files over 500 lines in this repo and list them"))
-# The following Python files contain more than 500 lines:
-# - `./npcpy/npc_sysenv.py` (1486 lines)
-# - `./npcpy/memory/knowledge_graph.py` (1449 lines)
-# - `./npcpy/memory/kg_vis.py` (767 lines)
-# - `./npcpy/memory/kg_population.py` (618 lines)
-# ...
+```
+```
+The following Python files contain more than 500 lines:
+ - `./npcpy/npc_sysenv.py` (1486 lines)
+ - `./npcpy/memory/knowledge_graph.py` (1449 lines)
+ - `./npcpy/memory/kg_vis.py` (767 lines)
+ - `./npcpy/memory/kg_population.py` (618 lines)
+...
 ```
 
+### ToolAgent 
 
+Attach custom tools to a `ToolAgent`. 
+Here is an example which lets an agent generate images, fine-tune diffusion models, and then use the fine-tuned models for generation.
 
-
-### ToolAgent — custom tools for image generation and diffusion fine-tuning
 ```python
 from npcpy import ToolAgent, gen_image
 from npcpy.ft.diff import train_diffusion, generate_image, DiffusionConfig
@@ -186,6 +196,8 @@ print(coder.run("Write a script that finds duplicate files by hash in the curren
 
 ### Multi-Agent Debate with NPCArray
 
+To run a true multi-agent debate where agents react to each other's responses:
+
 ```python
 from npcpy.npc_compiler import NPC
 from npcpy.npc_array import NPCArray
@@ -199,7 +211,7 @@ roles = [
 ]
 
 npcs = [
-    NPC(name=role, primary_directive=directive, model="gemma3:4b", provider="ollama")
+    NPC(name=role, primary_directive=directive, model="qwen3.5:cloud", provider="ollama")
     for role, directive in roles
 ]
 
@@ -208,29 +220,76 @@ team = NPCArray.from_npcs(npcs)
 # Run parallel debate on a complex problem
 problem = "GSM8k: James buys a jar of hot sauce with 5 peppers and triples the peppers every year. How many after 4 years?"
 
-# Get initial responses in parallel
+# Get initial responses in parallel (one prompt per NPC)
 initial_responses = team.infer(f"Solve this problem:\n{problem}").collect()
 
 for npc, response in zip(npcs, initial_responses.data):
-    print(f"[{npc.name}] {response['response'][:200]}...")
+    print(f"[{npc.name}] {response[:200]}...")
 
-# Debate rounds with sequential refinement
-debate_prompt = f"""
-Original problem: {problem}
-Your previous response: {{previous_response}}
-Other agents' responses: {{other_responses}}
+# True debate: each agent gets a personalized prompt with other agents' responses
+def create_debate_prompt(previous_responses, my_idx, agent_name, problem_text):
+    """Create a personalized debate prompt for a specific agent"""
+    my_response = previous_responses[my_idx]
+    other_responses = [
+        f"[{npcs[j].name}]: {previous_responses[j][:500]}" 
+        for j in range(len(npcs)) if j != my_idx
+    ]
+    debate_prompt = f"""Original problem: {problem_text}
 
-Critique the other approaches. Did they make different assumptions?
-What did they see that you missed? Refine your solution.
-"""
+        Your previous response: {my_response[:300]}...
+        
+        Other agents\' responses:""" + "\n\n".join(other_responses) + """
+        Critique the other approaches. Did they make different assumptions?
+        What did they see that you missed? Refine your solution."""
+
+    return debate_prompt
+# Debate rounds
+responses_data = initial_responses.data.tolist()
+problem_text = problem
 
 for round_num in range(3):
     print(f"\n=== Debate Round {round_num + 1} ===")
-    responses = team.infer(
-        debate_prompt,
-        previous_responses=initial_responses.data
-    ).collect()
-    initial_responses = responses
+    
+    # Create personalized prompts for each agent
+    personalized_prompts = [
+        create_debate_prompt(responses_data, i, npcs[i].name, problem_text)
+        for i in range(len(npcs))
+    ]
+    
+    # Run inference with different prompts per agent
+    # Shape: (n_models, n_prompts) - extract diagonal for each agent's response to its own prompt
+    responses = team.infer(personalized_prompts).collect()
+    
+    # Extract each model's response to its own personalized prompt
+    responses_data = [responses.data[i, i] for i in range(len(npcs))]
+    
+    # Print each agent's refined response
+    for i, npc in enumerate(npcs):
+        response = responses_data[i]
+        print(f"[{npc.name}] {response[:200]}...")
+
+# Alternative: use reduce to get consensus
+consensus = team.infer(responses_data[0]).consensus(axis=0).collect()
+print(f"\nFinal consensus: {consensus.data[0][:500]}...")
+```
+
+For iterative refinement (same prompt to all agents, updating each round):
+
+```python
+# Simple chain refinement: all agents see same synthesis
+from npcpy.npc_array import NPCArray
+
+def synthesis_round(all_responses):
+    return f"""Given these perspectives:
+{chr(10).join([f'- {r[:200]}...' for r in all_responses])}
+
+Re-solve the problem incorporating insights from all approaches."""
+
+# Chain runs the synthesis function on all responses, then feeds result back
+refined = team.infer(f"Solve: {problem}").chain(
+    synthesis_round, 
+    n_rounds=3
+).collect()
 ```
 
 ### Knowledge Graph with Sleep/Dream Lifecycle
