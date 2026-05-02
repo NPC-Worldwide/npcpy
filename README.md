@@ -156,10 +156,7 @@ print(creative_agent.run("Generate 3 images of geometric patterns with circles a
 
 # Example 2: User submits an image and wants similar ones
 # The agent can fetch a dataset of patterns and fine-tune a model
-print(creative_agent.run(
-    "I like abstract geometric patterns. Can you fetch the cifar10 dataset, "
-    "and fine-tune a diffusion model that can generate images like these patterns?"
-))
+print(creative_agent.run("I like abstract geometric patterns. Can you fetch the cifar10 dataset and fine-tune a diffusion model that can generate images like these patterns?"))
 ```
 
 ### CodingAgent — auto-executes code blocks from LLM responses
@@ -183,6 +180,105 @@ print(coder.run("Write a script that finds duplicate files by hash in the curren
 ```
 
 
+```
+
+### Multi-Agent Debate with NPCArray
+
+```python
+from npcpy.npc_compiler import NPC
+from npcpy.npc_array import NPCArray
+
+# Create a debate team with role-based personas
+roles = [
+    ("MathSolver", "You are a meticulous math solver. Show all steps clearly."),
+    ("Skeptic", "You critically check for errors and assumptions."),
+    ("Analyst", "You identify the core mathematical structure."),
+    ("Verifier", "You confirm the final answer is correct.")
+]
+
+npcs = [
+    NPC(name=role, primary_directive=directive, model="gemma3:4b", provider="ollama")
+    for role, directive in roles
+]
+
+team = NPCArray.from_npcs(npcs)
+
+# Run parallel debate on a complex problem
+problem = "GSM8k: James buys a jar of hot sauce with 5 peppers and triples the peppers every year. How many after 4 years?"
+
+# Get initial responses in parallel
+initial_responses = team.infer(f"Solve this problem:\n{problem}").collect()
+
+for npc, response in zip(npcs, initial_responses.data):
+    print(f"[{npc.name}] {response['response'][:200]}...")
+
+# Debate rounds with sequential refinement
+debate_prompt = f"""
+Original problem: {problem}
+Your previous response: {{previous_response}}
+Other agents' responses: {{other_responses}}
+
+Critique the other approaches. Did they make different assumptions?
+What did they see that you missed? Refine your solution.
+"""
+
+for round_num in range(3):
+    print(f"\n=== Debate Round {round_num + 1} ===")
+    responses = team.infer(
+        debate_prompt,
+        previous_responses=initial_responses.data
+    ).collect()
+    initial_responses = responses
+```
+
+### Knowledge Graph with Sleep/Dream Lifecycle
+
+```python
+from npcpy.memory.knowledge_graph import (
+    kg_initial, kg_evolve_incremental, kg_sleep_process, kg_dream_process
+)
+from npcpy.llm_funcs import get_llm_response
+
+# Initialize KG from text corpus
+content_text = """Pirate Prentice is in the lavatory stands pissing. Then he threads himself into a wool robe he wears inside out.
+The day feels like rain."""
+
+kg = kg_initial(content_text, model="gpt-4.1-nano", provider="openai", context="Text from Gravity's Rainbow by Thomas Pynchon")
+
+# Evolve with new content
+new_content = """The phone call, when it comes, rips easily across the room.
+Pirate knows it's got to be for him."""
+
+kg, _ = kg_evolve_incremental(kg, new_content, model="gpt-4.1-nano", provider="openai")
+
+# Sleep - consolidate and prune
+kg, sleep_report = kg_sleep_process(kg, model="gpt-4.1-nano", provider="openai")
+
+# Dream - generate speculative connections
+kg, dream_report = kg_dream_process(kg, model="gpt-4.1-nano", provider="openai", num_seeds=3)
+
+print(f"KG has {len(kg['facts'])} facts and {len(kg['concepts'])} concepts")
+```
+
+### Flask Serving for NPC Teams
+
+```python
+from npcpy.serve import start_flask_server
+import os
+
+# Serve your NPC team via REST API
+if __name__ == "__main__":
+    is_dev = not getattr(os.sys, 'frozen', False)
+    port = os.environ.get('INCOGNIDE_PORT', '5437' if is_dev else '5337')
+    frontend_port = os.environ.get('FRONTEND_PORT', '7337' if port == '5437' else '6337')
+
+    start_flask_server(
+        port=port,
+        cors_origins=f"localhost:{frontend_port}",
+        db_path=os.path.expanduser('~/npcsh_history.db'),
+        user_npc_directory=os.path.expanduser('~/.npcsh/npc_team'),
+        debug=False
+    )
 ```
 
 ### Streaming
@@ -518,15 +614,15 @@ from npcpy.npc_array import NPCArray
 
 # Three NPCs with different models/providers
 npcs = [
-    NPC(name='drafter', primary_directive='Draft concise commit messages.', model='qwen3:4b', provider='ollama'),
-    NPC(name='reviewer', primary_directive='Review and improve commit messages for clarity.', model='gemini-2.5-flash', provider='gemini'),
-    NPC(name='enforcer', primary_directive='Check commit messages follow Conventional Commits spec.', model='gemini-2.5-flash', provider='gemini'),
+    NPC(name='hillary', primary_directive='You are Edmund Hillary in 1953. Argue the decision to turn back was correct given the equipment and weather data available.', model='qwen3:4b', provider='ollama'),
+    NPC(name='hillary_2024', primary_directive='You are Edmund Hillary with 70 years of hindsight. Critique the 1953 decision with knowledge of later summits and gear advances.', model='gemini-2.5-flash', provider='gemini'),
+    NPC(name='bottleneck', primary_directive='You are a route analyst who has studied every K2 ascent. Analyze the specific risks at the Bottleneck that influenced the 1953 decision.', model='gemini-2.5-flash', provider='gemini'),
 ]
 
 arr = NPCArray.from_npcs(npcs)
 
 # Run the same jinx on all three in parallel, collect results
-results = arr.jinx('summarize', inputs={'topic': 'fix auth middleware to propagate clerkUserId through GraphQL resolvers'}).collect()
+results = arr.jinx('solve', inputs={'problem': 'GSM8k: James buys a jar of hot sauce with 5 peppers and triples the peppers every year. How many after 4 years?'}).collect()
 for npc, result in zip(npcs, results.data):
     print(f"[{npc.name}] {result}")
 ```
@@ -552,22 +648,22 @@ from npcpy.memory.knowledge_graph import (
 )
 from npcpy.data.load_file import load_file_contents
 
-# Seed the KG from a design doc PDF and a migration script
-design_doc = load_file_contents("docs/auth_migration_plan.pdf")
-migration_sql = load_file_contents("migrations/003_clerk_auth.sql")
+# Seed the KG from expedition records and field notes
+basecamp_logs = load_file_contents("archives/k2_1953/basecamp_diaries.pdf")
+summit_photos = load_file_contents("archives/k2_1953/aerial_survey.jpg")
 
 kg = kg_initial(
-    content=design_doc + "\n\n" + migration_sql,
+    content=basecamp_logs + "\n\n" + summit_photos,
     model="qwen3:4b", provider="ollama",
 )
 
-# Assimilate follow-up commits and PR descriptions
+# Assimilate expedition follow-up reports and field notes
 kg, _ = kg_evolve_incremental(
     kg,
     new_content_text=(
-        "PR #412: Replaced Stripe customer-session lookup with Clerk JWT verification. "
-        "Removed /api/stripe/webhook endpoint. Added ClerkMiddleware to all protected routes. "
-        "CSP headers updated to allow clerk.accounts.dev origin."
+        "July 31 - Camp VII established at 7800m. Severe wind damage to tents. "
+        "Team member injured in crevasse fall. Descending with improvised stretcher. "
+        "Storm prevents evacuation."
     ),
     model="qwen3:4b", provider="ollama", get_concepts=True,
 )
@@ -579,32 +675,33 @@ kg, sleep_report = kg_sleep_process(kg, model="qwen3:4b", provider="ollama")
 kg, dream_report = kg_dream_process(kg, model="qwen3:4b", provider="ollama")
 
 # Search across facts, concepts, and speculative edges
-results = kg_hybrid_search(kg, "How does auth propagate through GraphQL resolvers?",
+results = kg_hybrid_search(kg, "What factors contributed to the 1953 K2 expedition outcome?",
                            model="qwen3:4b", provider="ollama")
 for r in results:
     print(r['score'], r['text'])
 print(f"{len(kg['facts'])} facts, {len(kg['concepts'])} concepts")
 ```
 
-Extract structured memories from conversations:
+Extract structured memories from expedition logs:
 
 ```python
 from npcpy.llm_funcs import get_facts
 
-conversation = """
-User: We're ripping out Stripe entirely and moving auth to Clerk. The JWT verification
-      will happen in ClerkMiddleware instead of the custom verify_stripe_session helper.
-Assistant: Got it. I'll update the middleware chain. What about the existing session store?
-User: Kill the Redis session cache — Clerk handles session state on their end.
-      Also, the CSP headers need clerk.accounts.dev and clerk.enpisi.com added to connect-src.
+expedition_log = """
+July 31: Camp VII established at 7800m after a grueling climb from Camp VI. Winds exceeded
+60 knots overnight, causing severe damage to three tents. During descent to retrieve
+supplies, a team member fell into a crevasse, sustaining leg injuries. The team
+improvised a stretcher from skis and tent poles. Storm conditions prevent helicopter
+evacuation. We are rationing oxygen and awaiting a weather window.
 """
 
-facts = get_facts(conversation, model="qwen3:4b", provider="ollama")
+facts = get_facts(expedition_log, model="qwen3:4b", provider="ollama")
 for f in facts:
-    print(f"[{f.get('category', 'general')}] {f['statement']}")
-# [architecture] Auth provider migrated from Stripe to Clerk with JWT verification via ClerkMiddleware
-# [infrastructure] Redis session cache removed — Clerk manages session state
-# [security] CSP connect-src updated to include clerk.accounts.dev and clerk.enpisi.com
+    print(f"[{f.get('type', 'general')}] {f['statement']}")
+# [explicit] Camp VII was established at an altitude of 7800 meters
+# [explicit] Wind speeds exceeded 60 knots during the night
+# [inferred] The expedition is experiencing a medical emergency requiring evacuation
+# [inferred] Weather conditions are life-threatening and unpredictable
 ```
 
 </details>
@@ -622,11 +719,11 @@ from npcpy.data.load_file import load_file_contents
 pop = SememolutionPopulation(population_size=100, sample_size=10)
 pop.initialize()
 
-# Ingest a heterogeneous corpus — PDFs, DOCX, source code, meeting transcripts
-corpus_dirs = [Path("docs/architecture"), Path("docs/meeting_notes"), Path("src/auth")]
+# Ingest a heterogeneous corpus — expedition logs, maps, field notes, photographs
+corpus_dirs = [Path("archives/k2_1953/basecamp_diaries"), Path("archives/k2_1953/weather_logs"), Path("archives/k2_1953/photos")]
 for d in corpus_dirs:
     for f in sorted(d.glob("*")):
-        if f.suffix in (".pdf", ".docx", ".md", ".py", ".ts", ".txt"):
+        if f.suffix in (".pdf", ".txt", ".md", ".jpg", ".png"):
             text = load_file_contents(str(f))
             pop.assimilate_text(text)
 
@@ -634,7 +731,7 @@ for d in corpus_dirs:
 pop.sleep_cycle()
 
 # Query: sample 10 individuals, generate competing responses, rank them
-rankings = pop.query_and_rank("How does the auth middleware chain interact with the GraphQL context?")
+rankings = pop.query_and_rank("What combination of factors led to the failure of the 1953 K2 summit attempt?")
 for rank, entry in enumerate(rankings[:3], 1):
     print(f"#{rank} (individual {entry['id']}, score {entry['score']:.3f}): {entry['response'][:120]}...")
 
@@ -651,40 +748,108 @@ print(f"Generation {stats['generation']} | avg fitness {stats['avg_fitness']:.3f
 <details>
 <summary><b>Fine-tuning (SFT, RL, MLX)</b></summary>
 
+**RL Training with DPO for Tool-Calling Agents**
+
 ```python
-from npcpy.ft.sft import run_sft
+from npcpy.npc_compiler import NPC
+from npcpy.ft.rl import RLConfig, train_with_dpo, load_rl_model
+import json
 
-# Train a model to extract structured decisions from meeting notes
-# LoRA fine-tuning — auto-uses MLX on Apple Silicon
-X_train = [
-    "Meeting: Auth Migration Sync (2025-01-15)\nAttendees: Sarah, Mike, Priya\n"
-    "Discussion: Evaluated Clerk vs Auth0 for replacing Stripe auth. Clerk chosen "
-    "for lower latency and native Next.js support. Migration starts sprint 12. "
-    "Redis session store will be removed once Clerk JWT verification is stable.",
+def npcsh_reward(trace):
+    """Reward function for shell assistant responses."""
+    output = trace.get('final_output', '')
+    completed = trace.get('completed', False)
+    score = 0.0
+    if completed:
+        score += 2.0
+    if 50 < len(output) < 1500:
+        score += 1.0
+    if '```' in output:
+        score += 1.0
+    if any(cmd in output.lower() for cmd in ['ls', 'cd', 'cat', 'grep', 'find', 'pip', 'git']):
+        score += 0.3
+    return max(0.0, min(10.0, score + 5.0))
 
-    "Meeting: API Rate Limiting Review (2025-01-22)\nAttendees: Mike, Jordan\n"
-    "Discussion: Current per-session token bucket is incompatible with Clerk's "
-    "stateless JWTs. Agreed to switch to per-IP sliding window with 100 req/min "
-    "default. Premium tier gets 500 req/min. Jordan to implement by Friday.",
+# Load preference pairs from agent traces
+traces = []
+with open('preference_pairs.jsonl', 'r') as f:
+    for line in f:
+        pair = json.loads(line)
+        traces.append({
+            'task_prompt': pair['prompt'],
+            'final_output': pair['chosen'],
+            'reward': pair.get('chosen_score', 8.0),
+            'completed': True
+        })
+        traces.append({
+            'task_prompt': pair['prompt'],
+            'final_output': pair['rejected'],
+            'reward': pair.get('rejected_score', 3.0),
+            'completed': False
+        })
 
-    "Meeting: GraphQL Schema Freeze (2025-02-01)\nAttendees: Sarah, Priya, Jordan\n"
-    "Discussion: Schema v2 locked for release. Nested auth context propagation "
-    "through dataloaders confirmed working. New 'viewer' pattern adopted for "
-    "all authenticated queries. Breaking changes documented in CHANGELOG.",
+config = RLConfig(
+    base_model_name="Qwen/Qwen2.5-0.5B-Instruct",
+    adapter_path="./npcsh_adapter",
+    num_train_epochs=3,
+    per_device_train_batch_size=2,
+    learning_rate=5e-5,
+    beta=0.1
+)
 
-    "Meeting: Deployment Postmortem (2025-02-10)\nAttendees: full team\n"
-    "Discussion: Production outage caused by missing CSP header for clerk.accounts.dev. "
-    "Root cause: deploy script didn't pick up new env vars. Fix: added CSP validation "
-    "to CI pipeline. New rule: all external origins must be in csp_allowlist.json.",
-]
-y_train = [
-    '{"decisions": [{"what": "Adopt Clerk for auth", "why": "Lower latency, native Next.js support", "owner": "team", "deadline": "sprint 12"}, {"what": "Remove Redis session store", "why": "Clerk handles session state", "owner": "team", "deadline": "after JWT verification stable"}]}',
-    '{"decisions": [{"what": "Switch to per-IP sliding window rate limiter", "why": "Token bucket incompatible with stateless JWTs", "owner": "Jordan", "deadline": "Friday"}, {"what": "Set rate limits to 100/min default, 500/min premium", "why": "Tiered access control", "owner": "Jordan", "deadline": "Friday"}]}',
-    '{"decisions": [{"what": "Freeze GraphQL schema v2", "why": "Release readiness", "owner": "Sarah", "deadline": "immediate"}, {"what": "Adopt viewer pattern for authenticated queries", "why": "Consistent auth context in nested resolvers", "owner": "Priya", "deadline": "immediate"}]}',
-    '{"decisions": [{"what": "Add CSP validation to CI pipeline", "why": "Prevent missing CSP headers in deploys", "owner": "team", "deadline": "immediate"}, {"what": "Require external origins in csp_allowlist.json", "why": "Enforce explicit approval of external domains", "owner": "team", "deadline": "immediate"}]}',
-]
+adapter_path = train_with_dpo(traces, config)
+print(f"Trained adapter saved to: {adapter_path}")
+```
 
-model_path = run_sft(X_train=X_train, y_train=y_train)
+**SFT for Scientific Writing Style Transfer**
+
+```python
+from npcpy.llm_funcs import get_llm_response
+from npcpy.ft.sft import SFTConfig, run_sft
+
+# Generate scientific writing dataset from style samples
+def generate_scientific_trace(question, reasoning_model, converter_model, style_chunks):
+    """Generate native reasoning then rewrite in scientific voice."""
+    # Step 1: Get reasoning trace
+    native_prompt = f"""Answer this question with detailed reasoning.
+Question: {question}
+Provide your step-by-step reasoning and final answer."""
+    native_response = get_llm_response(native_prompt, model=reasoning_model, provider='ollama')
+    native_trace = native_response['response']
+
+    # Step 2: Rewrite in scientific style
+    style_context = '\n\n---\n\n'.join(style_chunks[:8])
+    rewrite_prompt = f"""Rewrite the following reasoning trace in the scientific writing style demonstrated by the excerpts below.
+Original Reasoning Trace:
+{native_trace}
+
+SCIENTIFIC PAPER EXCERPTS:
+{style_context}
+
+Task:
+1. Rewrite the reasoning in the style of the scientific paper excerpts
+2. Use LaTeX notation where appropriate
+3. Preserve the logical flow and factual content
+4. Match the prose density and intellectual register"""
+
+    rewritten = get_llm_response(rewrite_prompt, model=converter_model, provider='ollama')
+    return rewritten['response']
+
+# Train on generated examples
+X_train = ["What is the relationship between quantum contextuality and natural language interpretation?"]
+y_train = [generate_scientific_trace(X_train[0], 'qwen3:8b', 'qwen3:8b', style_chunks)]
+
+sft_config = SFTConfig(
+    base_model_name="Qwen/Qwen3-4B",
+    output_model_path="models/scientific-writer",
+    device='mlx',
+    num_train_epochs=100,
+    per_device_train_batch_size=1,
+    lora_r=128,
+    lora_alpha=256
+)
+
+model_path = run_sft(X_train, y_train, config=sft_config, format_style="llama")
 ```
 
 </details>
