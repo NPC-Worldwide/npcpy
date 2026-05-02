@@ -245,19 +245,19 @@ from npcpy.llm_funcs import get_llm_response
 content_text = """Pirate Prentice is in the lavatory stands pissing. Then he threads himself into a wool robe he wears inside out.
 The day feels like rain."""
 
-kg = kg_initial(content_text, model="gpt-4.1-nano", provider="openai", context="Text from Gravity's Rainbow by Thomas Pynchon")
+kg = kg_initial(content_text, model="gemma3:4b", provider="ollama")
 
 # Evolve with new content
 new_content = """The phone call, when it comes, rips easily across the room.
 Pirate knows it's got to be for him."""
 
-kg, _ = kg_evolve_incremental(kg, new_content, model="gpt-4.1-nano", provider="openai")
+kg, _ = kg_evolve_incremental(kg, new_content, model="gemma3:4b", provider="ollama")
 
 # Sleep - consolidate and prune
-kg, sleep_report = kg_sleep_process(kg, model="gpt-4.1-nano", provider="openai")
+kg, sleep_report = kg_sleep_process(kg, model="gemma3:4b", provider="ollama")
 
 # Dream - generate speculative connections
-kg, dream_report = kg_dream_process(kg, model="gpt-4.1-nano", provider="openai", num_seeds=3)
+kg, dream_report = kg_dream_process(kg, model="gemma3:4b", provider="ollama", num_seeds=3)
 
 print(f"KG has {len(kg['facts'])} facts and {len(kg['concepts'])} concepts")
 ```
@@ -366,11 +366,11 @@ from npcpy.llm_funcs import gen_image, gen_video
 from npcpy.gen.audio_gen import text_to_speech
 
 # Image — OpenAI, Gemini, Ollama, or diffusers
-images = gen_image("A sunset over the mountains", model='gpt-image-1', provider='openai')
+images = gen_image("A sunset over the mountains", model='gemma3:4b', provider='ollama')
 images[0].save("sunset.png")
 
 # Audio — OpenAI, Gemini, ElevenLabs, Kokoro, gTTS
-audio_bytes = text_to_speech("Hello from npcpy!", engine="openai", voice="alloy")
+audio_bytes = text_to_speech("Hello from npcpy!", engine="gtts")
 with open("hello.wav", "wb") as f:
     f.write(audio_bytes)
 
@@ -648,13 +648,13 @@ from npcpy.memory.knowledge_graph import (
     kg_initial, kg_evolve_incremental, kg_sleep_process,
     kg_dream_process, kg_hybrid_search,
 )
-from npcpy.data.load_file import load_file_contents
 
-# Seed the KG from a text corpus
-corpus_text = load_file_contents("gravitys_rainbow.txt")
-
+# Seed the KG with inline content
 kg = kg_initial(
-    content=corpus_text,
+    content="""
+        The Moon formed 4.5 billion years ago when a Mars-sized object
+        collided with Earth. The debris coalesced into the lunar body.
+    """,
     model="qwen3:4b", provider="ollama",
 )
 
@@ -688,10 +688,16 @@ Extract structured memories:
 from npcpy.llm_funcs import get_facts
 
 lunar_text = """
-The Moon formed 4.5 billion years ago when a Mars-sized object collided
-with Earth. The debris coalesced into the lunar body we see today.
-Tidal forces gradually slow Earth's rotation and push the Moon outward
-by 3.8 centimeters per year.
+    The selenological community remains divided on the precise chronology
+    of the Late Heavy Bombardment period, with competing isotopic models
+    yielding estimates that diverge by as much as 300 million years. While
+    some researchers point to zircon analysis supporting an earlier
+    cataclysmic peak around 4.1 billion years ago, others argue that impact
+    melt breccias tell a different story—one where the flux of planetesimals
+    declined more gradually than previously assumed. What is clear,
+    however, is that the resulting cratering record encodes information
+    about the dynamical evolution of the outer solar system during its
+    most chaotic epoch.
 """
 
 facts = get_facts(lunar_text, model="qwen3:4b", provider="ollama")
@@ -707,20 +713,31 @@ for f in facts:
 Maintain a population of KG variants that evolve independently. Each individual has Poisson-sampled search parameters, producing different traversals each query. Selection pressure from response ranking drives convergence toward useful graph structures.
 
 ```python
-from pathlib import Path
 from npcpy.memory.kg_population import SememolutionPopulation
-from npcpy.data.load_file import load_file_contents
 
 pop = SememolutionPopulation(population_size=100, sample_size=10)
 pop.initialize()
 
-# Ingest a heterogeneous corpus — text files, PDFs, images
-corpus_dirs = [Path("corpus/texts"), Path("corpus/pdfs"), Path("corpus/images")]
-for d in corpus_dirs:
-    for f in sorted(d.glob("*")):
-        if f.suffix in (".pdf", ".txt", ".md", ".jpg", ".png"):
-            text = load_file_contents(str(f))
-            pop.assimilate_text(text)
+pop.assimilate_text("""
+    The debate over lunar resource extraction has intensified since the discovery
+    of water ice in permanently shadowed regions at the lunar poles. While some
+    researchers argue that commercial mining could fund further exploration,
+    others warn that unregulated extraction could contaminate scientifically
+    valuable sites that have remained pristine for billions of years. The
+    Artemis Accords attempt to establish a framework for international
+    cooperation, but major spacefaring nations have yet to reach consensus
+    on property rights and environmental protection standards.
+""")
+pop.assimilate_text("""
+    Tidal acceleration gradually increases the orbital distance between Earth
+    and Moon at a rate of approximately 3.8 centimeters per year. This
+    phenomenon results from angular momentum transfer via gravitational
+    interaction, simultaneously slowing Earth's rotation and lengthening the
+    day. Paleontological evidence from tidal rhythmites suggests that 620
+    million years ago, a day lasted only 21.9 hours and the lunar month was
+    just 27.5 days. Projections indicate that in approximately 600 million
+    years, tidal effects will no longer support total solar eclipses.
+""")
 
 # Sleep/dream cycle — each individual consolidates according to its genome
 pop.sleep_cycle()
