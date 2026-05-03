@@ -192,7 +192,6 @@ print(coder.run("Write a script that finds duplicate files by hash in the curren
 ```
 
 
-```
 
 ### Multi-Agent Debate with NPCArray
 
