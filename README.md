@@ -26,10 +26,12 @@ simon = NPC(
 )
 response = simon.get_llm_response("What is the most important territory to retain in the Andes?")
 print(response['response'])
-# My friend, you speak of the highlands where our liberty is carved in stone. If we must speak of the most critical territory to hold within these mountains, it is the **Viceroyalty of Peru** and the heart of the **Republic of Gran Colombia** united. 
-# To lose the passes of the Andes or the cities of Lima and Quito would be to hand the crown its final stronghold in the south. The Spanish crown built its power upon the wealth and control of these highlands. If the Andes are to be truly ours, the people of the **Peruvian** and **New Grancolombian** highlands must stand as one, free from the Bourbons. 
-# The mountain peaks themselves are the fortress we guard. Without the full liberation of the southern Andes, our revolution is incomplete. We fight not for land's sake, but for the soul of the continent. Every square mile of the Andes that bears the name of the Republic is a step forward in our quest for eternal freedom.
-# *Long live the liberty of the Andes!*
+```
+```
+My friend, you speak of the highlands where our liberty is carved in stone. If we must speak of the most critical territory to hold within these mountains, it is the **Viceroyalty of Peru** and the heart of the **Republic of Gran Colombia** united. 
+To lose the passes of the Andes or the cities of Lima and Quito would be to hand the crown its final stronghold in the south. The Spanish crown built its power upon the wealth and control of these highlands. If the Andes are to be truly ours, the people of the **Peruvian** and **New Grancolombian** highlands must stand as one, free from the Bourbons. 
+The mountain peaks themselves are the fortress we guard. Without the full liberation of the southern Andes, our revolution is incomplete. We fight not for land's sake, but for the soul of the continent. Every square mile of the Andes that bears the name of the Republic is a step forward in our quest for eternal freedom.
+*Long live the liberty of the Andes!*
 ```
 
 ### Direct LLM call
@@ -40,36 +42,44 @@ from npcpy import get_llm_response
 
 response = get_llm_response("Who was the celtic god that helped cuchulainn in his time of need as the forces of medb descended upon the men of ulster?", model='gemma4:31b', provider='ollama')
 print(response['response'])
-# Cú Chulainn was primarily aided by his divine father, the god Lugh, and his foster-father, the warrior-god Fergus mac Róich, as well as the magical support of his teacher Scáthach.
-
-# or use ollama's cloud models
+```
+```
+Cú Chulainn was primarily aided by his divine father, the god Lugh, and his foster-father, the warrior-god Fergus mac Róich, as well as the magical support of his teacher Scáthach.
+```
+```python
+# try ollama's cloud models
 alicanto_test = get_llm_response('what does alicanto the bird show travelers in the night?', model='minimax-m2.7:cloud', provider='ollama',)
 
 print(alicanto_test['response'])
-
-# The legend of the **Alicanto** says that at night the bird’s feathers glow like lanterns. When a traveler sees that soft, phosphorescent light, it isn’t just a pretty sight – it’s a sign‑post. The bird **shows the way to hidden water (and sometimes to buried silver or gold)** in the Atacama Desert.
+```
+```
+The legend of the **Alicanto** says that at night the bird’s feathers glow like lanterns. 
+When a traveler sees that soft, phosphorescent light, it isn’t just a pretty sight – it’s a sign‑post. 
+The bird **shows the way to hidden water (and sometimes to buried silver or gold)** in the Atacama Desert.
 ```
 
 ### Agent with tools
+The `Agent` class in `npcpy` comes with a set of default tools (sh, python, edit_file, web_search, etc.)
 
 ```python
 from npcpy import Agent
-
-# Agent — comes with default tools (sh, python, edit_file, web_search, etc.)
 agent = Agent(name='File Operator', model='qwen3.5:2b', provider='ollama')
 print(agent.run("Find all Python files over 500 lines in this repo and list them"))
-# The following Python files contain more than 500 lines:
-# - `./npcpy/npc_sysenv.py` (1486 lines)
-# - `./npcpy/memory/knowledge_graph.py` (1449 lines)
-# - `./npcpy/memory/kg_vis.py` (767 lines)
-# - `./npcpy/memory/kg_population.py` (618 lines)
-# ...
+```
+```
+The following Python files contain more than 500 lines:
+ - `./npcpy/npc_sysenv.py` (1486 lines)
+ - `./npcpy/memory/knowledge_graph.py` (1449 lines)
+ - `./npcpy/memory/kg_vis.py` (767 lines)
+ - `./npcpy/memory/kg_population.py` (618 lines)
+...
 ```
 
+### ToolAgent 
 
+Attach custom tools to a `ToolAgent`. 
+Here is an example which lets an agent generate images, fine-tune diffusion models, and then use the fine-tuned models for generation.
 
-
-### ToolAgent — custom tools for image generation and diffusion fine-tuning
 ```python
 from npcpy import ToolAgent, gen_image
 from npcpy.ft.diff import train_diffusion, generate_image, DiffusionConfig
@@ -140,12 +150,14 @@ def finetune_diffusion_model(
 # Create an agent with image generation and fine-tuning capabilities
 creative_agent = ToolAgent(
     name='creative_diffusion',
-    primary_directive="You help users generate images and fine-tune diffusion models. "
-                      "You can: 1) Generate images using gen_image() with various prompts, "
-                      "2) Fetch image datasets from HuggingFace, "
-                      "3) Fine-tune diffusion models on custom image sets. "
-                      "When a user submits an image or describes a style they like, "
-                      "offer to fetch similar images from a dataset and fine-tune a model.",
+    primary_directive="""
+        You help users generate images and fine-tune diffusion models.
+        You can: 1) Generate images using gen_image() with various prompts,
+        2) Fetch image datasets from HuggingFace,
+        3) Fine-tune diffusion models on custom image sets.
+        When a user submits an image or describes a style they like,
+        offer to fetch similar images from a dataset and fine-tune a model.
+    """,
     tools=[fetch_image_dataset, finetune_diffusion_model, gen_image],
     model='qwen3.5:2b',
     provider='ollama'
@@ -156,10 +168,7 @@ print(creative_agent.run("Generate 3 images of geometric patterns with circles a
 
 # Example 2: User submits an image and wants similar ones
 # The agent can fetch a dataset of patterns and fine-tune a model
-print(creative_agent.run(
-    "I like abstract geometric patterns. Can you fetch the cifar10 dataset, "
-    "and fine-tune a diffusion model that can generate images like these patterns?"
-))
+print(creative_agent.run("I like abstract geometric patterns. Can you fetch the cifar10 dataset and fine-tune a diffusion model that can generate images like these patterns?"))
 ```
 
 ### CodingAgent — auto-executes code blocks from LLM responses
@@ -183,6 +192,154 @@ print(coder.run("Write a script that finds duplicate files by hash in the curren
 ```
 
 
+```
+
+### Multi-Agent Debate with NPCArray
+
+To run a true multi-agent debate where agents react to each other's responses:
+
+```python
+from npcpy.npc_compiler import NPC
+from npcpy.npc_array import NPCArray
+
+# Create a debate team with role-based personas
+roles = [
+    ("MathSolver", "You are a meticulous math solver. Show all steps clearly."),
+    ("Skeptic", "You critically check for errors and assumptions."),
+    ("Analyst", "You identify the core mathematical structure."),
+    ("Verifier", "You confirm the final answer is correct.")
+]
+
+npcs = [
+    NPC(name=role, primary_directive=directive, model="qwen3.5:cloud", provider="ollama")
+    for role, directive in roles
+]
+
+team = NPCArray.from_npcs(npcs)
+
+# Run parallel debate on a complex problem
+problem = "GSM8k: James buys a jar of hot sauce with 5 peppers and triples the peppers every year. How many after 4 years?"
+
+# Get initial responses in parallel (one prompt per NPC)
+initial_responses = team.infer(f"Solve this problem:\n{problem}").collect()
+
+for npc, response in zip(npcs, initial_responses.data):
+    print(f"[{npc.name}] {response[:200]}...")
+
+# True debate: each agent gets a personalized prompt with other agents' responses
+def create_debate_prompt(previous_responses, my_idx, agent_name, problem_text):
+    """Create a personalized debate prompt for a specific agent"""
+    my_response = previous_responses[my_idx]
+    other_responses = [
+        f"[{npcs[j].name}]: {previous_responses[j][:500]}" 
+        for j in range(len(npcs)) if j != my_idx
+    ]
+    debate_prompt = f"""Original problem: {problem_text}
+
+        Your previous response: {my_response[:300]}...
+        
+        Other agents\' responses:""" + "\n\n".join(other_responses) + """
+        Critique the other approaches. Did they make different assumptions?
+        What did they see that you missed? Refine your solution."""
+
+    return debate_prompt
+# Debate rounds
+responses_data = initial_responses.data.tolist()
+problem_text = problem
+
+for round_num in range(3):
+    print(f"\n=== Debate Round {round_num + 1} ===")
+    
+    # Create personalized prompts for each agent
+    personalized_prompts = [
+        create_debate_prompt(responses_data, i, npcs[i].name, problem_text)
+        for i in range(len(npcs))
+    ]
+    
+    # Run inference with different prompts per agent
+    # Shape: (n_models, n_prompts) - extract diagonal for each agent's response to its own prompt
+    responses = team.infer(personalized_prompts).collect()
+    
+    # Extract each model's response to its own personalized prompt
+    responses_data = [responses.data[i, i] for i in range(len(npcs))]
+    
+    # Print each agent's refined response
+    for i, npc in enumerate(npcs):
+        response = responses_data[i]
+        print(f"[{npc.name}] {response[:200]}...")
+
+# Alternative: use reduce to get consensus
+consensus = team.infer(responses_data[0]).consensus(axis=0).collect()
+print(f"\nFinal consensus: {consensus.data[0][:500]}...")
+```
+
+For iterative refinement (same prompt to all agents, updating each round):
+
+```python
+# Simple chain refinement: all agents see same synthesis
+from npcpy.npc_array import NPCArray
+
+def synthesis_round(all_responses):
+    return f"""Given these perspectives:
+{chr(10).join([f'- {r[:200]}...' for r in all_responses])}
+
+Re-solve the problem incorporating insights from all approaches."""
+
+# Chain runs the synthesis function on all responses, then feeds result back
+refined = team.infer(f"Solve: {problem}").chain(
+    synthesis_round, 
+    n_rounds=3
+).collect()
+```
+
+### Knowledge Graph with Sleep/Dream Lifecycle
+
+```python
+from npcpy.memory.knowledge_graph import (
+    kg_initial, kg_evolve_incremental, kg_sleep_process, kg_dream_process
+)
+from npcpy.llm_funcs import get_llm_response
+
+# Initialize KG from text corpus
+content_text = """Pirate Prentice is in the lavatory stands pissing. Then he threads himself into a wool robe he wears inside out.
+The day feels like rain."""
+
+kg = kg_initial(content_text, model="gemma3:4b", provider="ollama")
+
+# Evolve with new content
+new_content = """The phone call, when it comes, rips easily across the room.
+Pirate knows it's got to be for him."""
+
+kg, _ = kg_evolve_incremental(kg, new_content, model="gemma3:4b", provider="ollama")
+
+# Sleep - consolidate and prune
+kg, sleep_report = kg_sleep_process(kg, model="gemma3:4b", provider="ollama")
+
+# Dream - generate speculative connections
+kg, dream_report = kg_dream_process(kg, model="gemma3:4b", provider="ollama", num_seeds=3)
+
+print(f"KG has {len(kg['facts'])} facts and {len(kg['concepts'])} concepts")
+```
+
+### Flask Serving for NPC Teams
+
+```python
+from npcpy.serve import start_flask_server
+import os
+
+# Serve your NPC team via REST API
+if __name__ == "__main__":
+    is_dev = not getattr(os.sys, 'frozen', False)
+    port = os.environ.get('INCOGNIDE_PORT', '5437' if is_dev else '5337')
+    frontend_port = os.environ.get('FRONTEND_PORT', '7337' if port == '5437' else '6337')
+
+    start_flask_server(
+        port=port,
+        cors_origins=f"localhost:{frontend_port}",
+        db_path=os.path.expanduser('~/npcsh_history.db'),
+        user_npc_directory=os.path.expanduser('~/.npcsh/npc_team'),
+        debug=False
+    )
 ```
 
 ### Streaming
@@ -268,11 +425,11 @@ from npcpy.llm_funcs import gen_image, gen_video
 from npcpy.gen.audio_gen import text_to_speech
 
 # Image — OpenAI, Gemini, Ollama, or diffusers
-images = gen_image("A sunset over the mountains", model='gpt-image-1', provider='openai')
+images = gen_image("A sunset over the mountains", model='gemma3:4b', provider='ollama')
 images[0].save("sunset.png")
 
 # Audio — OpenAI, Gemini, ElevenLabs, Kokoro, gTTS
-audio_bytes = text_to_speech("Hello from npcpy!", engine="openai", voice="alloy")
+audio_bytes = text_to_speech("Hello from npcpy!", engine="gtts")
 with open("hello.wav", "wb") as f:
     f.write(audio_bytes)
 
@@ -518,15 +675,30 @@ from npcpy.npc_array import NPCArray
 
 # Three NPCs with different models/providers
 npcs = [
-    NPC(name='drafter', primary_directive='Draft concise commit messages.', model='qwen3:4b', provider='ollama'),
-    NPC(name='reviewer', primary_directive='Review and improve commit messages for clarity.', model='gemini-2.5-flash', provider='gemini'),
-    NPC(name='enforcer', primary_directive='Check commit messages follow Conventional Commits spec.', model='gemini-2.5-flash', provider='gemini'),
+    NPC(name='gramsci_1930', primary_directive='''
+        You are Antonio Gramsci writing in his Prison Notebook in 1930.
+        Defend the concept of hegemony as the predominance of one social group
+        over others through cultural and ideological leadership rather than
+        mere force. Argue that consent is more durable than coercion.
+    ''', model='qwen3:4b', provider='ollama'),
+    NPC(name='critic_1970', primary_directive='''
+        You are a post-structuralist critic in 1970 responding to Gramsci.
+        Question whether hegemony can truly explain contemporary power structures
+        or if it relies on an outdated base-superstructure model that
+        underestimates the autonomy of cultural production.
+    ''', model='qwen3:4b', provider='ollama'),
+    NPC(name='historian_present', primary_directive='''
+        You are a contemporary historian with access to the complete Prison
+        Notebooks and subsequent scholarship. Evaluate both Gramsci's original
+        formulation and the post-structuralist critique in light of the
+        collapse of actually existing socialism and the rise of neoliberalism.
+    ''', model='qwen3:4b', provider='ollama'),
 ]
 
 arr = NPCArray.from_npcs(npcs)
 
 # Run the same jinx on all three in parallel, collect results
-results = arr.jinx('summarize', inputs={'topic': 'fix auth middleware to propagate clerkUserId through GraphQL resolvers'}).collect()
+results = arr.jinx('analyze', inputs={'topic': 'Has the concept of hegemony become more or less relevant in the age of digital platforms and algorithmic governance?'}).collect()
 for npc, result in zip(npcs, results.data):
     print(f"[{npc.name}] {result}")
 ```
@@ -550,25 +722,30 @@ from npcpy.memory.knowledge_graph import (
     kg_initial, kg_evolve_incremental, kg_sleep_process,
     kg_dream_process, kg_hybrid_search,
 )
-from npcpy.data.load_file import load_file_contents
 
-# Seed the KG from a design doc PDF and a migration script
-design_doc = load_file_contents("docs/auth_migration_plan.pdf")
-migration_sql = load_file_contents("migrations/003_clerk_auth.sql")
-
+# Seed the KG with Gramsci's Prison Notebooks
 kg = kg_initial(
-    content=design_doc + "\n\n" + migration_sql,
+    content="""
+        The crisis consists precisely in the fact that the old is dying and the new
+        cannot be born. In this interregnum a great variety of morbid symptoms appear.
+        The traditional ruling class has lost its consensus, that is, the consent of
+        those over whom it rules. Force alone is not sufficient; what is needed is the
+        construction of a new hegemony, the creation of a new collective will.
+    """,
     model="qwen3:4b", provider="ollama",
 )
 
-# Assimilate follow-up commits and PR descriptions
+# Assimilate more content on organic vs traditional intellectuals
 kg, _ = kg_evolve_incremental(
     kg,
-    new_content_text=(
-        "PR #412: Replaced Stripe customer-session lookup with Clerk JWT verification. "
-        "Removed /api/stripe/webhook endpoint. Added ClerkMiddleware to all protected routes. "
-        "CSP headers updated to allow clerk.accounts.dev origin."
-    ),
+    new_content_text="""
+        The distinction between organic and traditional intellectuals is fundamental.
+        Traditional intellectuals conceive of themselves as autonomous from ruling
+        groups, yet every social group has its own category of organic intellectuals
+        that give it homogeneity and awareness of its own function. The organic
+        intellectual emerges from within the class itself, while the traditional
+        sees himself as existing above the social structure.
+    """,
     model="qwen3:4b", provider="ollama", get_concepts=True,
 )
 
@@ -579,32 +756,32 @@ kg, sleep_report = kg_sleep_process(kg, model="qwen3:4b", provider="ollama")
 kg, dream_report = kg_dream_process(kg, model="qwen3:4b", provider="ollama")
 
 # Search across facts, concepts, and speculative edges
-results = kg_hybrid_search(kg, "How does auth propagate through GraphQL resolvers?",
+results = kg_hybrid_search(kg, "What constitutes hegemony in Gramsci's framework?",
                            model="qwen3:4b", provider="ollama")
 for r in results:
     print(r['score'], r['text'])
 print(f"{len(kg['facts'])} facts, {len(kg['concepts'])} concepts")
 ```
 
-Extract structured memories from conversations:
+Extract structured memories:
 
 ```python
 from npcpy.llm_funcs import get_facts
 
-conversation = """
-User: We're ripping out Stripe entirely and moving auth to Clerk. The JWT verification
-      will happen in ClerkMiddleware instead of the custom verify_stripe_session helper.
-Assistant: Got it. I'll update the middleware chain. What about the existing session store?
-User: Kill the Redis session cache — Clerk handles session state on their end.
-      Also, the CSP headers need clerk.accounts.dev and clerk.enpisi.com added to connect-src.
+prison_notebooks = """
+    Civil society is the sphere of hegemony, the terrain where the dominant
+    group exercises consent through cultural and ideological leadership.
+    Unlike political society which operates through coercion and state apparatus,
+    civil society comprises the church, schools, trade unions, and media.
+    The ruling class maintains power not merely through force but through the
+    production of consent, shaping common sense itself through cultural institutions.
+    War of position requires patient trench warfare on this terrain, building
+    counter-hegemonic institutions rather than frontal assault on the state.
 """
 
-facts = get_facts(conversation, model="qwen3:4b", provider="ollama")
+facts = get_facts(prison_notebooks, model="qwen3:4b", provider="ollama")
 for f in facts:
-    print(f"[{f.get('category', 'general')}] {f['statement']}")
-# [architecture] Auth provider migrated from Stripe to Clerk with JWT verification via ClerkMiddleware
-# [infrastructure] Redis session cache removed — Clerk manages session state
-# [security] CSP connect-src updated to include clerk.accounts.dev and clerk.enpisi.com
+    print(f"[{f.get('type', 'general')}] {f['statement']}")
 ```
 
 </details>
@@ -615,26 +792,37 @@ for f in facts:
 Maintain a population of KG variants that evolve independently. Each individual has Poisson-sampled search parameters, producing different traversals each query. Selection pressure from response ranking drives convergence toward useful graph structures.
 
 ```python
-from pathlib import Path
 from npcpy.memory.kg_population import SememolutionPopulation
-from npcpy.data.load_file import load_file_contents
 
 pop = SememolutionPopulation(population_size=100, sample_size=10)
 pop.initialize()
 
-# Ingest a heterogeneous corpus — PDFs, DOCX, source code, meeting transcripts
-corpus_dirs = [Path("docs/architecture"), Path("docs/meeting_notes"), Path("src/auth")]
-for d in corpus_dirs:
-    for f in sorted(d.glob("*")):
-        if f.suffix in (".pdf", ".docx", ".md", ".py", ".ts", ".txt"):
-            text = load_file_contents(str(f))
-            pop.assimilate_text(text)
+pop.assimilate_text("""
+    The debate over lunar resource extraction has intensified since the discovery
+    of water ice in permanently shadowed regions at the lunar poles. While some
+    researchers argue that commercial mining could fund further exploration,
+    others warn that unregulated extraction could contaminate scientifically
+    valuable sites that have remained pristine for billions of years. The
+    Artemis Accords attempt to establish a framework for international
+    cooperation, but major spacefaring nations have yet to reach consensus
+    on property rights and environmental protection standards.
+""")
+pop.assimilate_text("""
+    Tidal acceleration gradually increases the orbital distance between Earth
+    and Moon at a rate of approximately 3.8 centimeters per year. This
+    phenomenon results from angular momentum transfer via gravitational
+    interaction, simultaneously slowing Earth's rotation and lengthening the
+    day. Paleontological evidence from tidal rhythmites suggests that 620
+    million years ago, a day lasted only 21.9 hours and the lunar month was
+    just 27.5 days. Projections indicate that in approximately 600 million
+    years, tidal effects will no longer support total solar eclipses.
+""")
 
 # Sleep/dream cycle — each individual consolidates according to its genome
 pop.sleep_cycle()
 
 # Query: sample 10 individuals, generate competing responses, rank them
-rankings = pop.query_and_rank("How does the auth middleware chain interact with the GraphQL context?")
+rankings = pop.query_and_rank("What are the central themes connecting these documents?")
 for rank, entry in enumerate(rankings[:3], 1):
     print(f"#{rank} (individual {entry['id']}, score {entry['score']:.3f}): {entry['response'][:120]}...")
 
@@ -651,40 +839,108 @@ print(f"Generation {stats['generation']} | avg fitness {stats['avg_fitness']:.3f
 <details>
 <summary><b>Fine-tuning (SFT, RL, MLX)</b></summary>
 
+**RL Training with DPO for Tool-Calling Agents**
+
 ```python
-from npcpy.ft.sft import run_sft
+from npcpy.npc_compiler import NPC
+from npcpy.ft.rl import RLConfig, train_with_dpo, load_rl_model
+import json
 
-# Train a model to extract structured decisions from meeting notes
-# LoRA fine-tuning — auto-uses MLX on Apple Silicon
-X_train = [
-    "Meeting: Auth Migration Sync (2025-01-15)\nAttendees: Sarah, Mike, Priya\n"
-    "Discussion: Evaluated Clerk vs Auth0 for replacing Stripe auth. Clerk chosen "
-    "for lower latency and native Next.js support. Migration starts sprint 12. "
-    "Redis session store will be removed once Clerk JWT verification is stable.",
+def npcsh_reward(trace):
+    """Reward function for shell assistant responses."""
+    output = trace.get('final_output', '')
+    completed = trace.get('completed', False)
+    score = 0.0
+    if completed:
+        score += 2.0
+    if 50 < len(output) < 1500:
+        score += 1.0
+    if '```' in output:
+        score += 1.0
+    if any(cmd in output.lower() for cmd in ['ls', 'cd', 'cat', 'grep', 'find', 'pip', 'git']):
+        score += 0.3
+    return max(0.0, min(10.0, score + 5.0))
 
-    "Meeting: API Rate Limiting Review (2025-01-22)\nAttendees: Mike, Jordan\n"
-    "Discussion: Current per-session token bucket is incompatible with Clerk's "
-    "stateless JWTs. Agreed to switch to per-IP sliding window with 100 req/min "
-    "default. Premium tier gets 500 req/min. Jordan to implement by Friday.",
+# Load preference pairs from agent traces
+traces = []
+with open('preference_pairs.jsonl', 'r') as f:
+    for line in f:
+        pair = json.loads(line)
+        traces.append({
+            'task_prompt': pair['prompt'],
+            'final_output': pair['chosen'],
+            'reward': pair.get('chosen_score', 8.0),
+            'completed': True
+        })
+        traces.append({
+            'task_prompt': pair['prompt'],
+            'final_output': pair['rejected'],
+            'reward': pair.get('rejected_score', 3.0),
+            'completed': False
+        })
 
-    "Meeting: GraphQL Schema Freeze (2025-02-01)\nAttendees: Sarah, Priya, Jordan\n"
-    "Discussion: Schema v2 locked for release. Nested auth context propagation "
-    "through dataloaders confirmed working. New 'viewer' pattern adopted for "
-    "all authenticated queries. Breaking changes documented in CHANGELOG.",
+config = RLConfig(
+    base_model_name="Qwen/Qwen2.5-0.5B-Instruct",
+    adapter_path="./npcsh_adapter",
+    num_train_epochs=3,
+    per_device_train_batch_size=2,
+    learning_rate=5e-5,
+    beta=0.1
+)
 
-    "Meeting: Deployment Postmortem (2025-02-10)\nAttendees: full team\n"
-    "Discussion: Production outage caused by missing CSP header for clerk.accounts.dev. "
-    "Root cause: deploy script didn't pick up new env vars. Fix: added CSP validation "
-    "to CI pipeline. New rule: all external origins must be in csp_allowlist.json.",
-]
-y_train = [
-    '{"decisions": [{"what": "Adopt Clerk for auth", "why": "Lower latency, native Next.js support", "owner": "team", "deadline": "sprint 12"}, {"what": "Remove Redis session store", "why": "Clerk handles session state", "owner": "team", "deadline": "after JWT verification stable"}]}',
-    '{"decisions": [{"what": "Switch to per-IP sliding window rate limiter", "why": "Token bucket incompatible with stateless JWTs", "owner": "Jordan", "deadline": "Friday"}, {"what": "Set rate limits to 100/min default, 500/min premium", "why": "Tiered access control", "owner": "Jordan", "deadline": "Friday"}]}',
-    '{"decisions": [{"what": "Freeze GraphQL schema v2", "why": "Release readiness", "owner": "Sarah", "deadline": "immediate"}, {"what": "Adopt viewer pattern for authenticated queries", "why": "Consistent auth context in nested resolvers", "owner": "Priya", "deadline": "immediate"}]}',
-    '{"decisions": [{"what": "Add CSP validation to CI pipeline", "why": "Prevent missing CSP headers in deploys", "owner": "team", "deadline": "immediate"}, {"what": "Require external origins in csp_allowlist.json", "why": "Enforce explicit approval of external domains", "owner": "team", "deadline": "immediate"}]}',
-]
+adapter_path = train_with_dpo(traces, config)
+print(f"Trained adapter saved to: {adapter_path}")
+```
 
-model_path = run_sft(X_train=X_train, y_train=y_train)
+**SFT for Scientific Writing Style Transfer**
+
+```python
+from npcpy.llm_funcs import get_llm_response
+from npcpy.ft.sft import SFTConfig, run_sft
+
+# Generate scientific writing dataset from style samples
+def generate_scientific_trace(question, reasoning_model, converter_model, style_chunks):
+    """Generate native reasoning then rewrite in scientific voice."""
+    # Step 1: Get reasoning trace
+    native_prompt = f"""Answer this question with detailed reasoning.
+Question: {question}
+Provide your step-by-step reasoning and final answer."""
+    native_response = get_llm_response(native_prompt, model=reasoning_model, provider='ollama')
+    native_trace = native_response['response']
+
+    # Step 2: Rewrite in scientific style
+    style_context = '\n\n---\n\n'.join(style_chunks[:8])
+    rewrite_prompt = f"""Rewrite the following reasoning trace in the scientific writing style demonstrated by the excerpts below.
+Original Reasoning Trace:
+{native_trace}
+
+SCIENTIFIC PAPER EXCERPTS:
+{style_context}
+
+Task:
+1. Rewrite the reasoning in the style of the scientific paper excerpts
+2. Use LaTeX notation where appropriate
+3. Preserve the logical flow and factual content
+4. Match the prose density and intellectual register"""
+
+    rewritten = get_llm_response(rewrite_prompt, model=converter_model, provider='ollama')
+    return rewritten['response']
+
+# Train on generated examples
+X_train = ["What is the relationship between quantum contextuality and natural language interpretation?"]
+y_train = [generate_scientific_trace(X_train[0], 'qwen3:8b', 'qwen3:8b', style_chunks)]
+
+sft_config = SFTConfig(
+    base_model_name="Qwen/Qwen3-4B",
+    output_model_path="models/scientific-writer",
+    device='mlx',
+    num_train_epochs=100,
+    per_device_train_batch_size=1,
+    lora_r=128,
+    lora_alpha=256
+)
+
+model_path = run_sft(X_train, y_train, config=sft_config, format_style="llama")
 ```
 
 </details>
