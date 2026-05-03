@@ -4331,7 +4331,7 @@ class CodingAgent(Agent):
 
 def _is_cli_provider(provider: str) -> bool:
     """Check if provider is a CLI-based agent."""
-    return provider in ("claude_code", "claude", "opencode", "kimi_code", "kimi", "kilo_code", "kilo")
+    return provider in ("claude_code", "claude", "opencode", "kimi_code", "kimi", "kilo_code", "kilo", "npcsh", "gemini", "codex", "nanocoder")
 
 
 class CLIAgent(Agent):
@@ -4348,6 +4348,10 @@ class CLIAgent(Agent):
         "kimi": ["kimi"],
         "kilo_code": ["kilo", "run"],
         "kilo": ["kilo", "run"],
+        "npcsh": ["npcsh"],
+        "gemini": ["gemini"],
+        "codex": ["codex"],
+        "nanocoder": ["nanocoder"],
     }
 
     def __init__(
