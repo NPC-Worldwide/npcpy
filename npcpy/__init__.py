@@ -11,7 +11,7 @@ from . import memory
 from . import tools
 
 # Core types
-from .npc_compiler import NPC, Team, Jinx, Agent, ToolAgent, CodingAgent
+from .npc_compiler import NPC, Team, Jinx, Agent, ToolAgent, CodingAgent, CLIAgent
 
 # LLM
 from .llm_funcs import get_llm_response, check_llm_command, execute_llm_command, gen_image, gen_video

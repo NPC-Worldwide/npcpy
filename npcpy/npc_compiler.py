@@ -4327,3 +4327,98 @@ class CodingAgent(Agent):
             current_input = "Code execution results:\n" + "\n\n".join(execution_results)
 
         return response_text
+
+
+def _is_cli_provider(provider: str) -> bool:
+    """Check if provider is a CLI-based agent."""
+    return provider in ("claude_code", "claude", "opencode", "kimi_code", "kimi", "kilo_code", "kilo", "npcsh", "gemini", "codex", "nanocoder")
+
+
+class CLIAgent(Agent):
+    """Agent that runs CLI tools (claude, opencode, kimi, kilo) as subprocesses.
+
+    Session context is managed by npcsh via temp files tied to conversation_id.
+    """
+
+    CLI_COMMANDS = {
+        "claude_code": ["claude"],
+        "claude": ["claude"],
+        "opencode": ["opencode", "run"],
+        "kimi_code": ["kimi"],
+        "kimi": ["kimi"],
+        "kilo_code": ["kilo", "run"],
+        "kilo": ["kilo", "run"],
+        "npcsh": ["npcsh"],
+        "gemini": ["gemini"],
+        "codex": ["codex"],
+        "nanocoder": ["nanocoder"],
+    }
+
+    def __init__(
+        self,
+        cli_provider: str,
+        name: str = "cli_agent",
+        primary_directive: str = None,
+        model: str = None,
+        session_file: str = None,
+        **kwargs,
+    ):
+        if primary_directive is None:
+            primary_directive = f"CLI agent using {cli_provider} for code tasks."
+
+        super().__init__(
+            name=name,
+            primary_directive=primary_directive,
+            model=model,
+            provider=cli_provider,
+            **kwargs,
+        )
+
+        self.cli_provider = cli_provider
+        self.session_file = session_file
+
+    def run(self, input_text: str, verbose: bool = False, session_context: str = None, **kwargs):
+        """Run CLI subprocess with optional session context.
+
+        Args:
+            input_text: The prompt to send
+            verbose: Print debug output
+            session_context: Accumulated conversation context from npcsh (prepended to prompt)
+        """
+        import subprocess
+
+        full_prompt = f"{session_context}\n\n{input_text}" if session_context else input_text
+
+        cmd = self.CLI_COMMANDS.get(self.cli_provider, [self.cli_provider]).copy()
+        cmd.append(full_prompt)
+
+        if verbose:
+            print(f"[CLIAgent:{self.name}] running: {' '.join(cmd)}")
+
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+
+            output_lines = []
+            for line in iter(process.stdout.readline, ""):
+                line = line.rstrip()
+                if line:
+                    output_lines.append(line)
+                    if verbose:
+                        print(line)
+
+            process.wait()
+            output = "\n".join(output_lines)
+
+            if process.returncode != 0 and verbose:
+                print(f"[CLIAgent:{self.name}] exited with code {process.returncode}")
+
+            return output
+
+        except Exception as e:
+            return f"Error running CLI: {e}"
