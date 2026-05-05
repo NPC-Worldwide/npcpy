@@ -654,12 +654,94 @@ def render_markdown(text: str) -> None:
 
     inside_code_block = False
     code_lines = []
+    prose_lines = []
     lang = None
+
+    def _flush_prose():
+        if not prose_lines:
+            return
+        import re
+        # Normalize CR/CRLF and collapse 3+ consecutive blank lines to 2.
+        block = "\n".join(ln.rstrip('\r') for ln in prose_lines)
+        block = re.sub(r'\n{3,}', '\n\n', block)
+
+        _box_re = re.compile(r'[─-╿]')  # U+2500–U+257F box drawing block
+
+        def _is_structured(ln: str) -> bool:
+            """Box-drawing art or 4-space-indented code: must be rendered verbatim."""
+            s = ln.strip()
+            return bool(s) and (bool(_box_re.search(ln)) or ln.startswith('    '))
+
+        lines = block.split('\n')
+        segments: list = []   # (is_structured: bool, lines: list[str])
+        struct_acc: list = []
+        prose_acc: list = []
+
+        def _commit_struct():
+            if struct_acc:
+                segments.append((True, list(struct_acc)))
+                struct_acc.clear()
+
+        def _commit_prose():
+            if prose_acc:
+                acc = list(prose_acc)
+                while acc and not acc[0].strip():
+                    acc.pop(0)
+                while acc and not acc[-1].strip():
+                    acc.pop()
+                if acc:
+                    segments.append((False, acc))
+                prose_acc.clear()
+
+        in_struct = False
+        for i, ln in enumerate(lines):
+            if _is_structured(ln):
+                if not in_struct:
+                    _commit_prose()
+                    in_struct = True
+                struct_acc.append(ln)
+            elif not ln.strip():
+                if in_struct:
+                    # Suppress blank if the next non-blank line is also structured.
+                    j = i + 1
+                    while j < len(lines) and not lines[j].strip():
+                        j += 1
+                    if j < len(lines) and _is_structured(lines[j]):
+                        pass  # drop blank between consecutive structured lines
+                    else:
+                        _commit_struct()
+                        in_struct = False
+                        prose_acc.append(ln)
+                else:
+                    prose_acc.append(ln)
+            else:
+                if in_struct:
+                    _commit_struct()
+                    in_struct = False
+                prose_acc.append(ln)
+
+        if in_struct:
+            _commit_struct()
+        else:
+            _commit_prose()
+
+        for is_str, seg_lines in segments:
+            seg = '\n'.join(seg_lines)
+            if not seg.strip():
+                continue
+            if is_str:
+                # Verbatim output preserves box-drawing structure.
+                # Rich Markdown would join consecutive lines as soft-breaks.
+                sys.stdout.write(seg + '\n')
+                sys.stdout.flush()
+            else:
+                console.print(Markdown(seg))
+
+        prose_lines.clear()
 
     for line in lines:
         if line.startswith("```"):
             if inside_code_block:
-                
                 code = "\n".join(code_lines)
                 if code.strip():
                     syntax = Syntax(
@@ -668,14 +750,15 @@ def render_markdown(text: str) -> None:
                     console.print(syntax)
                 code_lines = []
             else:
-                
+                _flush_prose()
                 lang = line[3:].strip() or None
             inside_code_block = not inside_code_block
         elif inside_code_block:
             code_lines.append(line)
         else:
-            
-            console.print(Markdown(line))
+            prose_lines.append(line)
+
+    _flush_prose()
 
 def get_directory_npcs(directory: str = None) -> List[str]:
     """
@@ -851,7 +934,7 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
     if rerender:
         sys.stdout.write('\033[s')
         sys.stdout.flush()
-    
+
     try:
         for chunk in response:
 
@@ -868,7 +951,7 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
                                 if isinstance(tool_call["function"]["arguments"], dict):
                                     tool_call_data["arguments"] += json.dumps(tool_call["function"]["arguments"])
                                 else:
-                                    tool_call_data["arguments"] += tool_call["function"]["arguments"]                
+                                    tool_call_data["arguments"] += tool_call["function"]["arguments"]
                 chunk_content = chunk["message"]["content"] if "message" in chunk and "content" in chunk["message"] else ""
                 reasoning_content = chunk['message'].get('thinking', '') if "message" in chunk and "thinking" in chunk['message'] else ""
                 if show:
@@ -879,7 +962,7 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
                 else:
                     print('.', end="", flush=True)
                     dot_count += 1
-                    
+
             else:
                 for c in chunk.choices:
                     if hasattr(c.delta, "tool_calls") and c.delta.tool_calls:
@@ -891,13 +974,13 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
                                     tool_call_data["function_name"] = tool_call.function.name
                                 if hasattr(tool_call.function, "arguments") and tool_call.function.arguments:
                                     tool_call_data["arguments"] += tool_call.function.arguments
-                
+
                 chunk_content = ''
                 reasoning_content = ''
                 for c in chunk.choices:
-                    if hasattr(c.delta, "reasoning_content"):        
+                    if hasattr(c.delta, "reasoning_content"):
                         reasoning_content += c.delta.reasoning_content
-                                        
+
                 chunk_content += "".join(
                     c.delta.content for c in chunk.choices if c.delta.content
                 )
@@ -913,7 +996,7 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
             if not chunk_content:
                 continue
             str_output += chunk_content
-    
+
     except KeyboardInterrupt:
         interrupted = True
         print('\n⚠️ Stream interrupted by user')
