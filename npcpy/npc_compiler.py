@@ -2533,7 +2533,10 @@ Requirements:
             jinxes=jinxes_to_use,
             **kwargs,
         )
-    
+
+    def run(self, input_text: str, **kwargs):
+        return self.check_llm_command(input_text, **kwargs)
+
     def handle_agent_pass(self, 
                             npc_to_pass,
                             command, 
@@ -3120,6 +3123,18 @@ class Team:
             if filename.endswith(".npc"):
                 npc_path = os.path.join(self.team_path, filename)
                 npc = NPC(npc_path, db_conn=self.db_conn, team=self)
+                if _is_cli_provider(npc.provider):
+                    npc = CLIAgent(
+                        cli_provider=npc.provider,
+                        name=npc.name,
+                        primary_directive=npc.primary_directive,
+                        model=npc.model,
+                        provider=npc.provider,
+                        api_url=npc.api_url,
+                        api_key=npc.api_key,
+                        db_conn=self.db_conn,
+                        team=self,
+                    )
                 self.npcs[npc.name] = npc
 
         # Load markdown agents from the project root (parent of npc_team/).
@@ -4331,7 +4346,7 @@ class CodingAgent(Agent):
 
 def _is_cli_provider(provider: str) -> bool:
     """Check if provider is a CLI-based agent."""
-    return provider in ("claude_code", "claude", "opencode", "kimi_code", "kimi", "kilo_code", "kilo", "npcsh", "gemini", "codex", "nanocoder")
+    return provider in ("claude_code", "claude", "opencode", "kimi_code", "kimi", "kilo_code", "kilo", "gemini", "codex", "nanocoder")
 
 
 class CLIAgent(Agent):
@@ -4377,114 +4392,15 @@ class CLIAgent(Agent):
         self.cli_provider = cli_provider
         self.session_file = session_file
 
-    def run(
-        self,
-        input_text: str,
-        verbose: bool = False,
-        session_context: str = None,
-        system_prompt: str = None,
-        session_id: str = None,
-        history: list = None,
-        images: list = None,
-        think: str = None,
-        stream: bool = False,
-        **kwargs,
-    ):
-        """Run CLI subprocess with full runtime support.
+    def run(self, input_text: str, verbose: bool = False, session_context: str = None, **kwargs):
+        from npcpy.gen.cli_agent import run_cli_agent
 
-        Delegates to ``npcpy.llm_funcs._run_cli_provider`` which handles
-        per-CLI command construction, streaming, session continuity, system
-        prompt wrapping, vision/reasoning flags, and usage extraction. Falls
-        back to a minimal ``subprocess.Popen`` path for providers not yet
-        covered by the runtime (e.g. ``nanocoder``).
-
-        Args:
-            input_text: The user prompt.
-            verbose: Print debug info (cmd, exit code, usage, session id).
-            session_context: Legacy — string prepended to ``input_text``.
-                New callers should prefer ``session_id`` + ``history``.
-            system_prompt: Override ``primary_directive`` for this call.
-            session_id: CLI session to resume (claude UUID, opencode/kilo
-                ``ses_…`` ID, codex thread id, kimi session id). None on
-                the first turn.
-            history: Previous turns for stateless CLIs (e.g. ``aider``).
-            images: Vision input paths (``claude_code``, ``gemini``).
-            think: Reasoning mode (``claude_code``: 'auto'; ``kimi``: any
-                truthy value).
-            stream: Live raw stream + post-render markdown. Default False
-                preserves the legacy buffered behaviour.
-
-        Returns:
-            Response string. After the call, ``self._last_session_id``,
-            ``self._last_usage`` and ``self._last_response_already_streamed``
-            carry the structured metadata.
-        """
-        from npcpy.llm_funcs import _run_cli_provider
-
-        full_prompt = (
-            f"{session_context}\n\n{input_text}" if session_context else input_text
-        )
-        sys_prompt = system_prompt or self.primary_directive
-
-        result = _run_cli_provider(
+        full_prompt = f"{session_context}\n\n{input_text}" if session_context else input_text
+        return run_cli_agent(
             provider=self.cli_provider,
-            model=self.model,
             prompt=full_prompt,
-            system_prompt=sys_prompt,
-            session_id=session_id,
-            npc_name=self.name,
-            history=history,
-            images=images,
-            think=think,
-            stream=stream,
+            model=self.model,
+            system_prompt=self.primary_directive,
+            history=kwargs.get("messages"),
+            verbose=verbose,
         )
-
-        if result is not None:
-            self._last_response = result.get('response', '')
-            self._last_session_id = result.get('session_id')
-            self._last_usage = result.get('usage', {})
-            self._last_response_already_streamed = result.get(
-                'response_already_streamed', False
-            )
-            if verbose:
-                print(f"[CLIAgent:{self.name}] usage: {self._last_usage}")
-                if self._last_session_id:
-                    print(f"[CLIAgent:{self.name}] session: {self._last_session_id}")
-            return self._last_response
-
-        # Fallback: provider outside the runtime (e.g. nanocoder).
-        import subprocess
-
-        cmd = self.CLI_COMMANDS.get(self.cli_provider, [self.cli_provider]).copy()
-        cmd.append(full_prompt)
-
-        if verbose:
-            print(f"[CLIAgent:{self.name}] running: {' '.join(cmd)}")
-
-        try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-
-            output_lines = []
-            for line in iter(process.stdout.readline, ""):
-                line = line.rstrip()
-                if line:
-                    output_lines.append(line)
-                    if verbose:
-                        print(line)
-
-            process.wait()
-            output = "\n".join(output_lines)
-
-            if process.returncode != 0 and verbose:
-                print(f"[CLIAgent:{self.name}] exited with code {process.returncode}")
-
-            return output
-
-        except Exception as e:
-            return f"Error running CLI: {e}"
