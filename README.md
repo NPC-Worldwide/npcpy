@@ -5,8 +5,7 @@
 
 # npcpy
 
-`npcpy` is a library that provides key functional primitives for conducting research in multimodal language models, agentic AI, and knowledge graphs. This flexible framework makes it easy to develop and engineer powerful AI applications, with support for local (`ollama`, `llama.cpp`, `omlx`, `LM Studio`) and cloud providers. Build multi-agent teams and simplify your context engineering through the NPC Context-Agent-Tool data layer with compliance engineered natively rather than an afterthought.
-
+`npcpy` is a library that provides key primitives for research and development with multimodal language models, agentic AI, and knowledge graphs. Its flexible framework makes it easy to engineer powerful AI applications with support for local (`ollama`, `llama.cpp`, `omlx`, `LM Studio`) and cloud providers. Build multi-agent teams and simplify context engineering through the NPC Context-Agent-Tool data layer which ensures compliance through software rather than prompts.
 ```bash
 pip install npcpy
 ```
