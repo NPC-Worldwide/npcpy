@@ -4346,7 +4346,7 @@ class CodingAgent(Agent):
 
 def _is_cli_provider(provider: str) -> bool:
     """Check if provider is a CLI-based agent."""
-    return provider in ("claude_code", "claude", "opencode", "kimi_code", "kimi", "kilo_code", "kilo", "gemini", "codex", "nanocoder")
+    return provider in ("claude_code", "claude", "opencode", "kimi_code", "kimi", "kilo_code", "kilo", "gemini", "codex", "nanocoder", "aider", "amp")
 
 
 class CLIAgent(Agent):
@@ -4381,6 +4381,7 @@ class CLIAgent(Agent):
         if primary_directive is None:
             primary_directive = f"CLI agent using {cli_provider} for code tasks."
 
+        kwargs.pop("provider", None)
         super().__init__(
             name=name,
             primary_directive=primary_directive,
