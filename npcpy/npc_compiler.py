@@ -4402,6 +4402,10 @@ class CLIAgent(Agent):
             prompt=full_prompt,
             model=self.model,
             system_prompt=self.primary_directive,
+            session_id=kwargs.get("session_id"),
             history=kwargs.get("messages"),
+            images=kwargs.get("images"),
+            think=kwargs.get("think"),
+            n_samples=kwargs.get("n_samples", 1),
             verbose=verbose,
         )
