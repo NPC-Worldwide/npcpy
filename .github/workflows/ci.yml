@@ -51,6 +51,12 @@ jobs:
           pip install pytest pytest-cov pytest-timeout
           pip install -e ".[lite]"
 
+      - name: Test CLI agent imports
+        run: |
+          python -c "from npcpy.gen.cli_agent import run_cli_agent, _is_cli_provider; print('cli_agent OK')"
+          python -c "from npcpy.npc_compiler import CLIAgent; print('CLIAgent OK')"
+          python -c "from npcpy.npc_compiler import NPC; npc = NPC.__new__(NPC); npc.provider = 'claude_code'; print('NPC provider OK')"
+
       - name: Run core unit tests
         run: |
           # Run tests that don't require LLM or heavy dependencies
