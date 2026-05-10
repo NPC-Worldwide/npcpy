@@ -95,6 +95,12 @@ def sanitize_messages(messages: list) -> list:
                 for k in range(i + 1, j):
                     cleaned.append(messages[k])
                 i = j
+            elif not expected_ids and j > i + 1:
+                # Tool calls without IDs (e.g. Ollama) but with following results — keep both
+                cleaned.append(msg)
+                for k in range(i + 1, j):
+                    cleaned.append(messages[k])
+                i = j
             else:
                 # Orphaned tool_use — strip tool_calls, keep text content if any
                 text_content = msg.get('content')

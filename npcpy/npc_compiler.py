@@ -2533,7 +2533,10 @@ Requirements:
             jinxes=jinxes_to_use,
             **kwargs,
         )
-    
+
+    def run(self, input_text: str, **kwargs):
+        return self.check_llm_command(input_text, **kwargs)
+
     def handle_agent_pass(self, 
                             npc_to_pass,
                             command, 
@@ -3120,6 +3123,18 @@ class Team:
             if filename.endswith(".npc"):
                 npc_path = os.path.join(self.team_path, filename)
                 npc = NPC(npc_path, db_conn=self.db_conn, team=self)
+                if _is_cli_provider(npc.provider):
+                    npc = CLIAgent(
+                        cli_provider=npc.provider,
+                        name=npc.name,
+                        primary_directive=npc.primary_directive,
+                        model=npc.model,
+                        provider=npc.provider,
+                        api_url=npc.api_url,
+                        api_key=npc.api_key,
+                        db_conn=self.db_conn,
+                        team=self,
+                    )
                 self.npcs[npc.name] = npc
 
         # Load markdown agents from the project root (parent of npc_team/).
@@ -4331,7 +4346,7 @@ class CodingAgent(Agent):
 
 def _is_cli_provider(provider: str) -> bool:
     """Check if provider is a CLI-based agent."""
-    return provider in ("claude_code", "claude", "opencode", "kimi_code", "kimi", "kilo_code", "kilo", "npcsh", "gemini", "codex", "nanocoder")
+    return provider in ("claude_code", "claude", "opencode", "kimi_code", "kimi", "kilo_code", "kilo", "gemini", "codex", "nanocoder", "aider", "amp")
 
 
 class CLIAgent(Agent):
@@ -4366,6 +4381,7 @@ class CLIAgent(Agent):
         if primary_directive is None:
             primary_directive = f"CLI agent using {cli_provider} for code tasks."
 
+        kwargs.pop("provider", None)
         super().__init__(
             name=name,
             primary_directive=primary_directive,
@@ -4378,47 +4394,18 @@ class CLIAgent(Agent):
         self.session_file = session_file
 
     def run(self, input_text: str, verbose: bool = False, session_context: str = None, **kwargs):
-        """Run CLI subprocess with optional session context.
-
-        Args:
-            input_text: The prompt to send
-            verbose: Print debug output
-            session_context: Accumulated conversation context from npcsh (prepended to prompt)
-        """
-        import subprocess
+        from npcpy.gen.cli_agent import run_cli_agent
 
         full_prompt = f"{session_context}\n\n{input_text}" if session_context else input_text
-
-        cmd = self.CLI_COMMANDS.get(self.cli_provider, [self.cli_provider]).copy()
-        cmd.append(full_prompt)
-
-        if verbose:
-            print(f"[CLIAgent:{self.name}] running: {' '.join(cmd)}")
-
-        try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-
-            output_lines = []
-            for line in iter(process.stdout.readline, ""):
-                line = line.rstrip()
-                if line:
-                    output_lines.append(line)
-                    if verbose:
-                        print(line)
-
-            process.wait()
-            output = "\n".join(output_lines)
-
-            if process.returncode != 0 and verbose:
-                print(f"[CLIAgent:{self.name}] exited with code {process.returncode}")
-
-            return output
-
-        except Exception as e:
-            return f"Error running CLI: {e}"
+        return run_cli_agent(
+            provider=self.cli_provider,
+            prompt=full_prompt,
+            model=self.model,
+            system_prompt=self.primary_directive,
+            session_id=kwargs.get("session_id"),
+            history=kwargs.get("messages"),
+            images=kwargs.get("images"),
+            think=kwargs.get("think"),
+            n_samples=kwargs.get("n_samples", 1),
+            verbose=verbose,
+        )
