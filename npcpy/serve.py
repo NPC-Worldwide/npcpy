@@ -1966,56 +1966,63 @@ def get_models():
     """
     Endpoint to retrieve available models based on the current project path.
     Checks for local configurations (.env) and Ollama.
+    Includes comprehensive error handling to prevent 500 errors.
     """
     global available_models
     current_path = request.args.get("currentPath")
     if not current_path:
-        
-        
         current_path = os.path.expanduser("~/.npcsh")  
         print("Warning: No currentPath provided for /api/models, using default.")
-        
 
+    formatted_models = []
+    error_msg = None
+    
     try:
-        
-        available_models = get_locally_available_models(current_path)
+        # Wrap the model fetching in try-except to isolate failures
+        try:
+            available_models = get_locally_available_models(current_path)
+        except Exception as model_err:
+            print(f"Warning: get_locally_available_models failed: {model_err}")
+            available_models = {}
+            error_msg = f"Partial model load error: {str(model_err)}"
 
-        
-        
-        formatted_models = []
+        # Process available models safely
         for m, p in available_models.items():
-            
-            text_only = (
-                "(text only)"
-                if p == "ollama"
-                and m in ["llama3.2", "deepseek-v3", "phi4", "gemma3:1b"]
-                else ""
-            )
-            
-            display_model = m
-            if m.endswith(('.gguf', '.ggml')):
-                display_model = os.path.basename(m)
-            elif p == 'lora':
-                display_model = os.path.basename(m.rstrip('/'))
+            try:
+                text_only = (
+                    "(text only)"
+                    if p == "ollama"
+                    and m in ["llama3.2", "deepseek-v3", "phi4", "gemma3:1b"]
+                    else ""
+                )
+                
+                display_model = m
+                if m.endswith(('.gguf', '.ggml')):
+                    display_model = os.path.basename(m)
+                elif p == 'lora':
+                    display_model = os.path.basename(m.rstrip('/'))
 
-            display_name = f"{display_model} | {p} {text_only}".strip()
+                display_name = f"{display_model} | {p} {text_only}".strip()
 
-            formatted_models.append(
-                {
-                    "value": m,  
-                    "provider": p,
-                    "display_name": display_name,
-                }
-            )
-            print(m, p)
-        return jsonify({"models": formatted_models, "error": None})
+                formatted_models.append(
+                    {
+                        "value": m,  
+                        "provider": p,
+                        "display_name": display_name,
+                    }
+                )
+            except Exception as item_err:
+                print(f"Warning: Failed to format model {m}: {item_err}")
+                continue
+                
+        print(f"Successfully loaded {len(formatted_models)} models")
+        return jsonify({"models": formatted_models, "error": error_msg})
 
     except Exception as e:
-        print(f"Error getting available models: {str(e)}")
-
+        print(f"Critical error in get_models: {str(e)}")
         traceback.print_exc()
-        
-        return jsonify({"models": [], "error": str(e)}), 500
+        # Always return a valid JSON response even on error
+        return jsonify({"models": [], "error": str(e)}), 200
 
 @app.route('/api/<command>', methods=['POST'])
 def api_command(command):
@@ -7850,8 +7857,13 @@ def register_studio_window():
     Register or update a window's metadata.
     Called by frontend on connect or workspace switch.
     """
+    # Ensure we always return JSON, never HTML
     try:
-        data = request.json or {}
+        # Validate request is JSON
+        if not request.is_json:
+            return jsonify({'success': False, 'error': 'Content-Type must be application/json'}), 400
+            
+        data = request.get_json(silent=True) or {}
         window_id = data.get('windowId', '')
         folder = data.get('folder', '')
         title = data.get('title', '')
@@ -7870,6 +7882,8 @@ def register_studio_window():
         return jsonify({'success': True, 'windowId': window_id})
     except Exception as e:
         print(f"Error registering window: {e}")
+        traceback.print_exc()
+        # Always return JSON even on error
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/studio/windows', methods=['GET'])
@@ -8033,3 +8047,33 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+# Global error handler to ensure JSON responses instead of HTML
+@app.errorhandler(Exception)
+def handle_global_exception(e):
+    """Handle all unhandled exceptions and return JSON instead of HTML."""
+    print(f"Unhandled exception: {e}")
+    traceback.print_exc()
+    return jsonify({
+        'success': False,
+        'error': str(e),
+        'error_type': type(e).__name__
+    }), 500
+
+@app.errorhandler(404)
+def handle_404(e):
+    """Handle 404 errors and return JSON instead of HTML."""
+    return jsonify({
+        'success': False,
+        'error': 'Endpoint not found',
+        'path': request.path
+    }), 404
+
+@app.errorhandler(500)
+def handle_500(e):
+    """Handle 500 errors and return JSON instead of HTML."""
+    return jsonify({
+        'success': False,
+        'error': 'Internal server error',
+        'details': str(e)
+    }), 500
