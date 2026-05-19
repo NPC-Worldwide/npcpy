@@ -5390,6 +5390,7 @@ def text_predict():
                 provider=provider,
                 npc=npc_object,
                 stream=True,
+                think=False,
             )
 
             if isinstance(stream_response_generator, dict) and 'response' in stream_response_generator:
@@ -5413,7 +5414,9 @@ def text_predict():
 
                 chunk_content = ""
                 if "hf.co" in model or provider == 'ollama':
-                    chunk_content = response_chunk["message"]["content"] if "message" in response_chunk and "content" in response_chunk["message"] else ""
+                    msg = response_chunk["message"] if "message" in response_chunk else None
+                    if msg:
+                        chunk_content = msg.get("content", "") or msg.get("thinking", "")
                 else:
                     chunk_content = "".join(choice.delta.content for choice in response_chunk.choices if choice.delta.content is not None)
 
