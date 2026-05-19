@@ -968,7 +968,7 @@ def get_llamacpp_response(
             messages.append({"role": "user", "content": prompt})
 
     try:
-        n_ctx = kwargs.get("n_ctx", 4096)
+        n_ctx = kwargs.get("n_ctx", 32768)
         n_gpu_layers = kwargs.get("n_gpu_layers", -1)
 
         llm = Llama(
@@ -982,12 +982,14 @@ def get_llamacpp_response(
             "messages": messages,
             "stream": stream,
         }
-        if kwargs.get("temperature"):
+        if kwargs.get("temperature") is not None:
             params["temperature"] = kwargs["temperature"]
         if kwargs.get("max_tokens"):
             params["max_tokens"] = kwargs["max_tokens"]
-        if kwargs.get("top_p"):
+        if kwargs.get("top_p") is not None:
             params["top_p"] = kwargs["top_p"]
+        if kwargs.get("top_k") is not None:
+            params["top_k"] = kwargs["top_k"]
         if kwargs.get("stop"):
             params["stop"] = kwargs["stop"]
 
