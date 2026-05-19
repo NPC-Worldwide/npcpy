@@ -6215,6 +6215,10 @@ IMPORTANT AGENT BEHAVIOR:
                         }
                         yield f"data: {json.dumps(chunk_data)}\n\n"
                 else:
+                  if isinstance(stream_response, dict) and stream_response.get('error'):
+                      error_msg = stream_response['error']
+                      yield f"data: {json.dumps({'choices': [{'delta': {'content': f'Error: {error_msg}', 'role': 'assistant'}, 'finish_reason': 'stop'}]})}\n\n"
+                      return
                   for response_chunk in stream_response.get('response', stream_response.get('output')):
                     with cancellation_lock:
                         if cancellation_flags.get(current_stream_id, False):
