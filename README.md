@@ -19,7 +19,10 @@ from npcpy import NPC
 
 simon = NPC(
     name='Simon Bolivar',
-    primary_directive='Liberate South America from the Spanish Royalists.',
+    primary_directive='''
+                      Liberate South America
+                      from the Spanish Royalists.
+                      ''',
     model='qwen3.5:9b',
     provider='ollama'
 )
