@@ -1542,12 +1542,19 @@ def get_litellm_response(
                 "output_tokens": getattr(resp.usage, 'completion_tokens', 0) or 0,
             }
         elif hasattr(resp, 'prompt_eval_count'):
-            result["usage"] = {
-                "input_tokens": getattr(resp, 'prompt_eval_count', 0) or 0,
-                "output_tokens": getattr(resp, 'eval_count', 0) or 0,
-            }
-
-        if stream:
+            ]:
+                # Handle temperature/top_p conflict for Claude models
+                if key == "temperature" and "claude" in str(api_params.get("model", "")).lower():
+                    api_params[key] = value
+                    # Skip top_p for Claude models if temperature is set
+                    if "top_p" in kwargs:
+                        pass  # Don't add top_p
+                elif key == "top_p" and "claude" in str(api_params.get("model", "")).lower():
+                    # Skip top_p for Claude if temperature is also provided
+                    if "temperature" not in kwargs:
+                        api_params[key] = value
+                else:
+                    api_params[key] = value
             result["response"] = resp
             return result
         else:
