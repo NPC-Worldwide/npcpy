@@ -35,7 +35,28 @@ def _require_ollama() -> None:
             "The 'ollama' package is required for the ollama provider. "
             "Install it with: pip install ollama"
         )
-        )
+
+try:
+    import litellm
+    from litellm import completion
+    litellm.suppress_debug_info = True
+except ImportError:
+    pass
+except OSError:
+    pass
+
+def sanitize_messages(messages: list) -> list:
+    """Remove orphaned tool_use and tool_result blocks from message history.
+
+    Checks EVERY assistant message with tool_calls (not just the last one)
+    to ensure Anthropic never sees a tool_use without a matching tool_result.
+    For mid-history orphans, the tool_calls key is removed (keeping text content).
+    For tail orphans, the assistant message is stripped entirely.
+    Also merges consecutive same-role messages and ensures the conversation
+    doesn't end with an assistant message (Anthropic rejects that).
+    """
+    if not messages:
+        return messages
 
     def _extract_tc_ids(tool_calls_list):
         ids = set()
@@ -1514,6 +1535,8 @@ def get_litellm_response(
                         api_params[key] = value
                 else:
                     api_params[key] = value
+
+    if not auto_process_tool_calls or not (tools and tool_map):
         api_params["stream"] = stream
         resp = completion(**api_params)
         result["raw_response"] = resp
@@ -1528,18 +1551,8 @@ def get_litellm_response(
                 "input_tokens": getattr(resp, 'prompt_eval_count', 0) or 0,
                 "output_tokens": getattr(resp, 'eval_count', 0) or 0,
             }
-                # Handle temperature/top_p conflict for Claude models
-                if key == "temperature" and "claude" in str(api_params.get("model", "")).lower():
-                    api_params[key] = value
-                    # Skip top_p for Claude models if temperature is set
-                    if "top_p" in kwargs:
-                        pass  # Don't add top_p
-                elif key == "top_p" and "claude" in str(api_params.get("model", "")).lower():
-                    # Skip top_p for Claude if temperature is also provided
-                    if "temperature" not in kwargs:
-                        api_params[key] = value
-                else:
-                    api_params[key] = value
+
+        if stream:
             result["response"] = resp
             return result
         else:
