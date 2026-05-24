@@ -39,12 +39,16 @@ def _require_ollama() -> None:
     temperature = kwargs.get("temperature", 0.7)
     top_p = kwargs.get("top_p", 1.0)
     
-    # Don't send both for Claude models
     api_params = {
         "model": model,
         "messages": messages,
     }
     
+    # Only add parameters that are explicitly provided or needed
+    if temperature is not None:
+        api_params["temperature"] = temperature
+    if top_p is not None and ("claude" not in str(model).lower() or temperature is None):
+        api_params["top_p"] = top_p
     # Prioritize temperature over top_p
     if "claude" in str(model).lower():
         api_params["temperature"] = temperature
