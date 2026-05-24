@@ -36,16 +36,6 @@ def _require_ollama() -> None:
             "Install it with: pip install ollama"
         )
         )
-
-
-try:
-    import litellm
-    from litellm import completion
-    litellm.suppress_debug_info = True
-except ImportError:
-    pass
-except OSError:
-    pass
         return messages
 
     def _extract_tc_ids(tool_calls_list):
@@ -1514,22 +1504,12 @@ def get_litellm_response(
             if key in [
                 "stop", "temperature", "top_p", "max_tokens", "max_completion_tokens",
                  "extra_headers", "parallel_tool_calls",
-    if kwargs:
-        for key, value in kwargs.items():
-            if key in [
-                "stop", "temperature", "top_p", "max_tokens", "max_completion_tokens",
-                 "extra_headers", "parallel_tool_calls",
                 "response_format", "user", "timeout", "think", "thinking", "reasoning_effort",
             ]:
                 # Handle temperature/top_p conflict for Claude models
                 if key == "temperature" and "claude" in str(api_params.get("model", "")).lower():
                     api_params[key] = value
                 elif key == "top_p" and "claude" in str(api_params.get("model", "")).lower():
-                    # Only add top_p for Claude if temperature is not provided
-                    if "temperature" not in kwargs:
-                        api_params[key] = value
-                else:
-                    api_params[key] = value
                     # Only add top_p for Claude if temperature is not provided
                     if "temperature" not in kwargs:
                         api_params[key] = value
