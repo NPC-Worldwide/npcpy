@@ -46,19 +46,6 @@ except ImportError:
     pass
 except OSError:
     pass
-    pass
-
-def sanitize_messages(messages: list) -> list:
-    """Remove orphaned tool_use and tool_result blocks from message history.
-
-    Checks EVERY assistant message with tool_calls (not just the last one)
-    to ensure Anthropic never sees a tool_use without a matching tool_result.
-    For mid-history orphans, the tool_calls key is removed (keeping text content).
-    For tail orphans, the assistant message is stripped entirely.
-    Also merges consecutive same-role messages and ensures the conversation
-    doesn't end with an assistant message (Anthropic rejects that).
-    """
-    if not messages:
         return messages
 
     def _extract_tc_ids(tool_calls_list):
@@ -1527,12 +1514,22 @@ def get_litellm_response(
             if key in [
                 "stop", "temperature", "top_p", "max_tokens", "max_completion_tokens",
                  "extra_headers", "parallel_tool_calls",
+    if kwargs:
+        for key, value in kwargs.items():
+            if key in [
+                "stop", "temperature", "top_p", "max_tokens", "max_completion_tokens",
+                 "extra_headers", "parallel_tool_calls",
                 "response_format", "user", "timeout", "think", "thinking", "reasoning_effort",
             ]:
                 # Handle temperature/top_p conflict for Claude models
                 if key == "temperature" and "claude" in str(api_params.get("model", "")).lower():
                     api_params[key] = value
                 elif key == "top_p" and "claude" in str(api_params.get("model", "")).lower():
+                    # Only add top_p for Claude if temperature is not provided
+                    if "temperature" not in kwargs:
+                        api_params[key] = value
+                else:
+                    api_params[key] = value
                     # Only add top_p for Claude if temperature is not provided
                     if "temperature" not in kwargs:
                         api_params[key] = value
