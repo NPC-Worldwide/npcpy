@@ -35,30 +35,17 @@ def _require_ollama() -> None:
             "The 'ollama' package is required for the ollama provider. "
             "Install it with: pip install ollama"
         )
-    # Handle temperature/top_p conflict for Claude models
-    temperature = kwargs.get("temperature", 0.7)
-    top_p = kwargs.get("top_p", 1.0)
-    
-    api_params = {
-        "model": model,
-        "messages": messages,
-    }
-    
-    # Only add parameters that are explicitly provided or needed
-    if temperature is not None:
-        api_params["temperature"] = temperature
-    if top_p is not None and ("claude" not in str(model).lower() or temperature is None):
-        api_params["top_p"] = top_p
-    # Prioritize temperature over top_p
-    if "claude" in str(model).lower():
-        api_params["temperature"] = temperature
-    else:
-        api_params["temperature"] = temperature
-        api_params["top_p"] = top_p
+        )
+
+
+try:
+    import litellm
+    from litellm import completion
     litellm.suppress_debug_info = True
 except ImportError:
     pass
 except OSError:
+    pass
     pass
 
 def sanitize_messages(messages: list) -> list:
