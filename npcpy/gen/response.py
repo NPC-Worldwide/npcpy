@@ -1526,7 +1526,15 @@ def get_litellm_response(
                  "extra_headers", "parallel_tool_calls",
                 "response_format", "user", "timeout", "think", "thinking", "reasoning_effort",
             ]:
-                api_params[key] = value
+                # Handle temperature/top_p conflict for Claude models
+                if key == "temperature" and "claude" in str(api_params.get("model", "")).lower():
+                    api_params[key] = value
+                elif key == "top_p" and "claude" in str(api_params.get("model", "")).lower():
+                    # Only add top_p for Claude if temperature is not provided
+                    if "temperature" not in kwargs:
+                        api_params[key] = value
+                else:
+                    api_params[key] = value
 
     if not auto_process_tool_calls or not (tools and tool_map):
         api_params["stream"] = stream
