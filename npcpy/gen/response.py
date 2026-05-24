@@ -36,7 +36,6 @@ def _require_ollama() -> None:
             "Install it with: pip install ollama"
         )
         )
-        return messages
 
     def _extract_tc_ids(tool_calls_list):
         ids = set()
@@ -1515,7 +1514,6 @@ def get_litellm_response(
                         api_params[key] = value
                 else:
                     api_params[key] = value
-    if not auto_process_tool_calls or not (tools and tool_map):
         api_params["stream"] = stream
         resp = completion(**api_params)
         result["raw_response"] = resp
