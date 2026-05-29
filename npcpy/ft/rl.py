@@ -795,7 +795,7 @@ def train_with_grpo(
     )
     optimizer = mlx_opt.AdamW(learning_rate=config.learning_rate)
 
-    print(f"GRPO: {mlx_name}, {len(groups)} groups, {len(processed)} examples, {total_iters} iters, max_len=1024")
+    print(f"GRPO: {mlx_name}, {len(groups)} groups, {len(processed)} examples, {total_iters} iters, max_len={training_args.max_seq_length}")
 
     mlx_train(
         model=model,
@@ -926,7 +926,7 @@ def train_with_ppo(
     )
     optimizer = mlx_opt.AdamW(learning_rate=config.learning_rate)
 
-    print(f"PPO: {mlx_name}, {len(records)} traces, {total_iters} iters, beta={config.beta}, clip={config.clip_eps}, max_len=1024")
+    print(f"PPO: {mlx_name}, {len(records)} traces, {total_iters} iters, beta={config.beta}, clip={config.clip_eps}, max_len={training_args.max_seq_length}")
 
     mlx_train(
         model=policy_model,
