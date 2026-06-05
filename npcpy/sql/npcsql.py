@@ -41,7 +41,7 @@ except ImportError:
             return {"response": f"MOCK: Embedding for '{text}'"}
     llm_funcs = MockLlmFuncs()
 
-from npcpy.memory.command_history import create_engine_from_path
+from npcpy.db import ensure_engine
 try:
     from npcpy.npc_compiler import Team
 except ImportError:
@@ -465,7 +465,7 @@ class NPCSQLOperations:
         self.nql_provider = nql_provider
 
         if isinstance(db_engine, str):
-            self.engine = create_engine_from_path(db_engine)
+            self.engine = ensure_engine(db_engine)
         else:
             self.engine = db_engine
 
@@ -829,7 +829,7 @@ class ModelCompiler:
         self.nql_provider = nql_provider
 
         if isinstance(target_engine, str):
-            self.target_engine = create_engine_from_path(
+            self.target_engine = ensure_engine(
                 target_engine
             )
         else:

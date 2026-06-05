@@ -53,16 +53,21 @@ class SilentUndefined(Undefined):
     def _fail_with_undefined_error(self, *args, **kwargs):
         return ""
 
-from npcsh._state import ShellState, initialize_base_npcs_if_needed
-from npcsh.config import NPCSH_DB_PATH
+from npcpy.memory.command_history import (
+    setup_chroma_db,
+    CommandHistory,
+    save_conversation_message,
+    generate_message_id,
+    load_kg_from_db,
+    save_kg_to_db,
+    format_memory_context,
+)
 
 from npcpy.memory.knowledge_graph import (
-    load_kg_from_db,
     find_similar_facts_chroma,
 )
-from npcpy.memory.command_history import setup_chroma_db
 from npcpy.gen.response import calculate_cost
-from npcpy.memory.search import execute_rag_command, execute_brainblast_command
+from npcpy.memory.search import execute_rag_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
 from npcpy.data.image import capture_screenshot
@@ -82,11 +87,6 @@ from npcpy.npc_sysenv import (
     get_attachments_dir, get_logs_dir,
     team_sync_status, team_sync_init, team_sync_pull,
     team_sync_resolve, team_sync_commit, team_sync_diff,
-)
-from npcpy.memory.command_history import (
-    CommandHistory,
-    save_conversation_message,
-    generate_message_id,
 )
 from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxes_from_directory, build_jinx_tool_catalog, initialize_npc_project, load_yaml_file
 
@@ -119,6 +119,33 @@ from flask_cors import CORS
 
 cancellation_flags = {}
 cancellation_lock = threading.Lock()
+
+class ServeState:
+    """Minimal server-side execution context for jinxes and tools.
+    Replaces npcsh.ShellState so serve.py has no npcsh dependency."""
+    def __init__(
+        self,
+        npc=None,
+        team=None,
+        conversation_id=None,
+        chat_model=None,
+        chat_provider=None,
+        current_path=None,
+        search_provider=None,
+        embedding_model=None,
+        embedding_provider=None,
+        command_history=None,
+    ):
+        self.npc = npc
+        self.team = team
+        self.conversation_id = conversation_id
+        self.chat_model = chat_model
+        self.chat_provider = chat_provider
+        self.current_path = current_path or os.getcwd()
+        self.search_provider = search_provider
+        self.embedding_model = embedding_model
+        self.embedding_provider = embedding_provider
+        self.command_history = command_history
 
 def _setup_stream(data):
     stream_id = data.get("streamId") or str(uuid.uuid4())
@@ -1261,7 +1288,6 @@ def trigger_kg_process():
         engine = create_engine('sqlite:///' + db_path)
 
         # Load current KG from DB
-        from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
         existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
 
         # Get model/provider from app config
@@ -1321,7 +1347,6 @@ def ingest_to_kg():
         model = app.config.get('DEFAULT_MODEL', None)
         provider = app.config.get('DEFAULT_PROVIDER', None)
 
-        from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
         from npcpy.memory.knowledge_graph import kg_evolve_incremental, kg_initial
 
         existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
@@ -1417,7 +1442,6 @@ def query_kg():
                 ],
             })
 
-        from npcpy.memory.command_history import load_kg_from_db
         existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
 
         if not existing_kg or not existing_kg.get('facts'):
@@ -1590,7 +1614,6 @@ def create_kg_population():
 
         if seed_from_kg:
             # Prime each individual with a copy of the current global KG, so searches have something to traverse.
-            from npcpy.memory.command_history import load_kg_from_db
             existing = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
             import copy as _copy
             for ind in mgr.ga.population:
@@ -1748,14 +1771,15 @@ def get_available_jinxes():
         current_path = request.args.get('currentPath')
         jinx_names = set()
 
-        dirs_to_scan = [os.path.expanduser('~/.npcsh/npc_team/jinxes')]
+        dirs_to_scan = []
         if current_path:
-            dirs_to_scan.insert(0, os.path.join(current_path, 'npc_team', 'jinxes'))
-        try:
-            import npcsh
-            dirs_to_scan.append(os.path.join(os.path.dirname(npcsh.__file__), 'npc_team', 'jinxes'))
-        except Exception:
-            pass
+            dirs_to_scan.append(os.path.join(current_path, 'agents', 'jinxes'))
+            dirs_to_scan.append(os.path.join(current_path, 'npc_team', 'jinxes'))
+        dirs_to_scan.append(os.path.expanduser('~/.npcsh/agents/jinxes'))
+        dirs_to_scan.append(os.path.expanduser('~/.npcsh/npc_team/jinxes'))
+        package_dir = app.config.get('PACKAGE_NPC_TEAM_DIR')
+        if package_dir:
+            dirs_to_scan.append(os.path.join(package_dir, 'jinxes'))
 
         for d in dirs_to_scan:
             for jinx in load_jinxes_from_directory(d):
@@ -1889,7 +1913,7 @@ def execute_jinx():
     print(f"jinx_local_context BEFORE Jinx execution: {jinx_local_context}", file=sys.stderr)
 
     
-    state = ShellState(
+    state = ServeState(
         npc=npc_object,
         team=None,
         conversation_id=conversation_id,
@@ -2336,7 +2360,6 @@ def extract_and_store_memories(
     npc_object=None
 ):
     from npcpy.llm_funcs import get_facts
-    from npcpy.memory.command_history import format_memory_context
     memory_examples_dict = command_history.get_memory_examples_for_context(
         npc=npc_name,
         team=team_name,
@@ -4070,46 +4093,39 @@ def check_npcsh_folder():
 @app.route("/api/npcsh/package-contents", methods=["GET"])
 def get_package_contents():
     """Get NPCs and jinxes available in the npcsh package for installation."""
-    try:
-        from npcsh._state import get_package_dir
-        package_dir = get_package_dir()
-        package_npc_team_dir = os.path.join(package_dir, "npc_team")
+    package_npc_team_dir = app.config.get('PACKAGE_NPC_TEAM_DIR')
+    npcs = []
+    jinxes = []
 
-        npcs = []
-        jinxes = []
+    if package_npc_team_dir and os.path.exists(package_npc_team_dir):
+        try:
+            team = Team(team_path=package_npc_team_dir, db_conn=get_db_connection())
+            npcs = [npc.to_dict() for npc in team.npcs.values()]
+        except Exception as e:
+            print(f"Error loading package NPCs: {e}")
 
-        if os.path.exists(package_npc_team_dir):
-            try:
-                team = Team(team_path=package_npc_team_dir, db_conn=get_db_connection())
-                npcs = [npc.to_dict() for npc in team.npcs.values()]
-            except Exception as e:
-                print(f"Error loading package NPCs: {e}")
+        jinxes_dir = os.path.join(package_npc_team_dir, "jinxes")
+        if os.path.exists(jinxes_dir):
+            jinxes = _serialize_jinxes_from_dir(jinxes_dir)
 
-            jinxes_dir = os.path.join(package_npc_team_dir, "jinxes")
-            if os.path.exists(jinxes_dir):
-                jinxes = _serialize_jinxes_from_dir(jinxes_dir)
-
-        return jsonify({
-            "npcs": npcs,
-            "jinxes": jinxes,
-            "package_dir": package_dir,
-            "error": None
-        })
-    except Exception as e:
-        print(f"Error getting package contents: {e}")
-        traceback.print_exc()
-        return jsonify({"error": str(e), "npcs": [], "jinxes": []}), 500
+    return jsonify({
+        "npcs": npcs,
+        "jinxes": jinxes,
+        "package_dir": package_npc_team_dir,
+        "error": None
+    })
 
 @app.route("/api/npcsh/init", methods=["POST"])
 def init_npcsh_folder():
     """Initialize npcsh with config and default npc_team."""
     try:
-        db_path = os.path.expanduser(NPCSH_DB_PATH)
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        initialize_base_npcs_if_needed(db_path)
+        db_path = app.config.get('DB_PATH', os.path.expanduser('~/npcsh_history.db'))
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         return jsonify({
             "message": "npcsh initialized",
-            "path": os.path.expanduser("~/.npcsh"),
+            "path": db_dir or db_path,
             "error": None
         })
     except Exception as e:
@@ -8031,13 +8047,6 @@ if __name__ == "__main__":
         os.makedirs(data_dir, exist_ok=True)
     except Exception as dir_err:
         print(f"[SERVE] Warning: Could not create directories: {dir_err}")
-
-    try:
-        initialize_base_npcs_if_needed(db_path)
-        print(f"[SERVE] Base NPCs initialized")
-    except Exception as e:
-        print(f"[SERVE] Warning: Failed to initialize base NPCs: {e}")
-        print(f"[SERVE] Continuing without NPC initialization — settings and models will still work")
 
     port = int(os.environ.get('INCOGNIDE_PORT', 5337))
 
