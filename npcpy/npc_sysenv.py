@@ -1214,7 +1214,7 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                 if you are in the [ReAct loop] and you are asked to use jinxes, refer to these guidelines:
               [BEGIN GUIDELINES FOR JINX EXECUTION]
                   Use jinxes when appropriate. For example:
-                    
+
                     - If you are asked about something up-to-date or dynamic (e.g., latest exchange rates)
                     - If the user asks you to read or edit a file
                     - If the user asks for code that should be executed
@@ -1222,14 +1222,14 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                     - If they request a screenshot, audio, or image manipulation
                     - Situations requiring file parsing (e.g., CSV or JSON loading)
                     - Scripted workflows or pipelines, e.g., generate a chart, fetch data, summarize from source, etc.
-                    
+
                     You MUST use a jinx if the request directly refers to a tool the AI cannot handle directly (e.g., 'run', 'open', 'search', etc).
-                    
+
                     You do not need to use a jinx if:
 
                     - the user asks a simple question like 'what is 2+2' or 'who invented linux', essentially any question which only requires general knowledge.
                     - The user asks you to write them a story (unless they separately specify saving it to a file, then you should directly write the story to be output through a jinx to said file.)
-                    To invoke a jinx, return the action 'invoke_jinx' along with the jinx specific name. 
+                    To invoke a jinx, return the action 'invoke_jinx' along with the jinx specific name.
                     An example for a jinx-specific return would be:
                     """ +"""
                     {
@@ -1237,18 +1237,18 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                         "jinx_name": "file_reader",
                         "explanation": "Read the contents of <full_filename_path_from_user_request> and <detailed explanation of how to accomplish the problem outlined in the request>."
                     }
-                    
-                    
+
+
                     Do not use the jinx names as the action keys. You must use the action 'invoke_jinx' to invoke a jinx!
                     Do not invent jinx names. Use only those provided.
-                  
-                
+
+
                 Respond with a single JSON object only.
                 To use a jinx, set action to jinx, jinx_name to one of [{jinx_names_str}], and inputs with the required parameters.
 
               [END GUIDELINES FOR JINX EXECUTION]
-                                            
-              
+
+
 """
                 system_message += jinx_instructions
 
