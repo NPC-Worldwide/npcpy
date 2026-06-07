@@ -242,7 +242,9 @@ from datetime import datetime
 import sys
 
 
-from npcpy.memory.command_history import CommandHistory, get_db_connection
+import pytest
+pytest.importorskip("npcsh", reason="npcsh package required for command history tests")
+from npcsh.history import CommandHistory, get_db_connection
 from npcpy.tools import auto_tools
 
 def test_npc_memory_crud_integration():

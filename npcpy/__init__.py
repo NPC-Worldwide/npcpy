@@ -8,6 +8,7 @@ from . import work
 from . import gen
 from . import data
 from . import memory
+from . import db
 from . import tools
 
 # Core types
@@ -30,8 +31,10 @@ from .gen.response import get_litellm_response, get_ollama_response, calculate_c
 from .gen.embeddings import get_embeddings
 from .gen.image_gen import generate_image
 
+# DB
+from .db import ensure_engine, normalize_path_for_db, deep_to_dict, CustomJSONEncoder
+
 # Memory
-from .memory.command_history import CommandHistory
 from .memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_search_facts
 
 # System

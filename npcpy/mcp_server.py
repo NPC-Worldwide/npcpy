@@ -19,20 +19,28 @@ from typing import Optional
 
 
 def discover_team_path(explicit_path: Optional[str] = None) -> str:
-    """Find the team directory: explicit > cwd/npc_team > ~/.npcsh/npc_team."""
+    """Find the team directory: explicit > cwd/agents > cwd/npc_team > ~/.npcsh/agents > ~/.npcsh/npc_team."""
     if explicit_path and os.path.isdir(explicit_path):
         return os.path.abspath(explicit_path)
+
+    cwd_agents = os.path.join(os.getcwd(), "agents")
+    if os.path.isdir(cwd_agents):
+        return cwd_agents
 
     cwd_team = os.path.join(os.getcwd(), "npc_team")
     if os.path.isdir(cwd_team):
         return cwd_team
+
+    global_agents = os.path.expanduser("~/.npcsh/agents")
+    if os.path.isdir(global_agents):
+        return global_agents
 
     global_team = os.path.expanduser("~/.npcsh/npc_team")
     if os.path.isdir(global_team):
         return global_team
 
     raise FileNotFoundError(
-        "No npc_team found. Checked: ./npc_team, ~/.npcsh/npc_team"
+        "No team found. Checked: ./agents, ./npc_team, ~/.npcsh/agents, ~/.npcsh/npc_team"
     )
 
 
@@ -40,27 +48,16 @@ class NPCServerState:
     """Holds the loaded team, all NPCs, and tracks the active NPC."""
 
     def __init__(self, team_path: str, npc_name: Optional[str] = None,
-                 db_path: Optional[str] = None):
+                 db_conn=None):
         from npcpy.npc_compiler import Team
-        from npcpy.memory.command_history import CommandHistory
 
         self.team_path = team_path
         self.mcp = None  # set by build_server
 
-        # Resolve DB path
-        if db_path is None:
-            try:
-                from npcsh._state import NPCSH_DB_PATH
-                db_path = NPCSH_DB_PATH
-            except ImportError:
-                db_path = os.path.expanduser("~/.npcsh/npcsh_history.db")
-
-        self.command_history = CommandHistory(db=db_path)
-
         print(f"[npc-mcp] Loading team from {team_path}", file=sys.stderr)
         self.team = Team(
             team_path=team_path,
-            db_conn=self.command_history.engine,
+            db_conn=db_conn,
         )
 
         # Resolve active NPC: explicit arg > forenpc > first NPC.
@@ -190,39 +187,8 @@ class NPCServerState:
             else:
                 output = str(result)
 
-            try:
-                from npcpy.memory.command_history import generate_message_id
-                self.command_history.save_jinx_execution(
-                    triggering_message_id=generate_message_id(),
-                    conversation_id="mcp",
-                    npc_name=npc.name if npc else None,
-                    jinx_name=tool_name,
-                    jinx_inputs=args,
-                    jinx_output=output,
-                    status="success",
-                    team_name=getattr(self.team, "name", None),
-                    duration_ms=duration_ms,
-                )
-            except Exception as log_err:
-                print(f"[npc-mcp] History log error: {log_err}", file=sys.stderr)
-
             return output
         except Exception as e:
-            try:
-                from npcpy.memory.command_history import generate_message_id
-                self.command_history.save_jinx_execution(
-                    triggering_message_id=generate_message_id(),
-                    conversation_id="mcp",
-                    npc_name=npc.name if npc else None,
-                    jinx_name=tool_name,
-                    jinx_inputs=args,
-                    jinx_output=None,
-                    status="error",
-                    team_name=getattr(self.team, "name", None),
-                    error_message=str(e),
-                )
-            except Exception:
-                pass
             return f"Jinx execution error: {e}"
 
     async def switch_npc(self, npc_name: str, ctx=None) -> str:

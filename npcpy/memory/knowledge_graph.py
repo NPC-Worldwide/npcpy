@@ -22,7 +22,6 @@ from npcpy.llm_funcs import (
     zoom_in,
     )
 
-from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -61,75 +60,6 @@ def _get_similar_by_embedding(query, candidates, model='nomic-embed-text',
     except Exception as e:
         logger.warning(f"Embedding pre-filter failed, using all candidates: {e}")
         return list(candidates)
-
-
-def _sync_kg_facts_to_chroma(engine, chroma_path, embedding_model='nomic-embed-text',
-                              embedding_provider='ollama', team_name=None,
-                              npc_name=None, directory_path=None):
-    """Sync KG facts from SQLAlchemy into a ChromaDB collection for fast ANN search.
-
-    Returns (chroma_client, collection) or (None, None) on failure.
-    """
-    try:
-        from npcpy.memory.command_history import setup_chroma_db
-        from npcpy.gen.embeddings import get_embeddings
-        from sqlalchemy import text
-    except ImportError as e:
-        logger.warning(f"Cannot sync to ChromaDB: {e}")
-        return None, None
-
-    scope_key = f"{team_name or 'all'}_{npc_name or 'all'}"
-    collection_name = f"kg_facts_{scope_key}"
-
-    chroma_client, collection = setup_chroma_db(
-        collection_name,
-        "KG facts for embedding search",
-        chroma_path
-    )
-
-    with engine.connect() as conn:
-        if team_name and npc_name:
-            rows = conn.execute(text("""
-                SELECT DISTINCT statement FROM kg_facts
-                WHERE team_name = :team AND npc_name = :npc
-            """), {"team": team_name, "npc": npc_name}).fetchall()
-        else:
-            rows = conn.execute(text(
-                "SELECT DISTINCT statement FROM kg_facts"
-            )).fetchall()
-
-    if not rows:
-        return chroma_client, collection
-
-    statements = [r.statement for r in rows]
-
-    # Check what's already in the collection
-    existing = collection.get()
-    existing_docs = set(existing.get('documents', []))
-
-    new_statements = [s for s in statements if s not in existing_docs]
-
-    if not new_statements:
-        return chroma_client, collection
-
-    # Batch embed and upsert
-    batch_size = 50
-    for i in range(0, len(new_statements), batch_size):
-        batch = new_statements[i:i + batch_size]
-        try:
-            embeddings = get_embeddings(batch, embedding_model, embedding_provider)
-            ids = [hashlib.md5(s.encode()).hexdigest() for s in batch]
-            metadatas = [{"team": team_name or "all", "npc": npc_name or "all"} for _ in batch]
-            collection.add(
-                documents=batch,
-                embeddings=embeddings,
-                metadatas=metadatas,
-                ids=ids
-            )
-        except Exception as e:
-            logger.warning(f"Failed to embed batch {i}: {e}")
-
-    return chroma_client, collection
 
 
 # ---------------------------------------------------------------------------
@@ -1096,13 +1026,8 @@ def kg_embedding_search(
     max_results: int = 20,
     include_concepts: bool = True,
     search_all_scopes: bool = True,
-    chroma_path: str = None
 ):
-    """Semantic search using embeddings.
-
-    Uses ChromaDB for fast ANN search when available,
-    falls back to brute-force cosine similarity.
-    """
+    """Semantic search using embeddings via brute-force cosine similarity."""
     from sqlalchemy import text
 
     try:
@@ -1121,59 +1046,6 @@ def kg_embedding_search(
 
     results = []
 
-    # Try ChromaDB fast path first
-    if chroma_path:
-        try:
-            _, collection = _sync_kg_facts_to_chroma(
-                engine, chroma_path, model, provider,
-                team_name if not search_all_scopes else None,
-                npc_name if not search_all_scopes else None
-            )
-            if collection:
-                query_emb = get_embeddings([query], model, provider)[0]
-                chroma_results = collection.query(
-                    query_embeddings=[query_emb],
-                    n_results=max_results
-                )
-                if chroma_results and chroma_results['documents'] and chroma_results['documents'][0]:
-                    for i, doc in enumerate(chroma_results['documents'][0]):
-                        dist = chroma_results['distances'][0][i] if 'distances' in chroma_results else 0
-                        # ChromaDB returns L2 distance by default; convert to similarity
-                        sim = max(0, 1.0 - dist / 2.0)
-                        if sim >= similarity_threshold:
-                            results.append({'content': doc, 'type': 'fact', 'score': sim})
-
-                    if include_concepts:
-                        # Concepts still need brute-force (small set)
-                        with engine.connect() as conn:
-                            if search_all_scopes:
-                                concept_rows = conn.execute(text(
-                                    "SELECT DISTINCT name FROM kg_concepts"
-                                )).fetchall()
-                            else:
-                                concept_rows = conn.execute(text("""
-                                    SELECT name FROM kg_concepts
-                                    WHERE team_name = :team AND npc_name = :npc
-                                """), {"team": team_name, "npc": npc_name}).fetchall()
-
-                            if concept_rows:
-                                names = [r.name for r in concept_rows]
-                                query_embedding = np.array(query_emb)
-                                embeddings = get_embeddings(names, model, provider)
-                                for i, name in enumerate(names):
-                                    emb = np.array(embeddings[i])
-                                    norm_p = np.linalg.norm(query_embedding) * np.linalg.norm(emb)
-                                    if norm_p > 0:
-                                        sim = float(np.dot(query_embedding, emb) / norm_p)
-                                        if sim >= similarity_threshold:
-                                            results.append({'content': name, 'type': 'concept', 'score': sim})
-
-                    results.sort(key=lambda x: -x['score'])
-                    return results[:max_results]
-        except Exception as e:
-            logger.warning(f"ChromaDB search failed, falling back to brute-force: {e}")
-
-    # Brute-force fallback
     query_embedding = np.array(get_embeddings([query], model, provider)[0])
 
     with engine.connect() as conn:

@@ -65,7 +65,6 @@ from npcpy.npc_sysenv import (
     get_system_message,
     print_and_process_stream_with_markdown,
     )
-from npcpy.memory.command_history import CommandHistory, generate_message_id
 
 class SilentUndefined(Undefined):
     """Undefined that silently returns empty string instead of raising errors"""
@@ -799,7 +798,6 @@ class Jinx:
             "subprocess": subprocess,
             "get_llm_response": npy.llm_funcs.get_llm_response,
             "print_and_process_stream_with_markdown": print_and_process_stream_with_markdown,
-            "CommandHistory": CommandHistory,
             "NPCArray": NPCArray,
             "infer_matrix": infer_matrix,
             "ensemble_vote": ensemble_vote,
@@ -1349,7 +1347,6 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
                 inputs[key] = default_value
 
     return inputs
-from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
 from npcpy.memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_sleep_process, kg_dream_process
 from npcpy.llm_funcs import get_llm_response, breathe
 import os
@@ -1446,18 +1443,12 @@ class NPC:
         )
         
         self.db_conn = db_conn
-
-        self.command_history = None
         self.kg_data = None
         self.tables = None
         self.memory = None
 
         if self.db_conn:
             self._setup_db()
-            self.command_history = CommandHistory(db=self.db_conn)
-            if memory:
-                self.kg_data = self._load_npc_kg()  
-                self.memory = self.get_memory_context()
 
         self.jinxes_dict = {}
         if jinxes and jinxes != "*": 
@@ -1615,90 +1606,6 @@ class NPC:
         self.jinx_tool_catalog = build_jinx_tool_catalog(self.jinxes_dict)
         print(f"NPC {self.name} loaded {len(self.jinxes_dict)} jinxes and built catalog with {len(self.jinx_tool_catalog)} tools.", file=sys.stderr)
 
-    def _load_npc_kg(self):
-        """Load knowledge graph data for this NPC from database"""
-        if not self.command_history:
-            return None
-            
-        directory_path = os.getcwd()
-        team_name = getattr(self.team, 'name', 'default_team') if self.team else 'default_team'
-        
-        kg_data = load_kg_from_db(
-            engine=self.command_history.engine,
-            team_name=team_name,
-            npc_name=self.name,
-            directory_path=directory_path
-        )
-        print('# of facts: ', len(kg_data['facts']))
-        print('# of facts: ', len(kg_data['concepts']))
-
-        if not kg_data.get('facts') and not kg_data.get('concepts'):
-            return self._initialize_kg_from_history()
-        
-        return kg_data
-
-    def _initialize_kg_from_history(self):
-        """Initialize KG from conversation history if no KG exists"""
-        if not self.command_history:
-            return None
-            
-        recent_messages = self.command_history.get_messages_by_npc(
-            self.name, 
-            n_last=50
-        )
-        print(f'Recent messages from NPC: {recent_messages[0:10]}')
-
-        if not recent_messages:
-            return {
-                "generation": 0, 
-                "facts": [], 
-                "concepts": [], 
-                "concept_links": [], 
-                "fact_to_concept_links": {}, 
-                "fact_to_fact_links": []
-            }
-        
-        content_text = "\n".join([
-            msg['content'] for msg in recent_messages 
-            if msg['role'] == 'user' and isinstance(msg['content'], str)
-        ])
-        
-        if not content_text.strip():
-            return {
-                "generation": 0, 
-                "facts": [], 
-                "concepts": [], 
-                "concept_links": [], 
-                "fact_to_concept_links": {}, 
-                "fact_to_fact_links": []
-            }
-        
-        kg_data = kg_initial(
-            content_text,
-            model=self.model,
-            provider=self.provider,
-            npc=self,
-            context=getattr(self, 'shared_context', {})
-        )
-        self.kg_data = kg_data
-        self._save_kg()
-        return kg_data
-
-    def _save_kg(self):
-        """Save current KG data to database"""
-        if not self.kg_data or not self.command_history:
-            return False
-            
-        directory_path = os.getcwd()
-        team_name = getattr(self.team, 'name', 'default_team') if self.team else 'default_team'
-        save_kg_to_db(
-            engine=self.command_history.engine,
-            kg_data=self.kg_data,
-            team_name=team_name,
-            npc_name=self.name,
-            directory_path=directory_path
-        )
-        return True
 
     def get_memory_context(self):
         """Get formatted memory context for system prompt"""
@@ -1719,36 +1626,6 @@ class NPC:
             context_parts.append(f"Key concepts: {', '.join(concept_names)}")
         
         return "\n".join(context_parts)
-
-    def update_memory(
-        self, 
-        user_input: str, 
-        assistant_response: str
-    ):
-        """Update NPC memory from conversation turn using KG evolution"""
-        conversation_turn = f"User: {user_input}\nAssistant: {assistant_response}"
-        
-        if not self.kg_data:
-            self.kg_data = kg_initial(
-                content_text=conversation_turn,
-                model=self.model,
-                provider=self.provider,
-                npc=self
-            )
-        else:
-            self.kg_data, _ = kg_evolve_incremental(
-                existing_kg=self.kg_data,
-                new_content_text=conversation_turn,
-                model=self.model,
-                provider=self.provider,
-                npc=self,
-                get_concepts=True,
-                link_concepts_facts=False,
-                link_concepts_concepts=False,
-                link_facts_facts=False
-            )
-        
-        self._save_kg()
 
     def enter_tool_use_loop(
         self, 
@@ -1845,12 +1722,6 @@ class NPC:
             result["output"] = exec_locals.get("output", "Code executed successfully")
         
         return result
-
-    def _load_npc_memory(self):
-        """Enhanced memory loading that includes KG context"""
-        memory = self.command_history.get_messages_by_npc(self.name, n_last=self.memory_length)
-        memory = [{'role':mem['role'], 'content':mem['content']} for mem in memory]
-        return memory 
 
     def _load_from_file(self, file):
         """Load NPC configuration from file"""
@@ -2064,20 +1935,6 @@ class NPC:
                 self.write_code,
             ]
 
-            if self.command_history:
-                dynamic_core_tools_list.extend([
-                    self.search_my_conversations,
-                    self.search_my_memories,
-                    self.create_memory,
-                    self.read_memory, 
-                    self.update_memory,
-                    self.delete_memory,
-                    self.search_memories,
-                    self.get_all_memories,
-                    self.archive_old_memories,
-                    self.get_memory_stats
-                ])
-
             if self.db_conn:
                 dynamic_core_tools_list.append(self.query_database)
 
@@ -2116,24 +1973,6 @@ class NPC:
 
         return response
     
-
-    def search_my_conversations(self, query: str, limit: int = 5) -> str:
-        """Search through this NPC's conversation history for relevant information"""
-        if not self.command_history:
-            return "No conversation history available"
-        
-        results = self.command_history.search_conversations(query)
-        
-        if not results:
-            return f"No conversations found matching '{query}'"
-        
-        formatted_results = []
-        for result in results[:limit]:
-            timestamp = result.get('timestamp', 'Unknown time')
-            content = result.get('content', '')[:200] + ('...' if len(result.get('content', '')) > 200 else '')
-            formatted_results.append(f"[{timestamp}] {content}")
-        
-        return f"Found {len(results)} conversations matching '{query}'s:\n" + "\n".join(formatted_results)
 
     def search_my_memories(self, query: str, limit: int = 10) -> str:
         """Search through this NPC's knowledge graph memories for relevant facts and concepts"""
@@ -2483,23 +2322,6 @@ Requirements:
             result = {"error": str(e)}
 
         _duration_ms = int((_time.monotonic() - _start) * 1000)
-
-        if self.command_history is not None and hasattr(self.command_history, 'save_jinx_execution'):
-            try:
-                self.command_history.save_jinx_execution(
-                    triggering_message_id=message_id,
-                    conversation_id=conversation_id,
-                    jinx_name=jinx_name,
-                    jinx_inputs=inputs,
-                    jinx_output=result,
-                    status=_status,
-                    error_message=_error,
-                    duration_ms=_duration_ms,
-                    npc_name=self.name,
-                    team_name=team_name,
-                )
-            except Exception:
-                pass
         return result
     def check_llm_command(self,
                             command,
@@ -2642,158 +2464,6 @@ Requirements:
         )
 
         return {"messages": messages, "output": jinx_output}
-    def create_memory(self, content: str, memory_type: str = "observation") -> Optional[int]:
-        """Create a new memory entry"""
-        if not self.command_history:
-            return None
-        
-        message_id = generate_message_id()
-        conversation_id = self.command_history.get_most_recent_conversation_id()
-        conversation_id = conversation_id.get('conversation_id') if conversation_id else 'direct_memory'
-        
-        team_name = getattr(self.team, 'name', 'default_team') if self.team else 'default_team'
-        directory_path = os.getcwd()
-        
-        return self.command_history.add_memory_to_database(
-            message_id=message_id,
-            conversation_id=conversation_id,
-            npc=self.name,
-            team=team_name,
-            directory_path=directory_path,
-            initial_memory=content,
-            status='active',
-            model=self.model,
-            provider=self.provider
-        )
-
-    def read_memory(self, memory_id: int) -> Optional[Dict[str, Any]]:
-        """Read a specific memory by ID"""
-        if not self.command_history:
-            return None
-        
-        stmt = "SELECT * FROM memory_lifecycle WHERE id = :memory_id"
-        return self.command_history._fetch_one(stmt, {"memory_id": memory_id})
-
-    def update_memory(self, memory_id: int, new_content: str = None, status: str = None) -> bool:
-        """Update memory content or status"""
-        if not self.command_history:
-            return False
-        
-        updates = []
-        params = {"memory_id": memory_id}
-        
-        if new_content is not None:
-            updates.append("final_memory = :final_memory")
-            params["final_memory"] = new_content
-        
-        if status is not None:
-            updates.append("status = :status") 
-            params["status"] = status
-        
-        if not updates:
-            return False
-        
-        stmt = f"UPDATE memory_lifecycle SET {', '.join(updates)} WHERE id = :memory_id"
-        
-        try:
-            with self.command_history.engine.begin() as conn:
-                conn.execute(text(stmt), params)
-            return True
-        except Exception as e:
-            print(f"Error updating memory {memory_id}: {e}")
-            return False
-
-    def delete_memory(self, memory_id: int) -> bool:
-        """Delete a memory by ID"""
-        if not self.command_history:
-            return False
-        
-        stmt = "DELETE FROM memory_lifecycle WHERE id = :memory_id AND npc = :npc"
-        
-        try:
-            with self.command_history.engine.begin() as conn:
-                result = conn.execute(text(stmt), {"memory_id": memory_id, "npc": self.name})
-                return result.rowcount > 0
-        except Exception as e:
-            print(f"Error deleting memory {memory_id}: {e}")
-            return False
-
-    def search_memories(self, query: str, limit: int = 10, status_filter: str = None) -> List[Dict[str, Any]]:
-        """Search memories with optional status filtering"""
-        if not self.command_history:
-            return []
-        
-        team_name = getattr(self.team, 'name', 'default_team') if self.team else 'default_team'
-        directory_path = os.getcwd()
-        
-        return self.command_history.search_memory(
-            query=query,
-            npc=self.name,
-            team=team_name,
-            directory_path=directory_path,
-            status_filter=status_filter,
-            limit=limit
-        )
-
-    def get_all_memories(self, limit: int = 50, status_filter: str = None) -> List[Dict[str, Any]]:
-        """Get all memories for this NPC with optional status filtering"""
-        if not self.command_history:
-            return []
-        
-        if limit is None:
-            limit = 50
-        
-        conditions = ["npc = :npc"]
-        params = {"npc": self.name, "limit": limit}
-        
-        if status_filter:
-            conditions.append("status = :status")
-            params["status"] = status_filter
-        
-        stmt = f"""
-            SELECT * FROM memory_lifecycle 
-            WHERE {' AND '.join(conditions)}
-            ORDER BY created_at DESC 
-            LIMIT :limit
-            """
-        
-        return self.command_history._fetch_all(stmt, params)
-
-    def archive_old_memories(self, days_old: int = 30) -> int:
-        """Archive memories older than specified days"""
-        if not self.command_history:
-            return 0
-        
-        stmt = """
-            UPDATE memory_lifecycle 
-            SET status = 'archived' 
-            WHERE npc = :npc 
-            AND status = 'active'
-            AND datetime(created_at) < datetime('now', '-{} days')
-        """.format(days_old)
-        
-        try:
-            with self.command_history.engine.begin() as conn:
-                result = conn.execute(text(stmt), {"npc": self.name})
-                return result.rowcount
-        except Exception as e:
-            print(f"Error archiving memories: {e}")
-            return 0
-
-    def get_memory_stats(self) -> Dict[str, int]:
-        """Get memory statistics for this NPC"""
-        if not self.command_history:
-            return {}
-        
-        stmt = """
-            SELECT status, COUNT(*) as count
-            FROM memory_lifecycle 
-            WHERE npc = :npc
-            GROUP BY status
-        """
-        
-        results = self.command_history._fetch_all(stmt, {"npc": self.name})
-        return {row['status']: row['count'] for row in results}
 
 class Team:
     def __init__(self,
@@ -3363,14 +3033,27 @@ class Team:
           - one or more .npc files (npcsh-native team), or
           - agents.md / AGENTS.md / CLAUDE.md / an agents/ directory
             (markdown-declared team — inherits this team's jinxes).
+
+        Also scans an agents/ directory inside the team root for sub-teams
+        (supports mixed markdown + npc_team style nesting).
         """
+        candidates = []
+
+        # Normal subdirectories of the team path
         for item in os.listdir(self.team_path):
             item_path = os.path.join(self.team_path, item)
-            if not (os.path.isdir(item_path) and
-                    not item.startswith('.') and
-                    item not in ("jinxes", "agents")):
-                continue
+            if os.path.isdir(item_path) and not item.startswith('.') and item != "jinxes":
+                candidates.append((item, item_path))
 
+        # Also scan agents/ for subdirectories that look like teams
+        agents_dir = os.path.join(self.team_path, "agents")
+        if os.path.isdir(agents_dir):
+            for item in os.listdir(agents_dir):
+                item_path = os.path.join(agents_dir, item)
+                if os.path.isdir(item_path) and not item.startswith('.'):
+                    candidates.append((item, item_path))
+
+        for item, item_path in candidates:
             entries = os.listdir(item_path)
             has_npc = any(f.endswith(".npc") for f in entries
                           if os.path.isfile(os.path.join(item_path, f)))
