@@ -2,7 +2,9 @@ import os
 import tempfile
 import sqlite3
 from datetime import datetime
-from npcpy.memory.command_history import CommandHistory, save_conversation_message, start_new_conversation, generate_message_id
+import pytest
+pytest.importorskip("npcsh", reason="npcsh package required for command history tests")
+from npcsh.history import CommandHistory, save_conversation_message, start_new_conversation, generate_message_id
 
 
 def test_command_history_creation():

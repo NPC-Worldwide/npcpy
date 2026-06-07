@@ -11,7 +11,8 @@ from collections import defaultdict
 
 from sqlalchemy import create_engine, text
 
-from npcpy.memory.command_history import init_kg_schema, load_kg_from_db, save_kg_to_db
+pytest.importorskip("npcsh", reason="npcsh package required for KG persistence tests")
+from npcsh.history import init_kg_schema, load_kg_from_db, save_kg_to_db
 
 
 # ---------------------------------------------------------------------------

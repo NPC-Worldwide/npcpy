@@ -6,14 +6,22 @@ import shutil
 import pytest
 import yaml
 
+pytest.importorskip("npcsh", reason="npcsh package required for build tests")
+from npcsh.build_funcs import (
+    get_team_name,
+    build_dockerfile,
+    build_docker_compose,
+    build_flask_server,
+    build_cli_executable,
+    build_static_site,
+)
+
 
 class TestGetTeamName:
     """Test get_team_name function."""
 
     def test_get_team_name_from_ctx_file(self):
         """Test extracting team name from .ctx file"""
-        from npcpy.build_funcs import get_team_name
-
         temp_dir = tempfile.mkdtemp()
         try:
             # Create a .ctx file with team name
@@ -29,8 +37,6 @@ class TestGetTeamName:
 
     def test_get_team_name_from_folder(self):
         """Test getting team name from folder when no .ctx file"""
-        from npcpy.build_funcs import get_team_name
-
         temp_dir = tempfile.mkdtemp()
         try:
             # Create a subfolder to test
@@ -44,8 +50,6 @@ class TestGetTeamName:
 
     def test_get_team_name_npc_team_fallback(self):
         """Test fallback when folder is named npc_team"""
-        from npcpy.build_funcs import get_team_name
-
         temp_dir = tempfile.mkdtemp()
         try:
             npc_team_dir = os.path.join(temp_dir, "npc_team")
@@ -63,8 +67,6 @@ class TestBuildDockerfile:
 
     def test_build_dockerfile_default(self):
         """Test Dockerfile generation with defaults"""
-        from npcpy.build_funcs import build_dockerfile
-
         temp_dir = tempfile.mkdtemp()
         try:
             team_dir = os.path.join(temp_dir, "test_team")
@@ -82,8 +84,6 @@ class TestBuildDockerfile:
 
     def test_build_dockerfile_custom_port(self):
         """Test Dockerfile with custom port"""
-        from npcpy.build_funcs import build_dockerfile
-
         temp_dir = tempfile.mkdtemp()
         try:
             team_dir = os.path.join(temp_dir, "my_team")
@@ -103,8 +103,6 @@ class TestBuildDockerCompose:
 
     def test_build_docker_compose_creates_files(self):
         """Test docker-compose build creates all expected files"""
-        from npcpy.build_funcs import build_docker_compose
-
         temp_dir = tempfile.mkdtemp()
         try:
             team_dir = os.path.join(temp_dir, "test_team")
@@ -132,8 +130,6 @@ class TestBuildDockerCompose:
 
     def test_build_docker_compose_with_cors(self):
         """Test docker-compose with CORS origins"""
-        from npcpy.build_funcs import build_docker_compose
-
         temp_dir = tempfile.mkdtemp()
         try:
             team_dir = os.path.join(temp_dir, "test_team")
@@ -164,8 +160,6 @@ class TestBuildFlaskServer:
 
     def test_build_flask_server_creates_script(self):
         """Test Flask server script generation"""
-        from npcpy.build_funcs import build_flask_server
-
         temp_dir = tempfile.mkdtemp()
         try:
             team_dir = os.path.join(temp_dir, "test_team")
@@ -198,8 +192,6 @@ class TestBuildCliExecutable:
 
     def test_build_cli_executable_creates_scripts(self):
         """Test CLI script generation for NPCs"""
-        from npcpy.build_funcs import build_cli_executable
-
         temp_dir = tempfile.mkdtemp()
         try:
             team_dir = os.path.join(temp_dir, "test_team")
@@ -233,8 +225,6 @@ class TestBuildStaticSite:
 
     def test_build_static_site_creates_html(self):
         """Test static site HTML generation"""
-        from npcpy.build_funcs import build_static_site
-
         temp_dir = tempfile.mkdtemp()
         try:
             team_dir = os.path.join(temp_dir, "test_team")
