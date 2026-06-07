@@ -15,8 +15,6 @@ try:
         
 except Exception as e:
     print(f"Error finding sibiji.npc: {e}")
-    sibiji = NPC(primary_directive='You are sibiji, the master planner for all NPCs and genius of the NPC team', 
-                 model='llama3.2', 
-                 provider='ollama', )
+    raise ValueError("sibiji.npc not found and no default model configured.")
     
 

@@ -2903,8 +2903,10 @@ class Team:
 
     def _create_default_forenpc(self):
         """Creates a default forenpc if none can be determined."""
-        forenpc_model = self.model or 'llama3.2'
+        forenpc_model = self.model
         forenpc_provider = self.provider or 'ollama'
+        if not forenpc_model:
+            raise ValueError("No model specified for default forenpc.")
         forenpc_api_key = self.api_key
         forenpc_api_url = self.api_url
         

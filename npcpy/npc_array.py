@@ -308,7 +308,9 @@ class NPCArray:
         specs = []
         for combo in itertools.product(*values):
             config = dict(zip(keys, combo))
-            model = config.pop('model', 'llama3.2')
+            model = config.pop('model', None)
+            if not model:
+                raise ValueError("No model specified in ModelSpec config.")
             provider = config.pop('provider', None)
             specs.append(ModelSpec(
                 model_type="llm",
@@ -342,7 +344,7 @@ class NPCArray:
             >>> matrix = [
             ...     {'model': 'gpt-4', 'provider': 'openai', 'temperature': 0.7},
             ...     {'model': 'claude-3-opus', 'provider': 'anthropic', 'temperature': 0.5},
-            ...     {'model': 'llama3.2', 'provider': 'ollama', 'temperature': 0.8},
+            ...     {'model': 'your-local-model', 'provider': 'ollama', 'temperature': 0.8},
             ... ]
             >>> arr = NPCArray.from_matrix(matrix)
 
@@ -1111,7 +1113,9 @@ class GraphExecutor:
         """LLM-based consensus"""
         from npcpy.llm_funcs import get_llm_response
 
-        model = params.get("model", "llama3.2")
+        model = params.get("model")
+        if not model:
+            raise ValueError("No model specified for consensus reduction.")
 
         def consensus_fn(arr):
             perspectives = "\n".join(f"- {x}" for x in arr)
@@ -1361,7 +1365,7 @@ def infer_matrix(
         ResponseTensor of shape (n_models, n_prompts)
     """
     if models is None:
-        models = ["llama3.2"]
+        raise ValueError("No models specified for ensemble. Pass models=[...].")
 
     arr = NPCArray.from_llms(models, providers)
     return arr.infer(prompts, **kwargs).compute()

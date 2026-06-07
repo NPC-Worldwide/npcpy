@@ -40,7 +40,7 @@ def generate_npcs(
         npc = NPC(
             name=npc_data['name'],
             primary_directive=npc_data['primary_directive'],
-            model='gemma3:4b',
+            model=None,
             provider='ollama'
         )
         npcs.append(npc)
@@ -172,8 +172,7 @@ def run_synthesis_tournament(initial_contenders: list, initial_topic: str, model
     return final_agent, final_idea
 
 if __name__ == "__main__":
-    GENERATION_MODEL = 'llama3.2'
-    GENERATION_PROVIDER = 'ollama'
+    raise ValueError("No model specified. Set model explicitly.")
 
     contender_theme = "Entities from a dimension where logic is a fluid, not a constant"
     contenders = generate_npcs(

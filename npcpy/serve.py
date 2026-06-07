@@ -1460,7 +1460,9 @@ def query_kg():
             )
             ind = KGIndividual(individual_id='ephemeral', genome=genome, kg_data=existing_kg)
             # SememolutionPopulation.search_individual is stateless w.r.t. the population; instantiate a trivial one to reuse it
-            mgr = SememolutionPopulation(engine=engine, model=model or "gemma3:4b", provider=provider or "ollama", population_size=1, sample_size=1)
+            if not model:
+                return jsonify({"error": "No model specified for knowledge graph search."}), 400
+            mgr = SememolutionPopulation(engine=engine, model=model, provider=provider or "ollama", population_size=1, sample_size=1)
             relevant_facts = mgr.search_individual(ind, question)[:top_k]
             relevant_concepts = [c.get('name', '') for c in concepts[:20]]
             if not relevant_facts:
@@ -1590,7 +1592,9 @@ def create_kg_population():
         population_id = (data.get('id') or name).replace(' ', '_')
         pop_size = int(data.get('population_size', 20))
         sample_size = int(data.get('sample_size', 10))
-        model = data.get('model') or app.config.get('DEFAULT_MODEL') or "gemma3:4b"
+        model = data.get('model') or app.config.get('DEFAULT_MODEL')
+        if not model:
+            return jsonify({"error": "No model specified. Set model in request or DEFAULT_MODEL config."}), 400
         provider = data.get('provider') or app.config.get('DEFAULT_PROVIDER') or "ollama"
         seed_from_kg = bool(data.get('seed_from_kg', True))
 
@@ -1917,12 +1921,9 @@ def execute_jinx():
         npc=npc_object,
         team=None,
         conversation_id=conversation_id,
-        chat_model=model or os.getenv('NPCSH_CHAT_MODEL', 'gemma3:4b'),
-        chat_provider=provider or os.getenv('NPCSH_CHAT_PROVIDER', 'ollama'),
+        chat_model=model,
+        chat_provider=provider,
         current_path=current_path or os.getcwd(),
-        search_provider=os.getenv('NPCSH_SEARCH_PROVIDER', 'duckduckgo'),
-        embedding_model=os.getenv('NPCSH_EMBEDDING_MODEL', 'nomic-embed-text'),
-        embedding_provider=os.getenv('NPCSH_EMBEDDING_PROVIDER', 'ollama'),
     )
     
     extra_globals_for_jinx = {
@@ -2013,12 +2014,7 @@ def get_models():
         # Process available models safely
         for m, p in available_models.items():
             try:
-                text_only = (
-                    "(text only)"
-                    if p == "ollama"
-                    and m in ["llama3.2", "deepseek-v3", "phi4", "gemma3:1b"]
-                    else ""
-                )
+                text_only = ""
                 
                 display_model = m
                 if m.endswith(('.gguf', '.ggml')):
@@ -5657,8 +5653,13 @@ def stream():
 
     # ensure_system_prompt imported from npcpy.streaming
     messages = ensure_system_prompt(messages, npc=npc_object)
+    exe_mode = data.get('executionMode','chat')
+
+    stream_response = {"output": "", "messages": messages}
+
+    # Only attach tools in agent mode, never in plain chat
     tool_args = {}
-    if npc_object is not None:
+    if exe_mode == 'tool_agent' and npc_object is not None:
         if hasattr(npc_object, 'tools') and npc_object.tools:
             if isinstance(npc_object.tools, list) and callable(npc_object.tools[0]):
                 tools_schema, tool_map = auto_tools(npc_object.tools)
@@ -5672,10 +5673,6 @@ def stream():
             tool_args['tool_map'] = npc_object.tool_map
         if 'tools' in tool_args and tool_args['tools']:
             tool_args['tool_choice'] = {"type": "auto"}
-    
-    stream_response = {"output": "", "messages": messages}
-
-    exe_mode = data.get('executionMode','chat')
 
     api_url = None
     if npc_object is not None:
@@ -5687,22 +5684,19 @@ def stream():
     if exe_mode == 'chat':
         print(f"[DEBUG] Calling get_llm_response with images={images}, attachments={attachment_paths_for_llm}")
         thinking_kwargs = {}
-        if not disable_thinking and provider in ('anthropic',):
-            thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
-            # Anthropic doesn't allow temperature with extended thinking
-            if params and 'temperature' in params:
-                del params['temperature']
+        if not disable_thinking:
+            thinking_kwargs['thinking'] = True
         stream_response = get_llm_response(
             commandstr,
             messages=messages,
-            images=images,
+            images=images if images else None,
             model=model,
             provider=provider,
             npc=npc_object,
             api_url = api_url,
             team=team_object,
             stream=True,
-            attachments=attachment_paths_for_llm,
+            attachments=attachment_paths_for_llm if attachment_paths_for_llm else None,
             include_usage=True,
             **(params or {}),
             **thinking_kwargs,

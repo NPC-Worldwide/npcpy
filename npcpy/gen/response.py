@@ -1258,11 +1258,13 @@ def get_litellm_response(
     include_usage: bool = False,
     **kwargs,
 ) -> Dict[str, Any]:
+    if not model:
+        raise ValueError("No model specified. Please set a model in your NPC configuration or team settings.")
     result = {
         "response": None,
         "messages": messages.copy() if messages else [],
         "raw_response": None,
-        "tool_calls": [], 
+        "tool_calls": [],
         "tool_results":[],
     }
     if provider == "ollama":
@@ -1502,9 +1504,9 @@ def get_litellm_response(
     if isinstance(format, type) and issubclass(format, BaseModel):
         api_params["response_format"] = format
     if model is None:
-        model = os.environ.get("NPCSH_CHAT_MODEL", "llama3.2")
+        raise ValueError("No model specified. Please set a model in your NPC configuration or team settings.")
     if provider is None:
-        provider = os.environ.get("NPCSH_CHAT_PROVIDER")
+        raise ValueError("No provider specified. Please set a provider in your NPC configuration or team settings.")
 
     if "api_base" in api_params and provider == "openai":
         api_params["model"] = f"openai/{model}"
