@@ -125,7 +125,7 @@ def clean_messages_for_llm(messages: List[dict]) -> List[dict]:
 # System prompt management
 # ---------------------------------------------------------------------------
 
-def ensure_system_prompt(messages: List[dict], npc=None, system_prompt: str = None) -> List[dict]:
+def ensure_system_prompt(messages: List[dict], npc=None, system_prompt: str = None, tool_capable=False) -> List[dict]:
     """Ensure messages start with a system prompt.
 
     If *system_prompt* is given it takes precedence; otherwise falls back to
@@ -133,7 +133,7 @@ def ensure_system_prompt(messages: List[dict], npc=None, system_prompt: str = No
     """
     prompt = system_prompt
     if prompt is None and npc is not None and hasattr(npc, 'get_system_prompt'):
-        prompt = npc.get_system_prompt()
+        prompt = npc.get_system_prompt(tool_capable=tool_capable)
 
     if not prompt:
         return messages

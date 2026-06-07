@@ -1879,12 +1879,12 @@ class NPC:
 
         return tools_for_llm, tool_executors
 
-    def get_system_prompt(self, simple=False):
+    def get_system_prompt(self, simple=False, tool_capable=False):
         """Get system prompt for the NPC"""
         if simple or self.plain_system_message:
             return self.primary_directive
         else:
-            return get_system_message(self, team=self.team)
+            return get_system_message(self, team=self.team, tool_capable=tool_capable)
 
     def _setup_db(self):
         """Set up database tables and determine type"""

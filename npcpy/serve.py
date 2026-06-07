@@ -5651,9 +5651,13 @@ def stream():
     # clean_messages_for_llm imported from npcpy.streaming
     messages = clean_messages_for_llm(messages)
 
-    # ensure_system_prompt imported from npcpy.streaming
-    messages = ensure_system_prompt(messages, npc=npc_object)
     exe_mode = data.get('executionMode','chat')
+    # Chat mode should never see jinx instructions; strip them from the NPC
+    # before building the system prompt so the model outputs plain text.
+    if exe_mode == 'chat' and npc_object is not None and hasattr(npc_object, 'jinxes_dict'):
+        npc_object.jinxes_dict = {}
+    # ensure_system_prompt imported from npcpy.streaming
+    messages = ensure_system_prompt(messages, npc=npc_object, tool_capable=(exe_mode == 'tool_agent'))
 
     stream_response = {"output": "", "messages": messages}
 
@@ -5684,8 +5688,15 @@ def stream():
     if exe_mode == 'chat':
         print(f"[DEBUG] Calling get_llm_response with images={images}, attachments={attachment_paths_for_llm}")
         thinking_kwargs = {}
-        if not disable_thinking:
-            thinking_kwargs['thinking'] = True
+        if disable_thinking:
+            if provider in ('ollama',):
+                thinking_kwargs['think'] = False
+            else:
+                thinking_kwargs['reasoning_effort'] = 'none'
+        elif provider in ('anthropic',):
+            thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
+            if params and 'temperature' in params:
+                del params['temperature']
         stream_response = get_llm_response(
             commandstr,
             messages=messages,
@@ -5791,7 +5802,7 @@ def stream():
         if not messages:
             messages = []
         if not any(m.get('role') == 'system' for m in messages):
-            system_prompt = npc_object.get_system_prompt() if npc_object else "You are a helpful assistant with access to tools."
+            system_prompt = npc_object.get_system_prompt(tool_capable=True) if npc_object else "You are a helpful assistant with access to tools."
             messages.insert(0, {'role': 'system', 'content': system_prompt})
 
         def stream_mcp_sse():
