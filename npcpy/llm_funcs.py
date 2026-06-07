@@ -172,10 +172,7 @@ def resolve_model_provider(
             p = team.provider
     else:
         p = "ollama"
-        if images is not None or attachments is not None:
-            m = "llava:7b"
-        else:
-            m = "llama3.2"
+        m = None
     # Always resolve api_url and api_key from npc/team if not explicitly provided
     if a_url is None and npc is not None and getattr(npc, 'api_url', None) is not None:
         a_url = npc.api_url
@@ -252,6 +249,8 @@ def get_llm_response(
             else:
                 run_messages.append({"role": "user", "content": full_text})
 
+        if not run_model:
+            raise ValueError("No model specified. Please set a model in your NPC configuration or team settings.")
         return get_litellm_response(
             full_text or None,
             messages=run_messages,

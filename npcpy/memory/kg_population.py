@@ -186,9 +186,11 @@ class SememolutionPopulation:
     Handles query-time sampling, search, response generation, and ranking.
     """
 
-    def __init__(self, engine=None, model: str = "gemma3:4b",
+    def __init__(self, engine=None, model: str = None,
                  provider: str = "ollama", population_size: int = 100,
                  sample_size: int = 10):
+        if not model:
+            raise ValueError("No model specified for SememolutionPopulation.")
         self.engine = engine
         self.model = model
         self.provider = provider
@@ -558,7 +560,7 @@ def load_population(engine, population_id: str) -> Optional['SememolutionPopulat
 
     mgr = SememolutionPopulation(
         engine=engine,
-        model=row.model or "gemma3:4b",
+        model=row.model,
         provider=row.provider or "ollama",
         population_size=int(cfg.get('population_size', max(1, len(inds_rows) or 10))),
         sample_size=int(row.sample_size or 10),
