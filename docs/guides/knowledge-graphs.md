@@ -205,46 +205,91 @@ results = kg_hybrid_search(
 # Returns: List[dict] with 'content', 'type', 'score', 'source'
 ```
 
+## Managing Facts and Concepts
+
+Low-level CRUD operations for direct KG manipulation.
+
+### Add Fact
+
+```python
+from npcpy.memory.knowledge_graph import kg_add_fact
+
+result = kg_add_fact(engine, "Rust enforces memory safety at compile time.")
+# Returns: str -- confirmation message
+```
+
+### Remove Fact
+
+```python
+from npcpy.memory.knowledge_graph import kg_remove_fact
+
+kg_remove_fact(engine, "Rust enforces memory safety at compile time.")
+```
+
+### Add Concept
+
+```python
+from npcpy.memory.knowledge_graph import kg_add_concept
+
+kg_add_concept(
+    engine,
+    concept_name="Ownership",
+    concept_description="Rust's ownership system ensures exactly one owner per value at any time.",
+)
+# Returns: str -- confirmation message
+```
+
+### Remove Concept
+
+```python
+from npcpy.memory.knowledge_graph import kg_remove_concept
+
+kg_remove_concept(engine, concept_name="Ownership")
+```
+
+### Link Fact to Concept
+
+```python
+from npcpy.memory.knowledge_graph import kg_link_fact_to_concept
+
+kg_link_fact_to_concept(
+    engine,
+    fact_text="Rust enforces memory safety at compile time.",
+    concept_name="Ownership",
+)
+# Creates a bidirectional link between the fact and concept in the graph.
+```
+
+### List Concepts
+
+```python
+from npcpy.memory.knowledge_graph import kg_list_concepts
+
+concepts = kg_list_concepts(engine)
+# Returns: List[dict] with 'name', 'description', 'generation'
+```
+
+### Get Facts for Concept
+
+```python
+from npcpy.memory.knowledge_graph import kg_get_facts_for_concept
+
+facts = kg_get_facts_for_concept(engine, concept_name="Ownership")
+# Returns: List[str] -- fact statements linked to the concept
+```
+
+### Get All Facts
+
+```python
+from npcpy.memory.knowledge_graph import kg_get_all_facts
+
+all_facts = kg_get_all_facts(engine)
+# Returns: List[dict] with 'statement', 'generation', 'origin', 'type'
+```
+
 ## Visualization
 
-The `npcpy.memory.kg_vis` module provides several visualization functions.
-
-### Interactive Graph (PyVis)
-
-Generates an HTML file with an interactive node-link diagram.
-
-```python
-from npcpy.memory.kg_vis import visualize_knowledge_graph_final_interactive
-
-visualize_knowledge_graph_final_interactive(kg, filename="my_kg.html")
-# Open my_kg.html in a browser. Facts are blue, concepts are green.
-```
-
-### Growth Chart
-
-Track facts and concepts over generations.
-
-```python
-from npcpy.memory.kg_vis import visualize_growth
-
-# Pass a list of KG snapshots from successive generations
-visualize_growth([kg_gen0, kg_gen1, kg_gen2], filename="growth.png")
-```
-
-### Concept Trajectories
-
-Track how concept centrality (importance) changes over generations.
-
-```python
-from npcpy.memory.kg_vis import visualize_concept_trajectories
-
-visualize_concept_trajectories(
-    [kg_gen0, kg_gen1, kg_gen2],
-    n_pillars=2,   # stable backbone concepts (dashed lines)
-    n_risers=3,    # fast-growing newcomers (solid lines)
-    filename="trajectories.png"
-)
-```
+Visualization helpers are available via the separate `npcpy-viz` companion package. Install with `pip install npcpy-viz` for interactive PyVis graphs, growth charts, and concept trajectory plots.
 
 ## Corpus-to-KG Pipeline
 
