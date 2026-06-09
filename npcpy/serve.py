@@ -625,16 +625,6 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
         candidate = os.path.join(current_path, "npc_team")
         if os.path.isdir(candidate):
             team_path = candidate
-    if not team_path:
-        # Prefer incognide team over global team
-        incognide_team = os.path.expanduser("~/.npcsh/incognide/npc_team")
-        if os.path.isdir(incognide_team):
-            team_path = incognide_team
-        else:
-            global_team = os.path.expanduser("~/.npcsh/npc_team")
-            if os.path.isdir(global_team):
-                team_path = global_team
-
     if team_path:
         return f"{sys.executable} -m npcpy.mcp_server --team {team_path}"
 
@@ -692,7 +682,6 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
     else:
         directories = [
             app.config['user_npc_directory'],
-            os.path.expanduser("~/.npcsh/incognide/npc_team"),
         ]
 
     for npc_directory in directories:
@@ -1779,8 +1768,10 @@ def get_available_jinxes():
         if current_path:
             dirs_to_scan.append(os.path.join(current_path, 'agents', 'jinxes'))
             dirs_to_scan.append(os.path.join(current_path, 'npc_team', 'jinxes'))
-        dirs_to_scan.append(os.path.expanduser('~/.npcsh/agents/jinxes'))
-        dirs_to_scan.append(os.path.expanduser('~/.npcsh/npc_team/jinxes'))
+        user_npc_dir = app.config.get('user_npc_directory')
+        if user_npc_dir:
+            dirs_to_scan.append(os.path.join(os.path.dirname(user_npc_dir), 'agents', 'jinxes'))
+            dirs_to_scan.append(os.path.join(user_npc_dir, 'jinxes'))
         package_dir = app.config.get('PACKAGE_NPC_TEAM_DIR')
         if package_dir:
             dirs_to_scan.append(os.path.join(package_dir, 'jinxes'))
@@ -1852,7 +1843,7 @@ def execute_jinx():
                 break
 
     if not jinx:
-        global_jinxes_base = os.path.expanduser('~/.npcsh/npc_team/jinxes')
+        global_jinxes_base = os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')
         for j in load_jinxes_from_directory(global_jinxes_base):
             if j.jinx_name == jinx_name:
                 jinx = j
@@ -1866,7 +1857,7 @@ def execute_jinx():
             searched_paths.append(f"NPC {npc_name} jinxes_dict")
         if current_path:
             searched_paths.append(f"Project jinxes at {os.path.join(current_path, 'npc_team', 'jinxes')}")
-        searched_paths.append(f"Global jinxes at {os.path.expanduser('~/.npcsh/npc_team/jinxes')}")
+        searched_paths.append(f"Global jinxes at {os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')}")
         print(f"Searched in: {', '.join(searched_paths)}", file=sys.stderr)
         return jsonify({"error": f"Jinx '{jinx_name}' not found"}), 404
     
@@ -1996,7 +1987,7 @@ def get_models():
     global available_models
     current_path = request.args.get("currentPath")
     if not current_path:
-        current_path = os.path.expanduser("~/.npcsh")  
+        current_path = os.path.dirname(app.config.get('user_npc_directory')) or os.path.expanduser('~/npc_team')  
         print("Warning: No currentPath provided for /api/models, using default.")
 
     formatted_models = []
@@ -2086,7 +2077,10 @@ def save_jinx():
             return jsonify({"error": "Jinx name is required"}), 400
 
         if is_global:
-            jinxes_dir = os.path.join(os.path.expanduser("~"), ".npcsh", "npc_team", "jinxes")
+            user_npc_dir = app.config.get('user_npc_directory')
+            if not user_npc_dir:
+                return jsonify({"error": "user_npc_directory not configured"}), 500
+            jinxes_dir = os.path.join(user_npc_dir, "jinxes")
         else:
             if not current_path.endswith("npc_team"):
                 current_path = os.path.join(current_path, "npc_team")
@@ -2120,7 +2114,7 @@ def delete_jinx():
             file_path = source_path
         elif jinx_path:
             if scope == "global":
-                jinxes_dir = os.path.join(os.path.expanduser("~"), ".npcsh", "npc_team", "jinxes")
+                jinxes_dir = os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')
             else:
                 base = current_path
                 if not base.endswith("npc_team"):
@@ -2185,9 +2179,9 @@ def ingest_jinx_from_url():
 
         # Determine the target directory
         if scope == "global":
-            jinxes_dir = os.path.join(os.path.expanduser("~"), ".npcsh", "npc_team", "jinxes")
+            jinxes_dir = os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')
         else:
-            base = current_path if current_path else os.path.expanduser("~/.npcsh")
+            base = current_path if current_path else (app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'))
             if not base.endswith("npc_team"):
                 base = os.path.join(base, "npc_team")
             jinxes_dir = os.path.join(base, "jinxes")
@@ -3403,19 +3397,20 @@ def save_npc():
         npc_data = data.get("npc")
         is_global = data.get("isGlobal")
         current_path = data.get("currentPath")
-        team = data.get("team")  # 'npcsh' | 'incognide' | 'project'
+        team = data.get("team")  # 'npcsh' | 'project'
 
         if not npc_data or "name" not in npc_data:
             return jsonify({"error": "Invalid NPC data"}), 400
 
-        # Prefer explicit team, fall back to isGlobal
-        if team == "incognide":
-            npc_directory = os.path.expanduser("~/.npcsh/incognide/npc_team")
-        elif team == "npcsh" or (team is None and is_global):
-            npc_directory = os.path.expanduser("~/.npcsh/npc_team")
+        if is_global:
+            npc_directory = app.config.get('user_npc_directory')
+            if not npc_directory:
+                return jsonify({"error": "user_npc_directory not configured"}), 500
         else:
             npc_directory = os.path.join(current_path, "npc_team")
 
+        known_keys = {"name", "primary_directive", "model", "provider", "api_url", "use_global_jinxes", "jinxes"}
+        extra = {k: v for k, v in npc_data.items() if k not in known_keys}
         npc = NPC(
             name=npc_data["name"],
             primary_directive=npc_data.get("primary_directive", ""),
@@ -3424,6 +3419,7 @@ def save_npc():
             api_url=npc_data.get("api_url", ""),
             use_global_jinxes=npc_data.get("use_global_jinxes", True),
             jinxes=npc_data.get("jinxes"),
+            **extra,
         )
         npc.save(npc_directory)
 
@@ -3435,7 +3431,10 @@ def save_npc():
 
 @app.route("/api/jinxes/global")
 def get_jinxes_global():
-    global_jinx_directory = os.path.expanduser("~/.npcsh/npc_team/jinxes")
+    user_npc_dir = app.config.get('user_npc_directory')
+    if not user_npc_dir:
+        return jsonify({"jinxes": [], "error": "user_npc_directory not configured"}), 500
+    global_jinx_directory = os.path.join(user_npc_dir, "jinxes")
     if not os.path.exists(global_jinx_directory):
         return jsonify({"jinxes": [], "error": None})
     return jsonify({"jinxes": _serialize_jinxes_from_dir(global_jinx_directory), "error": None})
@@ -3460,7 +3459,9 @@ def run_npcsql_model():
         data = request.json
         models_dir = data.get("modelsDir")
         model_name = data.get("modelName")
-        npc_directory = data.get("npcDirectory", os.path.expanduser("~/.npcsh/npc_team"))
+        npc_directory = data.get("npcDirectory")
+        if not npc_directory:
+            return jsonify({"success": False, "error": "npcDirectory is required"}), 400
         target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
 
         if not models_dir or not model_name:
@@ -3506,7 +3507,9 @@ def run_all_npcsql_models():
 
         data = request.json
         models_dir = data.get("modelsDir")
-        npc_directory = data.get("npcDirectory", os.path.expanduser("~/.npcsh/npc_team"))
+        npc_directory = data.get("npcDirectory")
+        if not npc_directory:
+            return jsonify({"success": False, "error": "npcDirectory is required"}), 400
         target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
 
         if not models_dir:
@@ -3555,8 +3558,8 @@ def list_npcsql_models():
 
         compiler = ModelCompiler(
             models_dir=models_dir,
-            target_engine=os.path.expanduser("~/npcsh_history.db"),
-            npc_directory=os.path.expanduser("~/.npcsh/npc_team")
+            target_engine=app.config.get('DB_PATH') or os.path.expanduser('~/npcsh_history.db'),
+            npc_directory=app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team')
         )
 
         compiler.discover_models()
@@ -3700,22 +3703,23 @@ def get_service_info(unit):
 def get_npc_team_global():
     npc_data = []
     seen_names = set()
+    registered_teams = _parse_registered_teams()
 
-    team_dirs = [
-        ("npcsh", os.path.expanduser("~/.npcsh/npc_team")),
-        ("incognide", os.path.expanduser("~/.npcsh/incognide/npc_team")),
-    ]
+    search_dirs = []
+    user_dir = app.config.get('user_npc_directory')
+    if user_dir and os.path.exists(user_dir):
+        search_dirs.append(user_dir)
+    for p in registered_teams:
+        if p and os.path.isdir(p):
+            search_dirs.append(p)
 
-    for team_name, team_dir in team_dirs:
-        if not os.path.exists(team_dir):
-            continue
+    for team_dir in search_dirs:
         try:
             team = Team(team_path=team_dir, db_conn=get_db_connection())
             for name, npc in team.npcs.items():
                 if name not in seen_names:
                     seen_names.add(name)
                     d = npc.to_dict()
-                    d["team"] = team_name
                     npc_data.append(d)
         except Exception as e:
             print(f"Error loading team from {team_dir}: {e}")
@@ -3771,7 +3775,9 @@ def import_npc_team():
 
     # Determine target directory
     if scope == "global":
-        target = os.path.expanduser("~/.npcsh/npc_team")
+        target = app.config.get('user_npc_directory')
+        if not target:
+            return jsonify({"error": "user_npc_directory not configured"}), 500
     else:
         if not current_path:
             return jsonify({"error": "currentPath required for project scope"}), 400
@@ -3902,7 +3908,10 @@ def api_get_last_used_in_conversation():
 def get_ctx_path(is_global, current_path=None, create_default=False):
     """Determines the path to the .ctx file."""
     if is_global:
-        ctx_dir = os.path.join(os.path.expanduser("~/.npcsh/npc_team/"))
+        user_npc_dir = app.config.get('user_npc_directory')
+        if not user_npc_dir:
+            return None
+        ctx_dir = os.path.join(user_npc_dir)
         ctx_files = glob.glob(os.path.join(ctx_dir, "*.ctx"))
         if ctx_files:
             return ctx_files[0]
@@ -4072,14 +4081,15 @@ def init_project_team():
 def check_npcsh_folder():
     """Check if npcsh has been initialized by looking for actual npc_team content."""
     try:
-        npcsh_path = os.path.expanduser("~/.npcsh")
-        npc_team_path = os.path.join(npcsh_path, "npc_team")
-        initialized = os.path.isdir(npc_team_path) and any(
-            f.endswith('.npc') for f in os.listdir(npc_team_path)
-        ) if os.path.exists(npc_team_path) else False
+        user_npc_dir = app.config.get('user_npc_directory')
+        initialized = False
+        if user_npc_dir and os.path.isdir(user_npc_dir):
+            initialized = any(
+                f.endswith('.npc') for f in os.listdir(user_npc_dir)
+            ) if os.path.exists(user_npc_dir) else False
         return jsonify({
             "initialized": initialized,
-            "path": npcsh_path,
+            "path": user_npc_dir,
             "error": None
         })
     except Exception as e:
@@ -5023,6 +5033,13 @@ def get_mcp_tools():
             print(f"Disconnecting temporary MCP client for {server_path}.")
             temp_mcp_client.disconnect_sync()
 
+def _parse_registered_teams():
+    """Parse registered_teams from request query params (comma-separated paths)."""
+    raw = request.args.get('registered_teams', '')
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(',') if p.strip()]
+
 @app.route("/api/npc_tools", methods=["GET"])
 def get_npc_tools():
     """
@@ -5032,6 +5049,7 @@ def get_npc_tools():
     npc_name_param = request.args.get("npc")
     team_path_param = request.args.get("team_path")
     current_path_arg = request.args.get("currentPath")
+    registered_teams = _parse_registered_teams()
 
     try:
         from npcpy.npc_compiler import NPC, Team, build_jinx_tool_catalog
@@ -5053,8 +5071,8 @@ def get_npc_tools():
             search_dirs = []
             if current_path_arg:
                 search_dirs.append(os.path.join(os.path.abspath(current_path_arg), "npc_team", "npcs"))
-            search_dirs.append(os.path.expanduser("~/.npcsh/npc_team/npcs"))
-            search_dirs.append(os.path.expanduser("~/.npcsh/incognide/npc_team/npcs"))
+            for team_path in registered_teams:
+                search_dirs.append(os.path.join(team_path, "npcs"))
             for d in search_dirs:
                 npc_file = os.path.join(d, f"{npc_name_param}.npc")
                 if os.path.exists(npc_file):
@@ -5097,24 +5115,6 @@ def get_npc_tools():
                 elif isinstance(srv, dict):
                     label = srv.get("path") or srv.get("url") or f"{srv.get('command', '')} {' '.join(srv.get('args', []))}"
                     team_servers.append({**srv, "label": label, "enabled": False})
-
-        # Auto-discover NPC team folders as startable MCP servers
-        npcsh_dir = os.path.expanduser("~/.npcsh")
-        team_candidates = [
-            os.path.join(npcsh_dir, "incognide", "npc_team"),
-            os.path.join(npcsh_dir, "npc_team"),
-        ]
-        if current_path_arg:
-            team_candidates.append(os.path.join(os.path.abspath(current_path_arg), "npc_team"))
-        seen = {s.get("path", "") for s in team_servers}
-        for tdir in team_candidates:
-            if os.path.isdir(tdir):
-                ctx_files = [f for f in os.listdir(tdir) if f.endswith(".ctx")]
-                tlabel = ctx_files[0].replace(".ctx", "") if ctx_files else os.path.basename(os.path.dirname(tdir))
-                cmd = f"python -m npcpy.mcp_server --team {tdir}"
-                if cmd not in seen:
-                    team_servers.append({"path": cmd, "label": f"{tlabel} NPC Team", "enabled": False})
-                    seen.add(cmd)
 
         return jsonify({
             "npc_tools": npc_tools,
@@ -5474,6 +5474,7 @@ def stream():
     npc_name = data.get("npc", None)
     npc_source = data.get("npcSource", "global")
     current_path = data.get("currentPath")
+    registered_teams = data.get("registered_teams", [])
     is_resend = data.get("isResend", False)
     parent_message_id = data.get("parentMessageId", None)
     frontend_user_message_id = data.get("userMessageId", None)
@@ -5540,11 +5541,32 @@ def stream():
             print(f"Found NPC {npc_name} in registered NPCs (no specific team)")
             team_object = Team(team_path=npc_object.npc_directory, db_conn=db_conn)
             npc_object.team = team_object
+        if not npc_object and registered_teams:
+            db_conn = get_db_connection()
+            for team_path in registered_teams:
+                if not team_path or not os.path.isdir(team_path):
+                    continue
+                try:
+                    team_obj = Team(team_path=team_path, db_conn=db_conn)
+                    if npc_name in team_obj.npcs:
+                        npc_object = team_obj.npcs[npc_name]
+                        team_object = team_obj
+                        print(f"Found NPC {npc_name} in registered team {team_path}")
+                        break
+                    elif hasattr(team_obj, 'forenpc') and team_obj.forenpc and team_obj.forenpc.name == npc_name:
+                        npc_object = team_obj.forenpc
+                        team_object = team_obj
+                        print(f"Found NPC {npc_name} as forenpc in registered team {team_path}")
+                        break
+                except Exception as e:
+                    print(f"Error loading registered team {team_path}: {e}")
+                    continue
+
         if not npc_object:
             db_conn = get_db_connection()
-            npc_object = load_npc_by_name_and_source(npc_name, 
-                                                     npc_source, 
-                                                     db_conn, 
+            npc_object = load_npc_by_name_and_source(npc_name,
+                                                     npc_source,
+                                                     db_conn,
                                                      current_path)
             if not npc_object and npc_source == 'project':
                 print(f"NPC {npc_name} not found in project directory, trying global...")
@@ -7104,6 +7126,7 @@ def openai_chat_completions():
         agent_name = data.get("agent") or data.get("npc")
 
         current_path = request.headers.get("X-Current-Path", os.getcwd())
+        registered_teams = data.get("registered_teams", [])
 
         db_path = app.config.get('DB_PATH') or os.path.expanduser("~/npcsh_history.db")
         db_conn = create_engine(f'sqlite:///{db_path}')
@@ -7112,19 +7135,32 @@ def openai_chat_completions():
         team = None
 
         project_team_path = os.path.join(current_path, "npc_team")
-        global_team_path = os.path.expanduser("~/.npcsh/npc_team")
+        search_paths = [project_team_path] + [p for p in registered_teams if p and os.path.isdir(p)]
 
-        team_path = project_team_path if os.path.exists(project_team_path) else global_team_path
+        for team_path in search_paths:
+            if os.path.exists(team_path):
+                try:
+                    team = Team(team_path, db_conn=db_conn)
+                    if agent_name and agent_name in team.npcs:
+                        npc = team.npcs[agent_name]
+                        break
+                    elif team.forenpc:
+                        npc = team.forenpc
+                        break
+                except Exception as e:
+                    print(f"Error loading team {team_path}: {e}")
+                    continue
 
-        if os.path.exists(team_path):
-            try:
-                team = Team(team_path, db_conn=db_conn)
-                if agent_name and agent_name in team.npcs:
-                    npc = team.npcs[agent_name]
-                elif team.forenpc:
-                    npc = team.forenpc
-            except Exception as e:
-                print(f"Error loading team: {e}")
+        if not npc and agent_name:
+            # Fallback: try registered teams as directories containing NPC files
+            for team_path in search_paths:
+                npc_file = os.path.join(team_path, f"{agent_name}.npc")
+                if os.path.exists(npc_file):
+                    try:
+                        npc = NPC(npc_file=npc_file)
+                        break
+                    except Exception as e:
+                        print(f"Error loading NPC {npc_file}: {e}")
 
         prompt = ""
         conversation_messages = []
@@ -7278,13 +7314,13 @@ def openai_chat_completions():
 def openai_list_models():
     """OpenAI-compatible models listing - returns available NPCs as models."""
     current_path = request.headers.get("X-Current-Path", os.getcwd())
+    registered_teams = _parse_registered_teams()
 
     models = []
 
-    project_team_path = os.path.join(current_path, "npc_team")
-    global_team_path = os.path.expanduser("~/.npcsh/npc_team")
+    search_paths = [os.path.join(current_path, "npc_team")] + [p for p in registered_teams if p and os.path.isdir(p)]
 
-    for team_path in [project_team_path, global_team_path]:
+    for team_path in search_paths:
         if os.path.exists(team_path):
             for npc_file in Path(team_path).glob("*.npc"):
                 models.append({
@@ -7455,7 +7491,9 @@ def generate_music_endpoint():
         model = data.get('model')
         duration = int(data.get('duration', 10))
         api_key = data.get('api_key')
-        current_path = data.get('currentPath') or data.get('current_path') or os.path.expanduser('~/.npcsh/audio')
+        current_path = data.get('currentPath') or data.get('current_path')
+        if not current_path:
+            return jsonify({'success': False, 'error': 'currentPath is required'}), 400
 
         result = generate_music(
             prompt=prompt,
@@ -7691,290 +7729,6 @@ def track_activity():
         print(f"Error tracking activity: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-_pending_studio_actions = {}
-_studio_action_counter = 0
-
-_studio_action_results = {}
-
-import queue
-import threading
-# Window-aware SSE subscribers: {window_id: {"queue": Queue, "folder": str, "title": str}}
-_sse_subscribers = {}
-_sse_lock = threading.Lock()
-# Legacy list for backwards compat with unidentified connections
-_sse_subscribers_legacy = []
-
-def _notify_sse_subscribers(action_id, action_data, window_id=None):
-    """Push action to SSE subscribers. If window_id given, only push to that window."""
-    payload = {'id': action_id, **action_data}
-    if window_id:
-        payload['window_id'] = window_id
-    with _sse_lock:
-        if window_id and window_id in _sse_subscribers:
-            try:
-                _sse_subscribers[window_id]['queue'].put_nowait(payload)
-            except Exception:
-                del _sse_subscribers[window_id]
-        else:
-            # Broadcast to all
-            dead = []
-            for wid, sub in _sse_subscribers.items():
-                try:
-                    sub['queue'].put_nowait(payload)
-                except Exception:
-                    dead.append(wid)
-            for wid in dead:
-                del _sse_subscribers[wid]
-            # Also broadcast to legacy subscribers
-            dead_legacy = []
-            for q in _sse_subscribers_legacy:
-                try:
-                    q.put_nowait(payload)
-                except Exception:
-                    dead_legacy.append(q)
-            for q in dead_legacy:
-                _sse_subscribers_legacy.remove(q)
-
-@app.route('/api/studio/action', methods=['POST'])
-def studio_action():
-    """
-    Queue a studio action for the frontend to execute.
-    Called by the incognide MCP server to trigger UI actions.
-    Returns an action_id that can be used to poll for results.
-    """
-    global _studio_action_counter
-    try:
-        data = request.json or {}
-        action = data.get('action')
-        args = data.get('args', {})
-        window_id = data.get('window_id', '')
-
-        if not action:
-            return jsonify({'success': False, 'error': 'Missing action'}), 400
-
-        _studio_action_counter += 1
-        action_id = f"mcp_action_{_studio_action_counter}"
-
-        action_data = {
-            'action': action,
-            'args': args,
-            'status': 'pending'
-        }
-        if window_id:
-            action_data['window_id'] = window_id
-        _pending_studio_actions[action_id] = action_data
-
-        print(f"[Studio] Queued action {action_id}: {action}" + (f" -> window {window_id}" if window_id else ""))
-
-        _notify_sse_subscribers(action_id, action_data, window_id=window_id)
-
-        import time
-        start_time = time.time()
-        timeout = 30
-
-        while time.time() - start_time < timeout:
-            if action_id in _studio_action_results:
-                result = _studio_action_results.pop(action_id)
-                _pending_studio_actions.pop(action_id, None)
-                return jsonify(result)
-            time.sleep(0.1)
-
-        _pending_studio_actions.pop(action_id, None)
-        return jsonify({'success': False, 'error': 'Action timed out waiting for frontend'}), 504
-
-    except Exception as e:
-        print(f"Error processing studio action: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/studio/pending_actions', methods=['GET'])
-def get_pending_studio_actions():
-    """
-    Get all pending studio actions for the frontend to execute.
-    Fallback for when SSE is not available.
-    """
-    try:
-        pending = {
-            aid: action for aid, action in _pending_studio_actions.items()
-            if action.get('status') == 'pending'
-        }
-        return jsonify({'success': True, 'actions': pending})
-    except Exception as e:
-        print(f"Error getting pending actions: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/studio/actions_stream', methods=['GET'])
-def studio_actions_stream():
-    """
-    SSE endpoint for streaming pending actions to the frontend.
-    Frontend connects once, receives actions as they're created.
-    Accepts optional query params: windowId, folder
-    """
-    import json as json_module
-    window_id = request.args.get('windowId', '')
-    folder = request.args.get('folder', '')
-
-    def generate():
-        q = queue.Queue()
-        with _sse_lock:
-            if window_id:
-                _sse_subscribers[window_id] = {
-                    'queue': q,
-                    'folder': folder,
-                    'title': '',
-                }
-                print(f"[Studio] SSE subscriber registered: window={window_id} folder={folder}")
-            else:
-                _sse_subscribers_legacy.append(q)
-        try:
-            for aid, action in _pending_studio_actions.items():
-                if action.get('status') == 'pending':
-                    target = action.get('window_id', '')
-                    if not target or target == window_id:
-                        data = json_module.dumps({'id': aid, **action})
-                        yield f"data: {data}\n\n"
-
-            while True:
-                try:
-                    action = q.get(timeout=30)
-                    data = json_module.dumps(action)
-                    yield f"data: {data}\n\n"
-                except queue.Empty:
-                    yield ": keepalive\n\n"
-        finally:
-            with _sse_lock:
-                if window_id and window_id in _sse_subscribers:
-                    del _sse_subscribers[window_id]
-                    print(f"[Studio] SSE subscriber disconnected: window={window_id}")
-                elif q in _sse_subscribers_legacy:
-                    _sse_subscribers_legacy.remove(q)
-
-    return Response(generate(), mimetype='text/event-stream', headers={
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no'
-    })
-
-@app.route('/api/studio/action_complete', methods=['POST'])
-def studio_action_complete():
-    """
-    Called by the frontend after executing a studio action.
-    Stores the result so the waiting /api/studio/action call can return.
-    """
-    try:
-        data = request.json or {}
-        action_id = data.get('actionId')
-        result = data.get('result', {})
-
-        if not action_id:
-            return jsonify({'success': False, 'error': 'Missing actionId'}), 400
-
-        if action_id in _pending_studio_actions:
-            _pending_studio_actions[action_id]['status'] = 'complete'
-
-        _studio_action_results[action_id] = result
-        print(f"[Studio] Action complete {action_id}: success={result.get('success', False)}")
-
-        return jsonify({'success': True})
-    except Exception as e:
-        print(f"Error completing studio action: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/studio/register_window', methods=['POST'])
-def register_studio_window():
-    """
-    Register or update a window's metadata.
-    Called by frontend on connect or workspace switch.
-    """
-    # Ensure we always return JSON, never HTML
-    try:
-        # Validate request is JSON
-        if not request.is_json:
-            return jsonify({'success': False, 'error': 'Content-Type must be application/json'}), 400
-            
-        data = request.get_json(silent=True) or {}
-        window_id = data.get('windowId', '')
-        folder = data.get('folder', '')
-        title = data.get('title', '')
-
-        if not window_id:
-            return jsonify({'success': False, 'error': 'Missing windowId'}), 400
-
-        with _sse_lock:
-            if window_id in _sse_subscribers:
-                _sse_subscribers[window_id]['folder'] = folder
-                _sse_subscribers[window_id]['title'] = title
-                print(f"[Studio] Window updated: {window_id} folder={folder}")
-            else:
-                print(f"[Studio] Window registered (no SSE yet): {window_id} folder={folder}")
-
-        return jsonify({'success': True, 'windowId': window_id})
-    except Exception as e:
-        print(f"Error registering window: {e}")
-        traceback.print_exc()
-        # Always return JSON even on error
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/studio/windows', methods=['GET'])
-def list_studio_windows():
-    """
-    List all connected windows with their IDs, folders, and titles.
-    """
-    try:
-        windows = []
-        with _sse_lock:
-            for wid, sub in _sse_subscribers.items():
-                windows.append({
-                    'id': wid,
-                    'folder': sub.get('folder', ''),
-                    'title': sub.get('title', ''),
-                })
-        return jsonify({'success': True, 'windows': windows, 'count': len(windows)})
-    except Exception as e:
-        print(f"Error listing windows: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/studio/action_result', methods=['POST'])
-def studio_action_result():
-    """
-    Receive action results from the frontend after executing studio.* tool calls.
-    This allows the agent to continue with the result of UI actions.
-    """
-    try:
-        data = request.json or {}
-        stream_id = data.get('streamId')
-        tool_id = data.get('toolId')
-        result = data.get('result', {})
-
-        if not stream_id or not tool_id:
-            return jsonify({'success': False, 'error': 'Missing streamId or toolId'}), 400
-
-        key = f"{stream_id}_{tool_id}"
-        _studio_action_results[key] = result
-
-        print(f"[Studio] Received action result for {key}: {result.get('success', False)}")
-        return jsonify({'success': True, 'stored': key})
-    except Exception as e:
-        print(f"Error storing studio action result: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/studio/action_result/<stream_id>/<tool_id>', methods=['GET'])
-def get_studio_action_result(stream_id, tool_id):
-    """
-    Retrieve a pending action result for the agent to continue.
-    """
-    try:
-        key = f"{stream_id}_{tool_id}"
-        result = _studio_action_results.get(key)
-
-        if result is None:
-            return jsonify({'success': False, 'pending': True}), 202
-
-        del _studio_action_results[key]
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        print(f"Error retrieving studio action result: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
 def start_flask_server(
     port=5337,
     cors_origins=None,
@@ -8048,7 +7802,7 @@ if __name__ == "__main__":
         os.makedirs(user_npc_directory, exist_ok=True)
         os.makedirs(os.path.join(user_npc_directory, "jinxes"), exist_ok=True)
         os.makedirs(npcsh_base, exist_ok=True)
-        data_dir = os.environ.get('INCOGNIDE_DATA_DIR', os.path.join(npcsh_base, 'incognide', 'data'))
+        data_dir = os.environ.get('INCOGNIDE_DATA_DIR', os.path.join(npcsh_base, 'data'))
         os.makedirs(data_dir, exist_ok=True)
     except Exception as dir_err:
         print(f"[SERVE] Warning: Could not create directories: {dir_err}")

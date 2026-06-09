@@ -7,41 +7,6 @@ import json
 import sqlite3
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-
-mpl.rcParams.update({
-    'font.family': 'serif',
-    'axes.labelsize': 20,
-    'axes.grid.axis': 'both',
-    'axes.grid.which': 'major',
-    'axes.prop_cycle': mpl.cycler('color', ['k', 'b', 'r', 'g', 'c', 'm', 'y', 'k']),
-    'xtick.top': True,
-    'xtick.direction': 'in',
-    'xtick.major.size': 10,
-    'xtick.minor.size': 5,
-    'xtick.labelsize': 20,
-    'xtick.minor.visible': True,
-    'xtick.major.top': True,
-    'xtick.major.bottom': True,
-    'xtick.minor.top': True,
-    'xtick.minor.bottom': True,
-    'ytick.left': True,
-    'ytick.right': True,
-    'ytick.direction': 'in',
-    'ytick.major.size': 10,
-    'ytick.minor.size': 5,
-    'ytick.labelsize': 20,
-    'ytick.minor.visible': True,
-    'ytick.major.left': True,
-    'ytick.major.right': True,
-    'ytick.minor.left': True,
-    'ytick.minor.right': True,
-    'legend.frameon': False,
-    'legend.fontsize': 12,
-    'image.cmap': 'plasma',
-    'errorbar.capsize': 1,
-})
 import re
 import random
 from datetime import datetime
@@ -785,7 +750,6 @@ class Jinx:
             "datetime": datetime,
             "Image": Image,
             "pd": pd,
-            "plt": plt,
             "sys": sys,
             "subprocess": subprocess,
             "np": np,
@@ -1397,16 +1361,17 @@ class NPC:
             self.jinxes_directory = os.path.join(file_parent, "jinxes")
             self.npc_directory = file_parent
         else:
-            self.name = name            
+            self.name = name
             self.primary_directive = primary_directive
             self.model = model
             self.provider = provider
             self.api_url = api_url
             self.api_key = api_key
-            
+            self._extra_fields = kwargs
+
             if use_global_jinxes:
                 self.jinxes_directory = os.path.expanduser('~/.npcsh/npc_team/jinxes/')
-            else: 
+            else:
                 self.jinxes_directory = None
             self.npc_directory = None
 
@@ -1770,6 +1735,14 @@ class NPC:
 
 
         self.name = npc_data.get("name", self.name)
+
+        # Preserve any extra fields from the YAML that we don't explicitly handle
+        known_keys = {
+            "name", "primary_directive", "jinxes", "model", "provider",
+            "api_url", "api_key", "mcp_servers", "plain_system_message",
+            "use_global_jinxes", "tools", "team", "memory",
+        }
+        self._extra_fields = {k: v for k, v in npc_data.items() if k not in known_keys}
 
         self.npc_path = file
         self.npc_jinxes_directory = os.path.join(os.path.dirname(file), "jinxes")
@@ -2411,7 +2384,8 @@ Requirements:
                 source_ext = '.npc'
             elif lower.endswith('.md'):
                 source_ext = '.md'
-        return {
+        result = dict(getattr(self, '_extra_fields', {}))
+        result.update({
             "name": self.name,
             "primary_directive": self.primary_directive,
             "model": self.model,
@@ -2420,9 +2394,10 @@ Requirements:
             "api_key": self.api_key,
             "jinxes": self.jinxes_spec,
             "use_global_jinxes": self.use_global_jinxes,
-            "source_path": source_path,
-            "source_ext": source_ext,
-        }
+        })
+        result["source_path"] = source_path
+        result["source_ext"] = source_ext
+        return result
         
     def save(self, directory=None):
         """Save NPC to file"""

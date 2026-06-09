@@ -19,7 +19,7 @@ from typing import Optional
 
 
 def discover_team_path(explicit_path: Optional[str] = None) -> str:
-    """Find the team directory: explicit > cwd/agents > cwd/npc_team > ~/.npcsh/agents > ~/.npcsh/npc_team."""
+    """Find the team directory: explicit > cwd/agents > cwd/npc_team."""
     if explicit_path and os.path.isdir(explicit_path):
         return os.path.abspath(explicit_path)
 
@@ -31,16 +31,8 @@ def discover_team_path(explicit_path: Optional[str] = None) -> str:
     if os.path.isdir(cwd_team):
         return cwd_team
 
-    global_agents = os.path.expanduser("~/.npcsh/agents")
-    if os.path.isdir(global_agents):
-        return global_agents
-
-    global_team = os.path.expanduser("~/.npcsh/npc_team")
-    if os.path.isdir(global_team):
-        return global_team
-
     raise FileNotFoundError(
-        "No team found. Checked: ./agents, ./npc_team, ~/.npcsh/agents, ~/.npcsh/npc_team"
+        "No team found. Checked: ./agents, ./npc_team"
     )
 
 
