@@ -615,6 +615,98 @@ def get_db_session():
     Session = sessionmaker(bind=engine)
     return Session()
 
+
+def _ensure_execution_mode_column():
+    engine = get_db_connection()
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(conversation_history)")).fetchall()]
+        if 'execution_mode' not in cols:
+            conn.execute(text("ALTER TABLE conversation_history ADD COLUMN execution_mode TEXT"))
+
+
+def _save_conversation_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    message_id: str,
+    wd: str = None,
+    model: str = None,
+    provider: str = None,
+    npc: str = None,
+    team: str = None,
+    attachments: list = None,
+    reasoning_content: str = None,
+    tool_calls: list = None,
+    tool_results: list = None,
+    parent_message_id: str = None,
+    gen_params: dict = None,
+    input_tokens: int = None,
+    output_tokens: int = None,
+    cost: float = None,
+    execution_mode: str = None,
+):
+    _ensure_execution_mode_column()
+    engine = get_db_connection()
+    if wd is None:
+        wd = os.getcwd()
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if isinstance(content, (dict, list)):
+        content = json.dumps(content, cls=CustomJSONEncoder)
+    tc_json = json.dumps(tool_calls, cls=CustomJSONEncoder) if tool_calls else None
+    tr_json = json.dumps(tool_results, cls=CustomJSONEncoder) if tool_results else None
+    gp_json = json.dumps(gen_params, cls=CustomJSONEncoder) if gen_params else None
+    cost_str = str(cost) if cost is not None else None
+    normalized_path = normalize_path_for_db(wd)
+
+    with engine.begin() as conn:
+        existing = conn.execute(
+            text("SELECT message_id FROM conversation_history WHERE message_id = :mid"),
+            {"mid": message_id}
+        ).fetchone()
+        if existing:
+            return
+
+        conn.execute(
+            text("""
+                INSERT INTO conversation_history
+                (message_id, timestamp, role, content, conversation_id, directory_path,
+                 model, provider, npc, team, reasoning_content, tool_calls, tool_results,
+                 parent_message_id, params, input_tokens, output_tokens, cost, execution_mode)
+                VALUES (:message_id, :timestamp, :role, :content, :conversation_id,
+                        :directory_path, :model, :provider, :npc, :team,
+                        :reasoning_content, :tool_calls, :tool_results,
+                        :parent_message_id, :params, :input_tokens, :output_tokens, :cost, :execution_mode)
+            """),
+            {
+                "message_id": message_id, "timestamp": timestamp, "role": role,
+                "content": content, "conversation_id": conversation_id,
+                "directory_path": normalized_path, "model": model, "provider": provider,
+                "npc": npc, "team": team, "reasoning_content": reasoning_content,
+                "tool_calls": tc_json, "tool_results": tr_json,
+                "parent_message_id": parent_message_id, "params": gp_json,
+                "input_tokens": input_tokens, "output_tokens": output_tokens,
+                "cost": cost_str, "execution_mode": execution_mode,
+            }
+        )
+
+    if attachments:
+        for att in attachments:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        INSERT INTO message_attachments
+                        (message_id, attachment_name, attachment_type, attachment_data, attachment_size, file_path)
+                        VALUES (:mid, :name, :type, :data, :size, :path)
+                    """),
+                    {
+                        "mid": message_id, "name": att.get("name"),
+                        "type": att.get("type"), "data": att.get("data"),
+                        "size": att.get("size"), "path": att.get("path"),
+                    }
+                )
+
+
 def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=False):
     """
     Resolve an MCP server path.
@@ -6196,7 +6288,21 @@ IMPORTANT AGENT BEHAVIOR:
                   user_message_filled += txt
     
     if not is_resend:
-        pass  # conversation saving scoped via npcpy.db
+        user_message_id = frontend_user_message_id or generate_message_id()
+        _save_conversation_message(
+            conversation_id=conversation_id,
+            role="user",
+            content=commandstr,
+            message_id=user_message_id,
+            wd=current_path,
+            model=model,
+            provider=provider,
+            npc=npc_name,
+            team=team,
+            attachments=attachments_for_db,
+            parent_message_id=user_parent_message_id,
+            execution_mode=exe_mode,
+        )
 
     def event_stream(current_stream_id):
         complete_response = []
@@ -6462,6 +6568,28 @@ IMPORTANT AGENT BEHAVIOR:
                 yield f"data: {json.dumps({'type': 'usage', 'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'cost': stream_cost or 0})}\n\n"
 
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
+
+            assistant_message_id = frontend_assistant_message_id or generate_message_id()
+            _save_conversation_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=final_response_text,
+                message_id=assistant_message_id,
+                wd=current_path,
+                model=model,
+                provider=provider,
+                npc=npc_name_to_save if 'npc_name_to_save' in dir() else (npc_object.name if npc_object else ''),
+                team=team,
+                reasoning_content=''.join(complete_reasoning) if complete_reasoning else None,
+                tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
+                tool_results=tool_results_for_db if tool_results_for_db else None,
+                parent_message_id=parent_message_id,
+                gen_params=params,
+                input_tokens=total_input_tokens if total_input_tokens else None,
+                output_tokens=total_output_tokens if total_output_tokens else None,
+                cost=stream_cost if 'stream_cost' in dir() else None,
+                execution_mode=exe_mode,
+            )
 
             # Async memory extraction to local .knowledge.yaml
             conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
@@ -6762,7 +6890,8 @@ def get_conversations():
                        GROUP_CONCAT(content) as preview,
                        GROUP_CONCAT(DISTINCT CASE WHEN npc IS NOT NULL AND npc != '' THEN npc END) as npcs,
                        GROUP_CONCAT(DISTINCT CASE WHEN model IS NOT NULL AND model != '' THEN model END) as models,
-                       GROUP_CONCAT(DISTINCT CASE WHEN provider IS NOT NULL AND provider != '' THEN provider END) as providers
+                       GROUP_CONCAT(DISTINCT CASE WHEN provider IS NOT NULL AND provider != '' THEN provider END) as providers,
+                       MAX(execution_mode) as execution_mode
                 FROM conversation_history
                 WHERE REPLACE(RTRIM(directory_path, '/\\'), '\\', '/') = :normalized_path
                 GROUP BY conversation_id
@@ -6791,6 +6920,7 @@ def get_conversations():
                                 "npcs": [n for n in (conv[4] or "").split(",") if n],
                                 "models": [m for m in (conv[5] or "").split(",") if m],
                                 "providers": [p for p in (conv[6] or "").split(",") if p],
+                                "execution_mode": conv[7] or "chat",
                                 # Keep singular fields for backwards compat (first entry)
                                 "npc": (conv[4] or "").split(",")[0] if conv[4] else "",
                                 "model": (conv[5] or "").split(",")[0] if conv[5] else "",
