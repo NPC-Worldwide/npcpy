@@ -5695,6 +5695,8 @@ def stream():
                 print(f"Warning: Could not load NPC {npc_name}")
 
     attachments = data.get("attachments", [])
+    images: list = []
+    attachment_paths_for_llm: list = []
     print(f"[DEBUG] Received attachments: {attachments}")
 
     if attachments:
