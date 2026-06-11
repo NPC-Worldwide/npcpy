@@ -6880,6 +6880,7 @@ def get_conversations():
         if not path:
             return jsonify({"error": "No path provided", "conversations": []}), 400
 
+        _ensure_execution_mode_column()
         engine = get_db_connection()
         try:
             with engine.connect() as conn:
