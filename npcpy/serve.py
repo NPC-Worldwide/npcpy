@@ -5789,6 +5789,7 @@ def stream():
     attachments = data.get("attachments", [])
     images: list = []
     attachment_paths_for_llm: list = []
+    attachments_for_db: list = []
     print(f"[DEBUG] Received attachments: {attachments}")
 
     if attachments:
