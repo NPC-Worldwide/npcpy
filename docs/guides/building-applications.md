@@ -6,23 +6,21 @@ This guide covers the database-powered features of npcpy that enable persistent,
 
 npcpy uses SQLAlchemy for persistence. The default backend is SQLite, but PostgreSQL is also supported.
 
-### CommandHistory
-
-The `CommandHistory` class manages all database tables and operations:
+### Connecting to a Database
 
 ```python
-from npcpy.memory.command_history import CommandHistory
 from sqlalchemy import create_engine
+from npcpy.db import ensure_engine
 
-# SQLite (default)
-ch = CommandHistory(db="~/npcsh_history.db")
+# SQLite (caller-provided path — npcpy does not hardcode defaults)
+db_path = "/home/user/.incognide/history.db"
+engine = ensure_engine(db_path)
 
 # PostgreSQL
 engine = create_engine("postgresql://user:password@localhost:5432/mydb")
-ch = CommandHistory(db=engine)
 ```
 
-The constructor accepts either a file path string (for SQLite) or a SQLAlchemy `Engine` instance (for PostgreSQL or any supported backend). On initialization it creates all required tables if they don't exist.
+The `ensure_engine()` helper accepts either a file path string (for SQLite) or a SQLAlchemy `Engine` instance.
 
 ### Passing db_conn to NPC and Team
 
@@ -48,20 +46,21 @@ team = Team(team_path="./npc_team", db_conn=engine)
 # All NPCs in the team now share this database connection
 ```
 
-The flow is: `Team.db_conn` → each `NPC.db_conn` → `NPC.command_history = CommandHistory(db=db_conn)`.
+The flow is: `Team.db_conn` → each `NPC.db_conn` → direct SQLAlchemy operations via `npcpy.db`.
 
 ### Platform-Aware Paths
 
 npcpy provides platform-aware directory helpers in `npcpy.npc_sysenv`:
 
 ```python
-from npcpy.npc_sysenv import get_data_dir, get_config_dir, get_cache_dir, get_history_db_path
+from npcpy.npc_sysenv import get_data_dir, get_config_dir, get_cache_dir
 
-get_data_dir()        # Linux: ~/.local/share/npcsh, macOS: ~/Library/Application Support/npcsh, Windows: %LOCALAPPDATA%/npcsh
-get_config_dir()      # Linux: ~/.config/npcsh, macOS: ~/Library/Application Support/npcsh, Windows: %APPDATA%/npcsh
-get_cache_dir()       # Linux: ~/.cache/npcsh, macOS: ~/Library/Caches/npcsh, Windows: %LOCALAPPDATA%/npcsh/cache
-get_history_db_path() # Platform-appropriate default database path
+get_data_dir()    # Linux: ~/.local/share/npcsh, macOS: ~/Library/Application Support/npcsh, Windows: %LOCALAPPDATA%/npcsh
+get_config_dir()  # Linux: ~/.config/npcsh, macOS: ~/Library/Application Support/npcsh, Windows: %APPDATA%/npcsh
+get_cache_dir()   # Linux: ~/.cache/npcsh, macOS: ~/Library/Caches/npcsh, Windows: %LOCALAPPDATA%/npcsh/cache
 ```
+
+These return platform-appropriate directories for the **npcsh** CLI tool. Applications built on npcpy (such as incognide) should supply their own paths.
 
 ---
 
@@ -109,41 +108,50 @@ Key columns:
 ### Saving Messages
 
 ```python
-from npcpy.memory.command_history import save_conversation_message
+from npcpy.db import generate_message_id, get_db_connection
+import json
 
-message_id = save_conversation_message(
-    command_history=ch,
-    conversation_id="myapp_20250202",
-    role="user",
-    content="What files are in the current directory?",
-    model="llama3.2",
-    provider="ollama",
-    npc="assistant",
-    team="my_team",
-    input_tokens=25,
-    output_tokens=150,
-    cost=0.0,
-)
+message_id = generate_message_id()
+
+with get_db_connection(engine) as conn:
+    conn.execute(
+        """
+        INSERT INTO conversation_history
+        (message_id, timestamp, role, content, conversation_id, directory_path,
+         model, provider, npc, team, input_tokens, output_tokens, cost)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (message_id, "2025-02-02T12:00:00+00:00", "user",
+         "What files are in the current directory?", "myapp_20250202",
+         "/home/user/projects", "llama3.2", "ollama", "assistant", "my_team",
+         25, 150, "0.0"),
+    )
+    conn.commit()
 ```
 
-The function returns the `message_id` for the saved message. It accepts optional parameters for `reasoning_content`, `tool_calls`, `tool_results`, `parent_message_id`, `device_id`, `device_name`, and `gen_params` (a dict of LLM generation parameters like temperature).
+Optional columns include `reasoning_content`, `tool_calls`, `tool_results`, `parent_message_id`, `device_id`, `device_name`, `params`, and `execution_mode`.
 
 ### Retrieving Conversations
 
 ```python
-messages = ch.get_conversations_by_id("myapp_20250202")
-for msg in messages:
-    print(f"{msg['role']}: {msg['content'][:80]}")
-    # JSON fields (tool_calls, tool_results, params) are automatically deserialized
+from npcpy.db import get_db_connection
+
+with get_db_connection(engine) as conn:
+    rows = conn.execute(
+        "SELECT * FROM conversation_history WHERE conversation_id = ? ORDER BY timestamp",
+        ("myapp_20250202",),
+    ).fetchall()
+    messages = [dict(row) for row in rows]
+    for msg in messages:
+        print(f"{msg['role']}: {msg['content'][:80]}")
 ```
 
 ### Starting New Conversations
 
 ```python
-from npcpy.memory.command_history import start_new_conversation
+import datetime
 
-conv_id = start_new_conversation(prepend="myapp")
-# Returns: "myapp_20250202120000"
+conv_id = f"myapp_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
 ```
 
 ---
@@ -228,31 +236,25 @@ For interactive review of pending memories:
 
 ```python
 from npcpy.memory.memory_processor import memory_approval_ui, memory_batch_review_ui
+from npcpy.memory.knowledge_store import get_store_for_path
+
+store = get_store_for_path("/path/to/project")
 
 # Review individual memories
-pending = ch.get_pending_memories(limit=50)
+pending = store.get_pending_memories()
 decisions = memory_approval_ui(pending, show_context=True)
 # Interactive: (a)pprove, (r)eject, (e)dit, (s)kip, (A)pprove all, (R)eject all
-
-# Batch review with filters
-stats = memory_batch_review_ui(ch, npc_filter="assistant", team_filter="my_team", limit=50)
-# Returns: {'approved': 12, 'rejected': 3, 'edited': 2, 'skipped': 1}
 ```
 
 ### Memory in System Messages
 
-Approved memories are injected into the NPC's system message via `get_memory_examples_for_context()`:
+Approved memories from `.knowledge.yaml` can be loaded for few-shot context:
 
 ```python
-examples = ch.get_memory_examples_for_context(
-    npc="assistant",
-    team="my_team",
-    directory_path="/path/to/project",
-    n_approved=10,
-    n_rejected=10,
-    n_edited=5,
-)
-# Returns: {'approved': [...], 'rejected': [...], 'edited': [...]}
+store = get_store_for_path("/path/to/project")
+approved = store.get_memories(status="human-approved", limit=10)
+rejected = store.get_memories(status="human-rejected", limit=10)
+# Returns lists of memory dicts
 ```
 
 When an NPC is created with `memory=True`, the system message is enriched with recent facts and key concepts from the knowledge graph.
@@ -303,7 +305,7 @@ CREATE TABLE kg_metadata (
 ### Loading and Saving Knowledge Graphs
 
 ```python
-from npcpy.memory.command_history import load_kg_from_db, save_kg_to_db
+from npcpy.memory.knowledge_graph import load_kg_from_db, save_kg_to_db
 
 kg_data = load_kg_from_db(engine, team_name="my_team", npc_name="assistant", directory_path="/project")
 # Returns dict with: generation, facts, concepts, concept_links, fact_to_concept_links, fact_to_fact_links
@@ -403,7 +405,7 @@ When `Team(team_path="./npc_team")` is called, all `.npc` files are loaded as NP
 ```
 Team(db_conn=engine)
   └─► NPC(db_conn=engine, team=self)      # for each .npc file
-        └─► CommandHistory(db=engine)       # conversation persistence
+        └─► direct SQLAlchemy via npcpy.db  # conversation persistence
         └─► load_kg_from_db(engine, ...)    # if memory=True
 ```
 
@@ -425,7 +427,7 @@ See `npcpy.npc_sysenv.get_system_message()` for the full assembly logic.
 npcpy tracks versions of NPC configurations for rollback:
 
 ```python
-from npcpy.memory.command_history import save_npc_version, rollback_npc_to_version, get_npc_versions
+from npcpy.memory.npc_version import save_npc_version, rollback_npc_to_version, get_npc_versions
 
 # Save current NPC state
 version = save_npc_version(engine, npc_name="analyst", team_path="./npc_team",
