@@ -184,22 +184,40 @@ class MCPClientNPC:
     def __init__(self, debug: bool = True):
         self.debug = debug
         self.session: Optional[ClientSession] = None
-        try:
-            self._loop = asyncio.get_event_loop()
-            if self._loop.is_closed():
-                self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
-        except RuntimeError:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-        self._exit_stack = self._loop.run_until_complete(AsyncExitStack().__aenter__())
+        self._exit_stack: Optional[AsyncExitStack] = None
         self.available_tools_llm: List[Dict[str, Any]] = []
         self.tool_map: Dict[str, Callable] = {}
         self.server_script_path: Optional[str] = None
+        self.server_spec = None
 
     def _log(self, message: str, color: str = "cyan") -> None:
         if self.debug:
             cprint(f"[MCP Client] {message}", color, file=sys.stderr)
+
+    def _get_loop(self):
+        """Get or create a usable event loop for the current thread."""
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                return loop
+        except RuntimeError:
+            pass
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+    def _cleanup_sync(self):
+        """Clean up any existing session and exit stack synchronously."""
+        if self._exit_stack is not None:
+            try:
+                loop = self._get_loop()
+                loop.run_until_complete(self._exit_stack.aclose())
+            except Exception as e:
+                self._log(f"Cleanup warning: {e}", "yellow")
+            self._exit_stack = None
+        self.session = None
+        self.available_tools_llm = []
+        self.tool_map = {}
 
     async def _connect_async(self, server_spec) -> None:
         """Connect to an MCP server.
@@ -223,8 +241,15 @@ class MCPClientNPC:
         extra_env = server_spec.get("env", {})
         env = {**os.environ, **extra_env}
 
-        if self.session:
-            await self._exit_stack.aclose()
+        # Clean up old session first
+        if self.session and self._exit_stack:
+            try:
+                await self._exit_stack.aclose()
+            except Exception as e:
+                self._log(f"Old session cleanup warning: {e}", "yellow")
+            self._exit_stack = None
+            self.session = None
+
         self._exit_stack = AsyncExitStack()
 
         if "url" in server_spec:
@@ -317,7 +342,8 @@ class MCPClientNPC:
 
                     def sync_wrapper(**kwargs):
                         self._log(f"Sync wrapper called for {tool_name_closure}")
-                        return self._loop.run_until_complete(tool_func(**kwargs))
+                        loop = self._get_loop()
+                        return loop.run_until_complete(tool_func(**kwargs))
 
                     return sync_wrapper
 
@@ -327,34 +353,30 @@ class MCPClientNPC:
 
     def connect_sync(self, server_spec) -> bool:
         """Connect synchronously. server_spec: str (path) or dict with path/command/url."""
-        loop = self._loop
-        if loop.is_closed():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            loop = self._loop
+        self._cleanup_sync()
+        loop = self._get_loop()
         try:
             loop.run_until_complete(self._connect_async(server_spec))
             return True
         except Exception as e:
             cprint(f"MCP connection failed: {e}", "red", file=sys.stderr)
+            self._cleanup_sync()
             return False
 
     def disconnect_sync(self):
-        if self.session:
-            self._log("Disconnecting MCP session.")
-            loop = self._loop
-            if not loop.is_closed():
-                try:
-                    async def close_session():
-                        await self.session.close()
-                        await self._exit_stack.aclose()
-                    loop.run_until_complete(close_session())
-                except RuntimeError:
-                    pass
-                except Exception as e:
-                    print(f"Error during MCP client disconnect: {e}", file=sys.stderr)
-            self.session = None
-            self._exit_stack = None
+        self._cleanup_sync()
+
+    def is_connected(self) -> bool:
+        """Check if the session is still alive."""
+        if self.session is None or self._exit_stack is None:
+            return False
+        loop = self._get_loop()
+        try:
+            loop.run_until_complete(asyncio.wait_for(self.session.list_tools(), timeout=5.0))
+            return True
+        except Exception as e:
+            self._log(f"Health check failed: {e}", "yellow")
+            return False
 
 def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools, stream, team, context=None, **kwargs):
     """Unified LLM response with basic exception handling (inlined from corca to avoid that dependency)."""
@@ -1720,6 +1742,213 @@ def evolve_kg_population(population_id):
         return jsonify({"error": str(e)}), 500
 
 
+# ── Local .knowledge.yaml endpoints ────────────────────────────────────
+
+@app.route("/api/knowledge/load", methods=["GET"])
+def knowledge_load():
+    """Load the .knowledge.yaml for the current directory."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        data = store.load()
+        return jsonify({
+            "directory": data.get("directory"),
+            "version": data.get("version"),
+            "memories": data.get("memories", []),
+            "knowledge": data.get("knowledge", []),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/search", methods=["GET"])
+def knowledge_search():
+    """Search memories in the local .knowledge.yaml."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        q = request.args.get("q", "")
+        limit = int(request.args.get("limit", 20))
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        results = store.search_memories(q, limit=limit)
+        return jsonify({"memories": results, "count": len(results)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/memories", methods=["GET"])
+def knowledge_memories():
+    """Get memories from local .knowledge.yaml with optional status filter."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        status = request.args.get("status")
+        limit = request.args.get("limit")
+        limit = int(limit) if limit else None
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        mems = store.get_memories(status=status, limit=limit)
+        return jsonify({"memories": mems, "count": len(mems)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/links", methods=["GET"])
+def knowledge_links():
+    """Get links for a memory or all links from local .knowledge.yaml."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        mem_id = request.args.get("mem_id")
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        if mem_id:
+            result = store.get_links_for_memory(mem_id)
+            return jsonify(result)
+        return jsonify({"links": store.get_all_links()})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/link", methods=["POST"])
+def knowledge_link_create():
+    """Create a directed link in local .knowledge.yaml."""
+    try:
+        data = request.json or {}
+        current_path = data.get("currentPath", os.getcwd())
+        from_mem = data.get("from")
+        to_mem = data.get("to")
+        relation = data.get("relation", "related_to")
+        agent = data.get("agent", "")
+        if not from_mem or not to_mem:
+            return jsonify({"error": "from and to are required"}), 400
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        link_id = store.append_link(from_mem, to_mem, relation, agent=agent)
+        return jsonify({"success": True, "link_id": link_id})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/context", methods=["GET"])
+def knowledge_context():
+    """Return formatted context string from local .knowledge.yaml."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        max_memories = int(request.args.get("max_memories", 10))
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        ctx = store.build_context(max_memories=max_memories)
+        return jsonify({"context": ctx})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/all_memories", methods=["GET"])
+def knowledge_all_memories():
+    """Return aggregated memories from all indexed .knowledge.yaml files."""
+    try:
+        limit = request.args.get("limit")
+        limit = int(limit) if limit else None
+        from npcpy.memory.knowledge_index import get_known_directories
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        dirs = get_known_directories()
+        all_memories = []
+        for row in dirs:
+            d = row["directory"]
+            fp = os.path.join(d, ".knowledge.yaml")
+            if not os.path.exists(fp):
+                continue
+            store = KnowledgeStore(d)
+            data = store.load()
+            for mem in data.get("memories", []):
+                mem["_directory"] = d
+                all_memories.append(mem)
+        if limit:
+            all_memories = all_memories[:limit]
+        return jsonify({"memories": all_memories, "count": len(all_memories), "sources": len(dirs)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/all_search", methods=["GET"])
+def knowledge_all_search():
+    """Search across all indexed .knowledge.yaml files."""
+    try:
+        q = request.args.get("q", "").lower()
+        limit = int(request.args.get("limit", 20))
+        from npcpy.memory.knowledge_index import get_known_directories
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        dirs = get_known_directories()
+        results = []
+        for row in dirs:
+            d = row["directory"]
+            fp = os.path.join(d, ".knowledge.yaml")
+            if not os.path.exists(fp):
+                continue
+            store = KnowledgeStore(d)
+            data = store.load()
+            for mem in data.get("memories", []):
+                text = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
+                if q in text:
+                    mem["_directory"] = d
+                    results.append(mem)
+            if len(results) >= limit:
+                break
+        return jsonify({"memories": results[:limit], "count": len(results[:limit])})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/memory/update", methods=["POST"])
+def knowledge_memory_update():
+    """Update a memory's status and/or final_memory in local .knowledge.yaml."""
+    try:
+        data = request.json or {}
+        current_path = data.get("currentPath", os.getcwd())
+        mem_id = data.get("id")
+        status = data.get("status")
+        final_memory = data.get("final_memory")
+        if not mem_id or not status:
+            return jsonify({"error": "id and status are required"}), 400
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        changed = store.update_memory(mem_id, status, final_memory)
+        return jsonify({"success": changed})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/memory/delete", methods=["POST"])
+def knowledge_memory_delete():
+    """Delete a memory from local .knowledge.yaml."""
+    try:
+        data = request.json or {}
+        current_path = data.get("currentPath", os.getcwd())
+        mem_id = data.get("id")
+        if not mem_id:
+            return jsonify({"error": "id is required"}), 400
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        data_yaml = store.load()
+        original_len = len(data_yaml.get("memories", []))
+        data_yaml["memories"] = [m for m in data_yaml.get("memories", []) if m.get("id") != mem_id]
+        store.save(data_yaml)
+        deleted = len(data_yaml["memories"]) < original_len
+        return jsonify({"success": deleted})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/attachments/<message_id>", methods=["GET"])
 def get_message_attachments(message_id):
     """Get all attachments for a message"""
@@ -2341,7 +2570,6 @@ finetune_jobs = {}
 def extract_and_store_memories(
     conversation_text,
     conversation_id,
-    command_history,
     npc_name,
     team_name,
     current_path,
@@ -2350,14 +2578,16 @@ def extract_and_store_memories(
     npc_object=None
 ):
     from npcpy.llm_funcs import get_facts
-    memory_examples_dict = command_history.get_memory_examples_for_context(
-        npc=npc_name,
-        team=team_name,
-        directory_path=current_path
-    )
-    
-    memory_context = format_memory_context(memory_examples_dict)
-    
+    from npcpy.memory.knowledge_store import get_store_for_path
+
+    memory_context = ""
+    if current_path:
+        try:
+            store = get_store_for_path(current_path)
+            memory_context = store.build_context(max_memories=10)
+        except Exception:
+            pass
+
     facts = get_facts(
         conversation_text,
         model=npc_object.model if npc_object else model,
@@ -2367,16 +2597,14 @@ def extract_and_store_memories(
     )
     
     memories_for_approval = []
-    
-    kg_facts_to_save = []
-    kg_concepts_to_save = []
-    fact_to_concept_links_temp = defaultdict(list)
-    
-    
-    if facts:
+    from npcpy.memory.knowledge_store import get_store_for_path
+
+    if facts and current_path:
+        store = get_store_for_path(current_path)
         for i, fact in enumerate(facts):
-            memory_id = command_history.add_memory_to_database(
-                message_id=f"{conversation_id}_{datetime.datetime.now().strftime('%H%M%S')}_{i}",
+            message_id = f"{conversation_id}_{datetime.datetime.now().strftime('%H%M%S')}_{i}"
+            mem_id = store.append_memory(
+                message_id=message_id,
                 conversation_id=conversation_id,
                 npc=npc_name or "default",
                 team=team_name or "default",
@@ -2385,11 +2613,9 @@ def extract_and_store_memories(
                 status="pending_approval",
                 model=npc_object.model if npc_object else model,
                 provider=npc_object.provider if npc_object else provider,
-                final_memory=None
             )
-            
             memories_for_approval.append({
-                "memory_id": memory_id,
+                "memory_id": mem_id,
                 "content": fact.get('statement', str(fact)),
                 "type": fact.get('type', 'unknown'),
                 "context": fact.get('source_text', ''),
@@ -4996,12 +5222,16 @@ def get_mcp_tools():
                    and existing_corca_state.mcp_client.server_script_path == server_path:
                     print(f"Using existing MCP client for {state_key} to fetch tools.")
                     temp_mcp_client = existing_corca_state.mcp_client
-                    tools = temp_mcp_client.available_tools_llm
-                    if selected_names:
-                        tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
-                    return jsonify({"tools": tools, "error": None})
+                    if temp_mcp_client.is_connected():
+                        tools = temp_mcp_client.available_tools_llm
+                        if selected_names:
+                            tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
+                        return jsonify({"tools": tools, "error": None})
+                    else:
+                        temp_mcp_client.disconnect_sync()
+                        existing_corca_state.mcp_client = None
 
-        
+
         print(f"Creating a temporary MCP client to fetch tools for {server_path}.")
         temp_mcp_client = MCPClientNPC()
         if temp_mcp_client.connect_sync(server_path):
@@ -5015,8 +5245,16 @@ def get_mcp_tools():
             # Jinx tools come from the NPC's config via resolve_tools(), not directory scans
             if selected_names:
                 tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
+            try:
+                temp_mcp_client.disconnect_sync()
+            except Exception:
+                pass
             return jsonify({"tools": tools, "error": None})
         else:
+            try:
+                temp_mcp_client.disconnect_sync()
+            except Exception:
+                pass
             return jsonify({"error": f"Failed to connect to MCP server at {server_path}."}), 500
     except FileNotFoundError as e:
         return jsonify({"error": f"MCP Server script not found: {e}"}), 404
@@ -5284,73 +5522,40 @@ def get_video_models_api():
 def _run_stream_post_processing(
     conversation_turn_text,
     conversation_id,
-    command_history,
     npc_name,
     team_name,
     current_path,
     model,
     provider,
     npc_object,
-    messages
+    messages,
+    extract_memories=True,
 ):
     """
-    Runs memory extraction and context compression in a background thread.
+    Runs memory extraction in a background thread.
     These operations will not block the main stream.
     """
     print(f"🌋 Background task started for conversation {conversation_id}!")
 
-    try:
-        if len(conversation_turn_text) > 50:
-            memories_for_approval = extract_and_store_memories(
-                conversation_turn_text,
-                conversation_id,
-                command_history,
-                npc_name,
-                team_name,
-                current_path,
-                model,
-                provider,
-                npc_object
-            )
-            if memories_for_approval:
-                print(f"🔥 Background: Extracted {len(memories_for_approval)} memories for approval for conversation {conversation_id}. Stored as pending in the database (table: memory_lifecycle).")
-        else:
-            print(f"Background: Conversation turn too short ({len(conversation_turn_text)} chars) for memory extraction. Skipping.")
-    except Exception as e:
-        print(f"🌋 Background: Error during memory extraction and KG insertion for conversation {conversation_id}: {e}")
-        traceback.print_exc()
+    if not extract_memories:
+        print(f"Background: Memory extraction disabled for conversation {conversation_id}. Skipping.")
+        return
 
     try:
-        if len(messages) > 30:
-            breathe_result = breathe(
-                messages=messages,
-                model=model,
-                provider=provider,
-                npc=npc_object
-            )
-            compressed_output = breathe_result.get('output', '')
-            
-            if compressed_output:
-                compressed_message_id = generate_message_id()
-                save_conversation_message(
-                    command_history,
-                    conversation_id,
-                    "system",
-                    f"[AUTOMATIC CONTEXT COMPRESSION]: {compressed_output}",
-                    wd=current_path,
-                    model=model,
-                    provider=provider,
-                    npc=npc_name,
-                    team=team_name,
-                    message_id=compressed_message_id
-                )
-                print(f"💨 Background: Compressed context for conversation {conversation_id} saved as new system message: {compressed_output[:100]}...")
-            else:
-                print(f"Background: Context compression returned no output for conversation {conversation_id}. Skipping saving.")
-        else:
-            print(f"Background: Conversation messages count ({len(messages)}) below threshold for context compression. Skipping.")
+        memories_for_approval = extract_and_store_memories(
+            conversation_turn_text,
+            conversation_id,
+            npc_name,
+            team_name,
+            current_path,
+            model,
+            provider,
+            npc_object
+        )
+        if memories_for_approval:
+            print(f"🔥 Background: Extracted {len(memories_for_approval)} memories for approval for conversation {conversation_id}. Written to local .knowledge.yaml.")
     except Exception as e:
-        print(f"🌋 Background: Error during context compression with breathe for conversation {conversation_id}: {e}")
+        print(f"🌋 Background: Error during memory extraction for conversation {conversation_id}: {e}")
         traceback.print_exc()
 
     print(f"🌋 Background task finished for conversation {conversation_id}!")
@@ -5480,6 +5685,7 @@ def stream():
     frontend_user_message_id = data.get("userMessageId", None)
     frontend_assistant_message_id = data.get("assistantMessageId", None)
     user_parent_message_id = data.get("userParentMessageId", None)
+    extract_memories = bool(data.get("extractMemories", True))
     params = {}
     if data.get("temperature") is not None:
         params["temperature"] = data.get("temperature")
@@ -5753,21 +5959,15 @@ def stream():
         extra_mcp_path = data.get("mcpServerPath")
         if extra_mcp_path:
             extra_mcp_path = resolve_mcp_server_path(current_path, extra_mcp_path, False)
-        elif not tools_for_llm:
-            # Fallback: if NPC has no tools and no ad-hoc server, try team/global server
-            fallback_path = None
-            if team_object and hasattr(team_object, 'team_ctx') and team_object.team_ctx:
-                mcp_servers_list = team_object.team_ctx.get('mcp_servers', [])
-                if mcp_servers_list and isinstance(mcp_servers_list, list):
-                    first_server_obj = next((s for s in mcp_servers_list if isinstance(s, dict) and 'value' in s), None)
-                    if first_server_obj:
-                        fallback_path = first_server_obj['value']
-                elif isinstance(team_object.team_ctx.get('mcp_server'), str):
-                    fallback_path = team_object.team_ctx.get('mcp_server')
-            extra_mcp_path = resolve_mcp_server_path(current_path, fallback_path, False)
+        # Note: removed auto-fallback to team/global MCP server.
+        # MCP servers should only be used when explicitly requested by the frontend.
 
         if extra_mcp_path:
             client = app.mcp_clients_cache.get(extra_mcp_path)
+            if client and not client.is_connected():
+                client.disconnect_sync()
+                app.mcp_clients_cache.pop(extra_mcp_path, None)
+                client = None
             if not client:
                 client = MCPClientNPC()
                 if client.connect_sync(extra_mcp_path):
@@ -6450,26 +6650,25 @@ IMPORTANT AGENT BEHAVIOR:
                 cost=cost,
             )
 
-            # Auto memory extraction and context compression disabled —
-            # these are now controlled via scheduled jobs / cron instead
-            # conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
-            # background_thread = threading.Thread(
-            #     target=_run_stream_post_processing,
-            #     args=(
-            #         conversation_turn_text,
-            #         conversation_id,
-            #         command_history,
-            #         npc_name,
-            #         team,
-            #         current_path,
-            #         model,
-            #         provider,
-            #         npc_object,
-            #         messages
-            #     )
-            # )
-            # background_thread.daemon = True
-            # background_thread.start()
+            # Async memory extraction to local .knowledge.yaml
+            conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
+            background_thread = threading.Thread(
+                target=_run_stream_post_processing,
+                args=(
+                    conversation_turn_text,
+                    conversation_id,
+                    npc_name,
+                    team,
+                    current_path,
+                    model,
+                    provider,
+                    npc_object,
+                    messages,
+                    extract_memories,
+                )
+            )
+            background_thread.daemon = True
+            background_thread.start()
 
             _cleanup_stream(current_stream_id)
     return Response(event_stream(stream_id), mimetype="text/event-stream", headers={
@@ -6507,17 +6706,20 @@ def delete_message():
 
 @app.route("/api/memory/approve", methods=["POST"])
 def approve_memories():
+    """Approve or reject memories in the local .knowledge.yaml."""
     try:
         data = request.json
         approvals = data.get("approvals", [])
+        directory_path = data.get("currentPath", os.getcwd())
 
-        command_history = CommandHistory(app.config.get('DB_PATH'))
+        from npcpy.memory.knowledge_store import get_store_for_path
+        store = get_store_for_path(directory_path)
 
         for approval in approvals:
-            command_history.update_memory_status(
-                approval['memory_id'],
-                approval['decision'],
-                approval.get('final_memory')
+            store.update_memory(
+                mem_id=str(approval['memory_id']),
+                status=approval['decision'],
+                final_memory=approval.get('final_memory'),
             )
 
         return jsonify({"success": True, "processed": len(approvals)})
@@ -6527,28 +6729,32 @@ def approve_memories():
 
 @app.route("/api/memory/search", methods=["GET"])
 def search_memories():
-    """Search memories with optional scope filtering"""
+    """Search memories in the local .knowledge.yaml."""
     try:
         q = request.args.get("q", "")
         npc = request.args.get("npc")
         team = request.args.get("team")
-        directory_path = request.args.get("directory_path")
+        directory_path = request.args.get("directory_path", os.getcwd())
         status = request.args.get("status")
         limit = int(request.args.get("limit", 50))
 
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-        command_history = CommandHistory(app.config.get('DB_PATH'))
-        results = command_history.search_memory(
-            query=q,
-            npc=npc,
-            team=team,
-            directory_path=directory_path,
-            status_filter=status,
-            limit=limit
-        )
-
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(directory_path)
+        results = store.search_memories(q, limit=limit)
+        if npc or team or status:
+            filtered = []
+            for mem in results:
+                if npc and mem.get('npc') != npc:
+                    continue
+                if team and mem.get('team') != team:
+                    continue
+                if status and mem.get('status') != status:
+                    continue
+                filtered.append(mem)
+            results = filtered
         return jsonify({"memories": results, "count": len(results)})
 
     except Exception as e:
@@ -6557,28 +6763,25 @@ def search_memories():
 
 @app.route("/api/memory/pending", methods=["GET"])
 def get_pending_memories():
-    """Get memories awaiting approval"""
+    """Get memories awaiting approval from the local .knowledge.yaml."""
     try:
         limit = int(request.args.get("limit", 50))
         npc = request.args.get("npc")
         team = request.args.get("team")
-        directory_path = request.args.get("directory_path")
+        directory_path = request.args.get("directory_path", os.getcwd())
 
-        command_history = CommandHistory(app.config.get('DB_PATH'))
-        results = command_history.get_pending_memories(limit=limit)
-
-        if npc or team or directory_path:
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(directory_path)
+        results = store.get_memories(status="pending_approval", limit=limit)
+        if npc or team:
             filtered = []
             for mem in results:
                 if npc and mem.get('npc') != npc:
                     continue
                 if team and mem.get('team') != team:
                     continue
-                if directory_path and mem.get('directory_path') != directory_path:
-                    continue
                 filtered.append(mem)
             results = filtered
-
         return jsonify({"memories": results, "count": len(results)})
 
     except Exception as e:
@@ -6587,22 +6790,24 @@ def get_pending_memories():
 
 @app.route("/api/memory/scope", methods=["GET"])
 def get_memories_by_scope():
-    """Get memories for a specific scope (npc/team/directory)"""
+    """Get memories for a specific scope from the local .knowledge.yaml."""
     try:
         npc = request.args.get("npc", "")
         team = request.args.get("team", "")
-        directory_path = request.args.get("directory_path", "")
+        directory_path = request.args.get("directory_path", os.getcwd())
         status = request.args.get("status")
 
-        command_history = CommandHistory(app.config.get('DB_PATH'))
-        results = command_history.get_memories_for_scope(
-            npc=npc,
-            team=team,
-            directory_path=directory_path,
-            status=status
-        )
-
-        return jsonify({"memories": results, "count": len(results)})
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(directory_path)
+        results = store.get_memories(status=status)
+        filtered = []
+        for mem in results:
+            if npc and mem.get('npc') != npc:
+                continue
+            if team and mem.get('team') != team:
+                continue
+            filtered.append(mem)
+        return jsonify({"memories": filtered, "count": len(filtered)})
 
     except Exception as e:
         traceback.print_exc()

@@ -1312,6 +1312,14 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
 
     return inputs
 from npcpy.memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_sleep_process, kg_dream_process
+try:
+    from npcpy.memory.knowledge_manager import KnowledgeManager
+except Exception:
+    KnowledgeManager = None
+try:
+    from npcpy.memory.knowledge_store import KnowledgeStore
+except Exception:
+    KnowledgeStore = None
 from npcpy.llm_funcs import get_llm_response, breathe
 import os
 from datetime import datetime
@@ -1411,6 +1419,8 @@ class NPC:
         self.kg_data = None
         self.tables = None
         self.memory = None
+        self.knowledge_manager = None
+        self.knowledge_scopes = []
 
         if self.db_conn:
             self._setup_db()
@@ -1573,24 +1583,42 @@ class NPC:
 
 
     def get_memory_context(self):
-        """Get formatted memory context for system prompt"""
-        if not self.kg_data:
-            return ""
-            
-        context_parts = []
-        
-        recent_facts = self.kg_data.get('facts', [])[-10:]
-        if recent_facts:
-            context_parts.append("Recent memories:")
-            for fact in recent_facts:
-                context_parts.append(f"- {fact['statement']}")
-        
-        concepts = self.kg_data.get('concepts', [])
-        if concepts:
-            concept_names = [c['name'] for c in concepts[:5]]
-            context_parts.append(f"Key concepts: {', '.join(concept_names)}")
-        
-        return "\n".join(context_parts)
+        """Get formatted memory context for system prompt using KnowledgeManager."""
+        parts = []
+
+        # Local .knowledge.yaml
+        if hasattr(self, 'knowledge_store') and self.knowledge_store:
+            try:
+                local_ctx = self.knowledge_store.build_context(max_memories=10)
+                if local_ctx:
+                    parts.append(local_ctx)
+            except Exception as e:
+                logger.warning(f".knowledge.yaml context failed for {self.name}: {e}")
+
+        # KnowledgeManager scopes
+        if self.knowledge_manager and self.knowledge_scopes:
+            try:
+                db_ctx = self.knowledge_manager.get_memory_context(
+                    self.knowledge_scopes, max_facts=10, max_memories=5
+                )
+                if db_ctx:
+                    parts.append(db_ctx)
+            except Exception as e:
+                logger.warning(f"KnowledgeManager context failed for {self.name}: {e}")
+
+        # Legacy fallback
+        if not parts and self.kg_data:
+            recent_facts = self.kg_data.get('facts', [])[-10:]
+            if recent_facts:
+                parts.append("Recent memories:")
+                for fact in recent_facts:
+                    parts.append(f"- {fact['statement']}")
+            concepts = self.kg_data.get('concepts', [])
+            if concepts:
+                concept_names = [c['name'] for c in concepts[:5]]
+                parts.append(f"Key concepts: {', '.join(concept_names)}")
+
+        return "\n\n".join(parts) if parts else ""
 
     def enter_tool_use_loop(
         self, 
@@ -1799,6 +1827,10 @@ class NPC:
             key = spec_cache_key(spec)
             whitelist = spec.get("tools")
             client = mcp_clients_cache.get(key)
+            if client and not client.is_connected():
+                client.disconnect_sync()
+                mcp_clients_cache.pop(key, None)
+                client = None
             if not client:
                 client = MCPClientNPC()
                 if client.connect_sync(spec):
@@ -1860,7 +1892,7 @@ class NPC:
             return get_system_message(self, team=self.team, tool_capable=tool_capable)
 
     def _setup_db(self):
-        """Set up database tables and determine type"""
+        """Set up database tables and determine type, and initialize knowledge manager."""
         dialect = self.db_conn.dialect.name
 
         with self.db_conn.connect() as conn:
@@ -1884,6 +1916,38 @@ class NPC:
                 print(f"Unsupported DB dialect: {dialect}")
                 self.tables = None
                 self.db_type = None
+
+        # Initialize unified knowledge manager
+        if KnowledgeManager and self.db_conn:
+            try:
+                self.knowledge_manager = KnowledgeManager(self.db_conn)
+                # Default scopes: global + npc-specific + team-specific (if available)
+                scopes = ["global"]
+                if self.name:
+                    scopes.append(f"npc:{self.name}")
+                if self.team and hasattr(self.team, 'name') and self.team.name:
+                    scopes.append(f"team:{self.team.name}")
+                self.knowledge_scopes = scopes
+                # Backfill self.kg_data from primary scope for legacy compat
+                primary_scope = scopes[-1] if len(scopes) > 1 else "global"
+                self.kg_data = self.knowledge_manager.load_kg(primary_scope)
+            except Exception as e:
+                logger.warning(f"Failed to initialize KnowledgeManager for NPC {self.name}: {e}")
+
+        # Load local .knowledge.yaml context
+        if KnowledgeStore:
+            try:
+                search_dirs = []
+                if self.npc_directory:
+                    search_dirs.append(self.npc_directory)
+                if self.team and hasattr(self.team, 'team_path') and self.team.team_path:
+                    search_dirs.append(self.team.team_path)
+                for d in search_dirs:
+                    if os.path.exists(os.path.join(d, ".knowledge.yaml")):
+                        self.knowledge_store = KnowledgeStore(d)
+                        break
+            except Exception as e:
+                logger.warning(f"Failed to load .knowledge.yaml for NPC {self.name}: {e}")
 
     def get_llm_response(self, 
                         request,
@@ -1949,27 +2013,39 @@ class NPC:
 
     def search_my_memories(self, query: str, limit: int = 10) -> str:
         """Search through this NPC's knowledge graph memories for relevant facts and concepts"""
+        if self.knowledge_manager and self.knowledge_scopes:
+            try:
+                result = self.knowledge_manager.search_across_scopes(
+                    query, self.knowledge_scopes, top_k=limit
+                )
+                facts = result.get("facts", [])
+                memories = result.get("memories", [])
+                parts = []
+                if facts:
+                    parts.append(f"Relevant facts: {'; '.join(f['statement'] for f in facts[:limit])}")
+                if memories:
+                    parts.append(f"Approved memories: {'; '.join(m['text'] for m in memories[:limit])}")
+                return "\n".join(parts) if parts else f"No memories found matching '{query}'"
+            except Exception as e:
+                logger.warning(f"KnowledgeManager search failed for {self.name}: {e}")
+
+        # Legacy fallback
         if not self.kg_data:
             return "No memories available"
-        
         query_lower = query.lower()
         relevant_facts = []
         relevant_concepts = []
-        
         for fact in self.kg_data.get('facts', []):
             if query_lower in fact.get('statement', '').lower():
                 relevant_facts.append(fact['statement'])
-        
         for concept in self.kg_data.get('concepts', []):
             if query_lower in concept.get('name', '').lower():
                 relevant_concepts.append(concept['name'])
-        
         result_parts = []
         if relevant_facts:
             result_parts.append(f"Relevant memories: {'; '.join(relevant_facts[:limit])}")
         if relevant_concepts:
             result_parts.append(f"Related concepts: {', '.join(relevant_concepts[:limit])}")
-        
         return "\n".join(result_parts) if result_parts else f"No memories found matching '{query}'"
 
     def query_database(self, sql_query: str) -> str:
