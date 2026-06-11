@@ -616,6 +616,13 @@ def get_db_session():
     return Session()
 
 
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime.date, datetime.datetime)):
+            return obj.isoformat()
+        return super().default(obj)
+
+
 def _ensure_execution_mode_column():
     engine = get_db_connection()
     with engine.begin() as conn:
