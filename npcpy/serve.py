@@ -955,7 +955,9 @@ def embed_kg_facts():
         if facts_df.empty:
             return jsonify({"message": "No facts to embed", "count": 0})
 
-        chroma_db_path = os.path.expanduser('~/npcsh_chroma_db')
+        chroma_db_path = app.config.get('CHROMA_DB_PATH')
+        if not chroma_db_path:
+            return jsonify({"error": "CHROMA_DB_PATH not configured"}), 500
 
         from npcpy.memory.knowledge_graph import store_fact_with_embedding
         import hashlib
@@ -1020,7 +1022,9 @@ def search_kg_semantic():
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-        chroma_db_path = os.path.expanduser('~/npcsh_chroma_db')
+        chroma_db_path = app.config.get('CHROMA_DB_PATH')
+        if not chroma_db_path:
+            return jsonify({"error": "CHROMA_DB_PATH not configured", "facts": [], "query": q}), 500
         try:
             query_embedding = get_embeddings([q])[0]
         except Exception as e:
@@ -3635,7 +3639,7 @@ def run_npcsql_model():
         npc_directory = data.get("npcDirectory")
         if not npc_directory:
             return jsonify({"success": False, "error": "npcDirectory is required"}), 400
-        target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
+        target_db = data.get("targetDb", app.config.get('DB_PATH'))
 
         if not models_dir or not model_name:
             return jsonify({"success": False, "error": "modelsDir and modelName are required"}), 400
@@ -3683,7 +3687,7 @@ def run_all_npcsql_models():
         npc_directory = data.get("npcDirectory")
         if not npc_directory:
             return jsonify({"success": False, "error": "npcDirectory is required"}), 400
-        target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
+        target_db = data.get("targetDb", app.config.get('DB_PATH'))
 
         if not models_dir:
             return jsonify({"success": False, "error": "modelsDir is required"}), 400
@@ -3731,8 +3735,8 @@ def list_npcsql_models():
 
         compiler = ModelCompiler(
             models_dir=models_dir,
-            target_engine=app.config.get('DB_PATH') or os.path.expanduser('~/npcsh_history.db'),
-            npc_directory=app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team')
+            target_engine=app.config.get('DB_PATH'),
+            npc_directory=app.config.get('user_npc_directory')
         )
 
         compiler.discover_models()
@@ -4298,7 +4302,7 @@ def get_package_contents():
 def init_npcsh_folder():
     """Initialize npcsh with config and default npc_team."""
     try:
-        db_path = app.config.get('DB_PATH', os.path.expanduser('~/npcsh_history.db'))
+        db_path = app.config.get('DB_PATH')
         db_dir = os.path.dirname(db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
@@ -7159,7 +7163,9 @@ def openai_chat_completions():
         current_path = request.headers.get("X-Current-Path", os.getcwd())
         registered_teams = data.get("registered_teams", [])
 
-        db_path = app.config.get('DB_PATH') or os.path.expanduser("~/npcsh_history.db")
+        db_path = app.config.get('DB_PATH')
+        if not db_path:
+            return jsonify({"error": "DB_PATH not configured"}), 500
         db_conn = create_engine(f'sqlite:///{db_path}')
 
         npc = None
@@ -7813,22 +7819,17 @@ def start_flask_server(
 
 if __name__ == "__main__":
 
-    SETTINGS_FILE = Path(os.path.expanduser("~/.npcshrc"))
+    base_dir = os.path.expanduser("~/.npcpy")
+    db_path = os.environ.get('INCOGNIDE_DB_PATH', os.path.join(base_dir, "history.db"))
+    user_npc_directory = os.environ.get('USER_NPC_DIRECTORY', os.path.join(base_dir, "npc_team"))
 
-    # Use NPCSH_BASE if set (passed by Electron), otherwise default
-    npcsh_base = os.environ.get('NPCSH_BASE', os.path.expanduser("~/.npcsh"))
-    db_path = os.environ.get('INCOGNIDE_DB_PATH', os.path.expanduser("~/npcsh_history.db"))
-    user_npc_directory = os.path.join(npcsh_base, "npc_team")
-
-    # Ensure directories exist (critical for Windows where ~ dirs aren't pre-created)
     try:
         db_dir = os.path.dirname(db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
         os.makedirs(user_npc_directory, exist_ok=True)
         os.makedirs(os.path.join(user_npc_directory, "jinxes"), exist_ok=True)
-        os.makedirs(npcsh_base, exist_ok=True)
-        data_dir = os.environ.get('INCOGNIDE_DATA_DIR', os.path.join(npcsh_base, 'data'))
+        data_dir = os.environ.get('INCOGNIDE_DATA_DIR', os.path.join(base_dir, "data"))
         os.makedirs(data_dir, exist_ok=True)
     except Exception as dir_err:
         print(f"[SERVE] Warning: Could not create directories: {dir_err}")
