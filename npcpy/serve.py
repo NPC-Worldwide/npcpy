@@ -53,15 +53,7 @@ class SilentUndefined(Undefined):
     def _fail_with_undefined_error(self, *args, **kwargs):
         return ""
 
-from npcpy.memory.command_history import (
-    setup_chroma_db,
-    CommandHistory,
-    save_conversation_message,
-    generate_message_id,
-    load_kg_from_db,
-    save_kg_to_db,
-    format_memory_context,
-)
+from npcpy.db import generate_message_id, ensure_engine
 
 from npcpy.memory.knowledge_graph import (
     find_similar_facts_chroma,
@@ -134,7 +126,7 @@ class ServeState:
         search_provider=None,
         embedding_model=None,
         embedding_provider=None,
-        command_history=None,
+        
     ):
         self.npc = npc
         self.team = team
@@ -145,7 +137,7 @@ class ServeState:
         self.search_provider = search_provider
         self.embedding_model = embedding_model
         self.embedding_provider = embedding_provider
-        self.command_history = command_history
+
 
 def _setup_stream(data):
     stream_id = data.get("streamId") or str(uuid.uuid4())
@@ -184,22 +176,40 @@ class MCPClientNPC:
     def __init__(self, debug: bool = True):
         self.debug = debug
         self.session: Optional[ClientSession] = None
-        try:
-            self._loop = asyncio.get_event_loop()
-            if self._loop.is_closed():
-                self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
-        except RuntimeError:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-        self._exit_stack = self._loop.run_until_complete(AsyncExitStack().__aenter__())
+        self._exit_stack: Optional[AsyncExitStack] = None
         self.available_tools_llm: List[Dict[str, Any]] = []
         self.tool_map: Dict[str, Callable] = {}
         self.server_script_path: Optional[str] = None
+        self.server_spec = None
 
     def _log(self, message: str, color: str = "cyan") -> None:
         if self.debug:
             cprint(f"[MCP Client] {message}", color, file=sys.stderr)
+
+    def _get_loop(self):
+        """Get or create a usable event loop for the current thread."""
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                return loop
+        except RuntimeError:
+            pass
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+    def _cleanup_sync(self):
+        """Clean up any existing session and exit stack synchronously."""
+        if self._exit_stack is not None:
+            try:
+                loop = self._get_loop()
+                loop.run_until_complete(self._exit_stack.aclose())
+            except Exception as e:
+                self._log(f"Cleanup warning: {e}", "yellow")
+            self._exit_stack = None
+        self.session = None
+        self.available_tools_llm = []
+        self.tool_map = {}
 
     async def _connect_async(self, server_spec) -> None:
         """Connect to an MCP server.
@@ -223,8 +233,15 @@ class MCPClientNPC:
         extra_env = server_spec.get("env", {})
         env = {**os.environ, **extra_env}
 
-        if self.session:
-            await self._exit_stack.aclose()
+        # Clean up old session first
+        if self.session and self._exit_stack:
+            try:
+                await self._exit_stack.aclose()
+            except Exception as e:
+                self._log(f"Old session cleanup warning: {e}", "yellow")
+            self._exit_stack = None
+            self.session = None
+
         self._exit_stack = AsyncExitStack()
 
         if "url" in server_spec:
@@ -317,7 +334,8 @@ class MCPClientNPC:
 
                     def sync_wrapper(**kwargs):
                         self._log(f"Sync wrapper called for {tool_name_closure}")
-                        return self._loop.run_until_complete(tool_func(**kwargs))
+                        loop = self._get_loop()
+                        return loop.run_until_complete(tool_func(**kwargs))
 
                     return sync_wrapper
 
@@ -327,34 +345,30 @@ class MCPClientNPC:
 
     def connect_sync(self, server_spec) -> bool:
         """Connect synchronously. server_spec: str (path) or dict with path/command/url."""
-        loop = self._loop
-        if loop.is_closed():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            loop = self._loop
+        self._cleanup_sync()
+        loop = self._get_loop()
         try:
             loop.run_until_complete(self._connect_async(server_spec))
             return True
         except Exception as e:
             cprint(f"MCP connection failed: {e}", "red", file=sys.stderr)
+            self._cleanup_sync()
             return False
 
     def disconnect_sync(self):
-        if self.session:
-            self._log("Disconnecting MCP session.")
-            loop = self._loop
-            if not loop.is_closed():
-                try:
-                    async def close_session():
-                        await self.session.close()
-                        await self._exit_stack.aclose()
-                    loop.run_until_complete(close_session())
-                except RuntimeError:
-                    pass
-                except Exception as e:
-                    print(f"Error during MCP client disconnect: {e}", file=sys.stderr)
-            self.session = None
-            self._exit_stack = None
+        self._cleanup_sync()
+
+    def is_connected(self) -> bool:
+        """Check if the session is still alive."""
+        if self.session is None or self._exit_stack is None:
+            return False
+        loop = self._get_loop()
+        try:
+            loop.run_until_complete(asyncio.wait_for(self.session.list_tools(), timeout=5.0))
+            return True
+        except Exception as e:
+            self._log(f"Health check failed: {e}", "yellow")
+            return False
 
 def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools, stream, team, context=None, **kwargs):
     """Unified LLM response with basic exception handling (inlined from corca to avoid that dependency)."""
@@ -600,6 +614,105 @@ def get_db_session():
     engine = get_db_connection()
     Session = sessionmaker(bind=engine)
     return Session()
+
+
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime.date, datetime.datetime)):
+            return obj.isoformat()
+        return super().default(obj)
+
+
+def _ensure_execution_mode_column():
+    engine = get_db_connection()
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(conversation_history)")).fetchall()]
+        if 'execution_mode' not in cols:
+            conn.execute(text("ALTER TABLE conversation_history ADD COLUMN execution_mode TEXT"))
+
+
+def _save_conversation_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    message_id: str,
+    wd: str = None,
+    model: str = None,
+    provider: str = None,
+    npc: str = None,
+    team: str = None,
+    attachments: list = None,
+    reasoning_content: str = None,
+    tool_calls: list = None,
+    tool_results: list = None,
+    parent_message_id: str = None,
+    gen_params: dict = None,
+    input_tokens: int = None,
+    output_tokens: int = None,
+    cost: float = None,
+    execution_mode: str = None,
+):
+    _ensure_execution_mode_column()
+    engine = get_db_connection()
+    if wd is None:
+        wd = os.getcwd()
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if isinstance(content, (dict, list)):
+        content = json.dumps(content, cls=CustomJSONEncoder)
+    tc_json = json.dumps(tool_calls, cls=CustomJSONEncoder) if tool_calls else None
+    tr_json = json.dumps(tool_results, cls=CustomJSONEncoder) if tool_results else None
+    gp_json = json.dumps(gen_params, cls=CustomJSONEncoder) if gen_params else None
+    cost_str = str(cost) if cost is not None else None
+    normalized_path = normalize_path_for_db(wd)
+
+    with engine.begin() as conn:
+        existing = conn.execute(
+            text("SELECT message_id FROM conversation_history WHERE message_id = :mid"),
+            {"mid": message_id}
+        ).fetchone()
+        if existing:
+            return
+
+        conn.execute(
+            text("""
+                INSERT INTO conversation_history
+                (message_id, timestamp, role, content, conversation_id, directory_path,
+                 model, provider, npc, team, reasoning_content, tool_calls, tool_results,
+                 parent_message_id, params, input_tokens, output_tokens, cost, execution_mode)
+                VALUES (:message_id, :timestamp, :role, :content, :conversation_id,
+                        :directory_path, :model, :provider, :npc, :team,
+                        :reasoning_content, :tool_calls, :tool_results,
+                        :parent_message_id, :params, :input_tokens, :output_tokens, :cost, :execution_mode)
+            """),
+            {
+                "message_id": message_id, "timestamp": timestamp, "role": role,
+                "content": content, "conversation_id": conversation_id,
+                "directory_path": normalized_path, "model": model, "provider": provider,
+                "npc": npc, "team": team, "reasoning_content": reasoning_content,
+                "tool_calls": tc_json, "tool_results": tr_json,
+                "parent_message_id": parent_message_id, "params": gp_json,
+                "input_tokens": input_tokens, "output_tokens": output_tokens,
+                "cost": cost_str, "execution_mode": execution_mode,
+            }
+        )
+
+    if attachments:
+        for att in attachments:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        INSERT INTO message_attachments
+                        (message_id, attachment_name, attachment_type, attachment_data, attachment_size, file_path)
+                        VALUES (:mid, :name, :type, :data, :size, :path)
+                    """),
+                    {
+                        "mid": message_id, "name": att.get("name"),
+                        "type": att.get("type"), "data": att.get("data"),
+                        "size": att.get("size"), "path": att.get("path"),
+                    }
+                )
+
 
 def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=False):
     """
@@ -941,12 +1054,9 @@ def embed_kg_facts():
         if facts_df.empty:
             return jsonify({"message": "No facts to embed", "count": 0})
 
-        chroma_db_path = os.path.expanduser('~/npcsh_chroma_db')
-        _, chroma_collection = setup_chroma_db(
-            "knowledge_graph",
-            "Facts extracted from various sources",
-            chroma_db_path
-        )
+        chroma_db_path = app.config.get('CHROMA_DB_PATH')
+        if not chroma_db_path:
+            return jsonify({"error": "CHROMA_DB_PATH not configured"}), 500
 
         from npcpy.memory.knowledge_graph import store_fact_with_embedding
         import hashlib
@@ -1011,20 +1121,9 @@ def search_kg_semantic():
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-        chroma_db_path = os.path.expanduser('~/npcsh_chroma_db')
-        try:
-            _, chroma_collection = setup_chroma_db(
-                "knowledge_graph",
-                "Facts extracted from various sources",
-                chroma_db_path
-            )
-        except Exception as e:
-            return jsonify({
-                "error": f"Chroma DB not available: {str(e)}",
-                "facts": [],
-                "query": q
-            }), 200
-
+        chroma_db_path = app.config.get('CHROMA_DB_PATH')
+        if not chroma_db_path:
+            return jsonify({"error": "CHROMA_DB_PATH not configured", "facts": [], "query": q}), 500
         try:
             query_embedding = get_embeddings([q])[0]
         except Exception as e:
@@ -1277,7 +1376,7 @@ def trigger_kg_process():
         engine = create_engine('sqlite:///' + db_path)
 
         # Load current KG from DB
-        existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
+
 
         # Get model/provider from app config
         model = app.config.get('DEFAULT_MODEL', None)
@@ -1304,7 +1403,8 @@ def trigger_kg_process():
             return jsonify({"error": f"Unknown process type: {process_type}. Use 'sleep', 'dream', or 'evolve'."}), 400
 
         # Save evolved KG back to DB
-        save_kg_to_db(engine, new_kg, team_name='', npc_name='', directory_path='')
+
+
 
         return jsonify({
             "success": True,
@@ -1338,7 +1438,7 @@ def ingest_to_kg():
 
         from npcpy.memory.knowledge_graph import kg_evolve_incremental, kg_initial
 
-        existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
+
 
         if not existing_kg or not existing_kg.get('facts'):
             # First-time: build KG from scratch
@@ -1358,7 +1458,8 @@ def ingest_to_kg():
                 link_concepts_facts=link_concepts_facts
             )
 
-        save_kg_to_db(engine, new_kg, team_name='', npc_name='', directory_path='')
+
+
 
         return jsonify({
             "success": True,
@@ -1431,7 +1532,7 @@ def query_kg():
                 ],
             })
 
-        existing_kg = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
+
 
         if not existing_kg or not existing_kg.get('facts'):
             return jsonify({"error": "Knowledge graph is empty. Ingest some data first."}), 400
@@ -1554,7 +1655,7 @@ def rollback_kg():
 # ── Sememolution: KG population management ─────────────────────────────
 # Endpoints for managing populations of KGIndividuals: create, list, get,
 # delete, evolve generation, update genome, query-with-ranking. All state
-# persists in kg_populations / kg_individuals (no command_history touch).
+# persists in kg_populations / kg_individuals.
 
 @app.route('/api/kg/populations', methods=['GET'])
 def list_kg_populations():
@@ -1607,7 +1708,7 @@ def create_kg_population():
 
         if seed_from_kg:
             # Prime each individual with a copy of the current global KG, so searches have something to traverse.
-            existing = load_kg_from_db(engine, team_name='', npc_name='', directory_path='')
+
             import copy as _copy
             for ind in mgr.ga.population:
                 ind.kg_data = _copy.deepcopy(existing)
@@ -1720,25 +1821,250 @@ def evolve_kg_population(population_id):
         return jsonify({"error": str(e)}), 500
 
 
+# ── Local .knowledge.yaml endpoints ────────────────────────────────────
+
+@app.route("/api/knowledge/load", methods=["GET"])
+def knowledge_load():
+    """Load the .knowledge.yaml for the current directory."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        data = store.load()
+        return jsonify({
+            "directory": data.get("directory"),
+            "version": data.get("version"),
+            "memories": data.get("memories", []),
+            "knowledge": data.get("knowledge", []),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/search", methods=["GET"])
+def knowledge_search():
+    """Search memories in the local .knowledge.yaml."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        q = request.args.get("q", "")
+        limit = int(request.args.get("limit", 20))
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        results = store.search_memories(q, limit=limit)
+        return jsonify({"memories": results, "count": len(results)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/memories", methods=["GET"])
+def knowledge_memories():
+    """Get memories from local .knowledge.yaml with optional status filter."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        status = request.args.get("status")
+        limit = request.args.get("limit")
+        limit = int(limit) if limit else None
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        mems = store.get_memories(status=status, limit=limit)
+        return jsonify({"memories": mems, "count": len(mems)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/links", methods=["GET"])
+def knowledge_links():
+    """Get links for a memory or all links from local .knowledge.yaml."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        mem_id = request.args.get("mem_id")
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        if mem_id:
+            result = store.get_links_for_memory(mem_id)
+            return jsonify(result)
+        return jsonify({"links": store.get_all_links()})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/link", methods=["POST"])
+def knowledge_link_create():
+    """Create a directed link in local .knowledge.yaml."""
+    try:
+        data = request.json or {}
+        current_path = data.get("currentPath", os.getcwd())
+        from_mem = data.get("from")
+        to_mem = data.get("to")
+        relation = data.get("relation", "related_to")
+        agent = data.get("agent", "")
+        if not from_mem or not to_mem:
+            return jsonify({"error": "from and to are required"}), 400
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        link_id = store.append_link(from_mem, to_mem, relation, agent=agent)
+        return jsonify({"success": True, "link_id": link_id})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/context", methods=["GET"])
+def knowledge_context():
+    """Return formatted context string from local .knowledge.yaml."""
+    try:
+        current_path = request.args.get("currentPath", os.getcwd())
+        max_memories = int(request.args.get("max_memories", 10))
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        ctx = store.build_context(max_memories=max_memories)
+        return jsonify({"context": ctx})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/all_memories", methods=["GET"])
+def knowledge_all_memories():
+    """Return aggregated memories from all indexed .knowledge.yaml files."""
+    try:
+        limit = request.args.get("limit")
+        limit = int(limit) if limit else None
+        from npcpy.memory.knowledge_index import get_known_directories
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        dirs = get_known_directories(app.config.get('DB_PATH'))
+        all_memories = []
+        for row in dirs:
+            d = row["directory"]
+            fp = os.path.join(d, ".knowledge.yaml")
+            if not os.path.exists(fp):
+                continue
+            store = KnowledgeStore(d)
+            data = store.load()
+            for mem in data.get("memories", []):
+                mem["_directory"] = d
+                all_memories.append(mem)
+        if limit:
+            all_memories = all_memories[:limit]
+        return jsonify({"memories": all_memories, "count": len(all_memories), "sources": len(dirs)})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/all_search", methods=["GET"])
+def knowledge_all_search():
+    """Search across all indexed .knowledge.yaml files."""
+    try:
+        q = request.args.get("q", "").lower()
+        limit = int(request.args.get("limit", 20))
+        from npcpy.memory.knowledge_index import get_known_directories
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        dirs = get_known_directories(app.config.get('DB_PATH'))
+        results = []
+        for row in dirs:
+            d = row["directory"]
+            fp = os.path.join(d, ".knowledge.yaml")
+            if not os.path.exists(fp):
+                continue
+            store = KnowledgeStore(d)
+            data = store.load()
+            for mem in data.get("memories", []):
+                text = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
+                if q in text:
+                    mem["_directory"] = d
+                    results.append(mem)
+            if len(results) >= limit:
+                break
+        return jsonify({"memories": results[:limit], "count": len(results[:limit])})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/memory/update", methods=["POST"])
+def knowledge_memory_update():
+    """Update a memory's status and/or final_memory in local .knowledge.yaml."""
+    try:
+        data = request.json or {}
+        current_path = data.get("currentPath", os.getcwd())
+        mem_id = data.get("id")
+        status = data.get("status")
+        final_memory = data.get("final_memory")
+        if not mem_id or not status:
+            return jsonify({"error": "id and status are required"}), 400
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        changed = store.update_memory(mem_id, status, final_memory)
+        return jsonify({"success": changed})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/memory/delete", methods=["POST"])
+def knowledge_memory_delete():
+    """Delete a memory from local .knowledge.yaml."""
+    try:
+        data = request.json or {}
+        current_path = data.get("currentPath", os.getcwd())
+        mem_id = data.get("id")
+        if not mem_id:
+            return jsonify({"error": "id is required"}), 400
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(current_path)
+        data_yaml = store.load()
+        original_len = len(data_yaml.get("memories", []))
+        data_yaml["memories"] = [m for m in data_yaml.get("memories", []) if m.get("id") != mem_id]
+        store.save(data_yaml)
+        deleted = len(data_yaml["memories"]) < original_len
+        return jsonify({"success": deleted})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/attachments/<message_id>", methods=["GET"])
 def get_message_attachments(message_id):
-    """Get all attachments for a message"""
     try:
-        command_history = CommandHistory(app.config.get('DB_PATH'))
-        attachments = command_history.get_message_attachments(message_id)
+        engine = get_db_connection()
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT id, attachment_name, attachment_type, attachment_size, file_path FROM message_attachments WHERE message_id = :mid"),
+                {"mid": message_id}
+            )
+            attachments = [
+                {
+                    "id": row.id,
+                    "name": row.attachment_name,
+                    "type": row.attachment_type,
+                    "size": row.attachment_size,
+                    "path": row.file_path,
+                }
+                for row in result
+            ]
         return jsonify({"attachments": attachments, "error": None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/attachment/<attachment_id>", methods=["GET"])
 def get_attachment(attachment_id):
-    """Get specific attachment data"""
     try:
-        command_history = CommandHistory(app.config.get('DB_PATH'))
-        data, name, type = command_history.get_attachment_data(attachment_id)
-
-        if data:
-            
+        engine = get_db_connection()
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT attachment_data, attachment_name, attachment_type FROM message_attachments WHERE id = :aid"),
+                {"aid": attachment_id}
+            )
+            row = result.fetchone()
+        if row:
+            data = row.attachment_data
+            name = row.attachment_name
+            type = row.attachment_type
             base64_data = base64.b64encode(data).decode("utf-8")
             return jsonify(
                 {"data": base64_data, "name": name, "type": type, "error": None}
@@ -1893,10 +2219,6 @@ def execute_jinx():
 
     print(f'Executing jinx with input_values: {input_values}', file=sys.stderr)
     
-    command_history = CommandHistory(app.config.get('DB_PATH'))
-    messages = fetch_messages_for_conversation(conversation_id)
-    
-    all_jinxes = {}
     if npc_object and hasattr(npc_object, 'jinxes_dict'):
         all_jinxes.update(npc_object.jinxes_dict)
     
@@ -1920,8 +2242,6 @@ def execute_jinx():
     extra_globals_for_jinx = {
         **jinx_local_context,
         'state': state,
-        'CommandHistory': CommandHistory,
-        'load_kg_from_db': load_kg_from_db,
     }
 
     jinx_execution_result = jinx.execute(
@@ -1943,36 +2263,7 @@ def execute_jinx():
     print(f"jinx_local_context AFTER Jinx execution (final state): {jinx_local_context}", file=sys.stderr)
     print(f"Jinx execution result output: {output_from_jinx_result}", file=sys.stderr)
 
-    user_message_id = generate_message_id()
-    
     user_command_log = f"/{jinx_name} {' '.join(cleaned_jinx_args)}"
-    save_conversation_message(
-        command_history,
-        conversation_id,
-        "user",
-        user_command_log,
-        wd=current_path,
-        model=model,
-        provider=provider,
-        npc=npc_name,
-        message_id=user_message_id
-    )
-    
-    assistant_message_id = generate_message_id()
-    save_conversation_message(
-        command_history,
-        conversation_id,
-        "assistant",
-        final_output_string,
-        wd=current_path,
-        model=model,
-        provider=provider,
-        npc=npc_name,
-        message_id=assistant_message_id
-    )
-
-    is_html = bool(re.search(r'<[a-z][\s\S]*>', final_output_string, re.IGNORECASE))
-    
     if is_html:
         return Response(final_output_string, mimetype="text/html")
     else:
@@ -2275,26 +2566,6 @@ def test_jinx():
     jinx.render_first_pass(temp_env, {})
     
     conversation_id = f"jinx_test_{uuid.uuid4().hex[:8]}"
-    command_history = CommandHistory(app.config.get('DB_PATH'))
-    
-    user_test_command = f"Testing jinx /{jinx.jinx_name} with inputs: {test_inputs}"
-    user_message_id = generate_message_id()
-    save_conversation_message(
-        command_history,
-        conversation_id,
-        "user",
-        user_test_command,
-        wd=current_path,
-        model=None,
-        provider=None,
-        npc=None,
-        message_id=user_message_id
-    )
-
-    jinx_execution_status = "success"
-    jinx_error_message = None
-    output = "Jinx execution did not complete."
-
     try:
         result = jinx.execute(
             input_values=test_inputs,
@@ -2312,18 +2583,6 @@ def test_jinx():
         jinx_error_message = str(e)
         output = f"Jinx execution failed: {e}"
 
-    assistant_response_message_id = generate_message_id()
-    save_conversation_message(
-        command_history,
-        conversation_id,
-        "assistant",
-        output,
-        wd=current_path,
-        model=None,
-        provider=None,
-        npc=None,
-        message_id=assistant_response_message_id
-    )
 
     return jsonify({
         "output": output,
@@ -2341,7 +2600,6 @@ finetune_jobs = {}
 def extract_and_store_memories(
     conversation_text,
     conversation_id,
-    command_history,
     npc_name,
     team_name,
     current_path,
@@ -2350,14 +2608,16 @@ def extract_and_store_memories(
     npc_object=None
 ):
     from npcpy.llm_funcs import get_facts
-    memory_examples_dict = command_history.get_memory_examples_for_context(
-        npc=npc_name,
-        team=team_name,
-        directory_path=current_path
-    )
-    
-    memory_context = format_memory_context(memory_examples_dict)
-    
+    from npcpy.memory.knowledge_store import get_store_for_path
+
+    memory_context = ""
+    if current_path:
+        try:
+            store = get_store_for_path(current_path)
+            memory_context = store.build_context(max_memories=10)
+        except Exception:
+            pass
+
     facts = get_facts(
         conversation_text,
         model=npc_object.model if npc_object else model,
@@ -2367,16 +2627,14 @@ def extract_and_store_memories(
     )
     
     memories_for_approval = []
-    
-    kg_facts_to_save = []
-    kg_concepts_to_save = []
-    fact_to_concept_links_temp = defaultdict(list)
-    
-    
-    if facts:
+    from npcpy.memory.knowledge_store import get_store_for_path
+
+    if facts and current_path:
+        store = get_store_for_path(current_path)
         for i, fact in enumerate(facts):
-            memory_id = command_history.add_memory_to_database(
-                message_id=f"{conversation_id}_{datetime.datetime.now().strftime('%H%M%S')}_{i}",
+            message_id = f"{conversation_id}_{datetime.datetime.now().strftime('%H%M%S')}_{i}"
+            mem_id = store.append_memory(
+                message_id=message_id,
                 conversation_id=conversation_id,
                 npc=npc_name or "default",
                 team=team_name or "default",
@@ -2385,11 +2643,9 @@ def extract_and_store_memories(
                 status="pending_approval",
                 model=npc_object.model if npc_object else model,
                 provider=npc_object.provider if npc_object else provider,
-                final_memory=None
             )
-            
             memories_for_approval.append({
-                "memory_id": memory_id,
+                "memory_id": mem_id,
                 "content": fact.get('statement', str(fact)),
                 "type": fact.get('type', 'unknown'),
                 "context": fact.get('source_text', ''),
@@ -2409,14 +2665,7 @@ def extract_and_store_memories(
         
         db_engine = get_db_connection(app.config.get('DB_PATH'))
         
-        save_kg_to_db(
-            engine=db_engine,
-            kg_data=temp_kg_data,
-            team_name=team_name or "default",
-            npc_name=npc_name or "default",
-            directory_path=current_path or "/"
-        )
-    
+
     return memories_for_approval
 @app.route('/api/finetuned_models', methods=['GET'])
 def get_finetuned_models():
@@ -3346,50 +3595,77 @@ def label_jinx_execution():
     data = request.json
     execution_id = data.get("executionId")
     label = data.get("label")
-    
-    command_history = CommandHistory(app.config.get('DB_PATH'))
-    command_history.label_jinx_execution(execution_id, label)
-    
-    return jsonify({"success": True, "error": None})
+    try:
+        engine = get_db_connection()
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO labels (entity_type, entity_id, label) VALUES (:et, :eid, :lbl)"),
+                {"et": "message", "eid": execution_id, "lbl": label}
+            )
+        return jsonify({"success": True, "error": None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/npc/executions", methods=["GET"])
 def get_npc_executions():
     npc_name = request.args.get("npcName")
-
-    
-    command_history = CommandHistory(app.config.get('DB_PATH'))
-    executions = command_history.get_npc_executions(npc_name)
-    
-    return jsonify({"executions": executions, "error": None})
+    try:
+        engine = get_db_connection()
+        with engine.connect() as conn:
+            if npc_name:
+                result = conn.execute(
+                    text("SELECT * FROM npc_executions WHERE npc = :npc ORDER BY timestamp DESC LIMIT 1000"),
+                    {"npc": npc_name}
+                )
+            else:
+                result = conn.execute(
+                    text("SELECT * FROM npc_executions ORDER BY timestamp DESC LIMIT 1000")
+                )
+            executions = [dict(row._mapping) for row in result]
+        return jsonify({"executions": executions, "error": None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/npc/executions/label", methods=["POST"])
 def label_npc_execution():
     data = request.json
     execution_id = data.get("executionId")
     label = data.get("label")
-    
-    command_history = CommandHistory(app.config.get('DB_PATH'))
-    command_history.label_npc_execution(execution_id, label)
-    
-    return jsonify({"success": True, "error": None})
+    try:
+        engine = get_db_connection()
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO labels (entity_type, entity_id, label) VALUES (:et, :eid, :lbl)"),
+                {"et": "message", "eid": execution_id, "lbl": label}
+            )
+        return jsonify({"success": True, "error": None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/training/dataset", methods=["POST"])
 def build_training_dataset():
     data = request.json
     filters = data.get("filters", {})
-    
-    command_history = CommandHistory(app.config.get('DB_PATH'))
-    dataset = command_history.get_training_dataset(
-        include_jinxes=filters.get("jinxes", True),
-        include_npcs=filters.get("npcs", True),
-        npc_names=filters.get("npc_names")
-    )
-    
-    return jsonify({
-        "dataset": dataset,
-        "count": len(dataset),
-        "error": None
-    })
+    try:
+        engine = get_db_connection()
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT l.entity_type, l.entity_id, l.metadata,
+                           ch.content, ch.role, ch.npc, ch.conversation_id
+                    FROM labels l
+                    LEFT JOIN conversation_history ch ON l.entity_type = 'message' AND l.entity_id = ch.message_id
+                    WHERE l.label = 'training'
+                """)
+            )
+            dataset = [dict(row._mapping) for row in result]
+        return jsonify({
+            "dataset": dataset,
+            "count": len(dataset),
+            "error": None
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 @app.route("/api/save_npc", methods=["POST"])
 def save_npc():
     try:
@@ -3462,7 +3738,7 @@ def run_npcsql_model():
         npc_directory = data.get("npcDirectory")
         if not npc_directory:
             return jsonify({"success": False, "error": "npcDirectory is required"}), 400
-        target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
+        target_db = data.get("targetDb", app.config.get('DB_PATH'))
 
         if not models_dir or not model_name:
             return jsonify({"success": False, "error": "modelsDir and modelName are required"}), 400
@@ -3510,7 +3786,7 @@ def run_all_npcsql_models():
         npc_directory = data.get("npcDirectory")
         if not npc_directory:
             return jsonify({"success": False, "error": "npcDirectory is required"}), 400
-        target_db = data.get("targetDb", os.path.expanduser("~/npcsh_history.db"))
+        target_db = data.get("targetDb", app.config.get('DB_PATH'))
 
         if not models_dir:
             return jsonify({"success": False, "error": "modelsDir is required"}), 400
@@ -3558,8 +3834,8 @@ def list_npcsql_models():
 
         compiler = ModelCompiler(
             models_dir=models_dir,
-            target_engine=app.config.get('DB_PATH') or os.path.expanduser('~/npcsh_history.db'),
-            npc_directory=app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team')
+            target_engine=app.config.get('DB_PATH'),
+            npc_directory=app.config.get('user_npc_directory')
         )
 
         compiler.discover_models()
@@ -4125,7 +4401,7 @@ def get_package_contents():
 def init_npcsh_folder():
     """Initialize npcsh with config and default npc_team."""
     try:
-        db_path = app.config.get('DB_PATH', os.path.expanduser('~/npcsh_history.db'))
+        db_path = app.config.get('DB_PATH')
         db_dir = os.path.dirname(db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
@@ -4273,15 +4549,6 @@ def get_attachment_response():
     messages = data.get("messages")
     conversation_id = data.get("conversationId")
     current_path = data.get("currentPath")
-    command_history = CommandHistory(app.config.get('DB_PATH'))
-    model = data.get("model")
-    npc_name = data.get("npc")
-    npc_source = data.get("npcSource", "global")
-    team = data.get("team")
-    provider = data.get("provider")
-    message_id = data.get("messageId")
-    
-    
     if current_path:
         loaded_vars = load_project_env(current_path)
         print(f"Loaded project env variables for attachment response: {list(loaded_vars.keys())}")
@@ -4345,34 +4612,6 @@ def get_attachment_response():
     messages = response["messages"]
     response = response["response"]
 
-    
-    save_conversation_message(
-        command_history, 
-        conversation_id, 
-        "user", 
-        message_to_send, 
-        wd=current_path, 
-        team=team, 
-        model=model, 
-        provider=provider, 
-        npc=npc_name, 
-        attachments=attachments_loaded
-    )
-
-    save_conversation_message(
-        command_history, 
-        conversation_id, 
-        "assistant", 
-        response,
-        wd=current_path, 
-        team=team, 
-        model=model, 
-        provider=provider,
-        npc=npc_name, 
-        attachments=attachments_loaded, 
-        message_id=message_id
-    )
-    
     return jsonify({
         "status": "success",
         "message": response,
@@ -4522,8 +4761,8 @@ def get_available_image_models(current_path=None):
     
     all_image_models = []
 
-    env_image_model = os.getenv("NPCSH_IMAGE_MODEL")
-    env_image_provider = os.getenv("NPCSH_IMAGE_PROVIDER")
+    env_image_model = os.getenv("INCOGNIDE_IMAGE_MODEL")
+    env_image_provider = os.getenv("INCOGNIDE_IMAGE_PROVIDER")
 
     if env_image_model and env_image_provider:
         all_image_models.append({
@@ -4805,7 +5044,8 @@ def generate_images():
 
     generated_images_base64 = []
     generated_filenames = []
-    command_history = CommandHistory(app.config.get('DB_PATH'))
+
+
     
     try:
         
@@ -4914,37 +5154,6 @@ def generate_images():
                     print(f"Warning: gen_image returned non-PIL object ({type(pil_image)}). Skipping image conversion.")
 
         
-        generation_id = generate_message_id()
-        
-        
-        save_conversation_message(
-            command_history,
-            generation_id,  
-            "user",
-            f"Generate {n} image(s): {prompt}",
-            wd=save_dir,
-            model=model_name,
-            provider=provider_name,
-            npc="vixynt",
-            attachments=attachments_loaded,
-            message_id=generation_id
-        )
-        
-        
-        response_message = f"Generated {len(generated_images_base64)} image(s) saved to {save_dir}"
-        save_conversation_message(
-            command_history,
-            generation_id,  
-            "assistant", 
-            response_message,
-            wd=save_dir,
-            model=model_name,
-            provider=provider_name,
-            npc="vixynt",
-            attachments=generated_attachments,
-            message_id=generate_message_id()
-        )
-        
         return jsonify({
             "images": generated_images_base64, 
             "filenames": generated_filenames,
@@ -4996,12 +5205,16 @@ def get_mcp_tools():
                    and existing_corca_state.mcp_client.server_script_path == server_path:
                     print(f"Using existing MCP client for {state_key} to fetch tools.")
                     temp_mcp_client = existing_corca_state.mcp_client
-                    tools = temp_mcp_client.available_tools_llm
-                    if selected_names:
-                        tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
-                    return jsonify({"tools": tools, "error": None})
+                    if temp_mcp_client.is_connected():
+                        tools = temp_mcp_client.available_tools_llm
+                        if selected_names:
+                            tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
+                        return jsonify({"tools": tools, "error": None})
+                    else:
+                        temp_mcp_client.disconnect_sync()
+                        existing_corca_state.mcp_client = None
 
-        
+
         print(f"Creating a temporary MCP client to fetch tools for {server_path}.")
         temp_mcp_client = MCPClientNPC()
         if temp_mcp_client.connect_sync(server_path):
@@ -5015,8 +5228,16 @@ def get_mcp_tools():
             # Jinx tools come from the NPC's config via resolve_tools(), not directory scans
             if selected_names:
                 tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
+            try:
+                temp_mcp_client.disconnect_sync()
+            except Exception:
+                pass
             return jsonify({"tools": tools, "error": None})
         else:
+            try:
+                temp_mcp_client.disconnect_sync()
+            except Exception:
+                pass
             return jsonify({"error": f"Failed to connect to MCP server at {server_path}."}), 500
     except FileNotFoundError as e:
         return jsonify({"error": f"MCP Server script not found: {e}"}), 404
@@ -5284,73 +5505,40 @@ def get_video_models_api():
 def _run_stream_post_processing(
     conversation_turn_text,
     conversation_id,
-    command_history,
     npc_name,
     team_name,
     current_path,
     model,
     provider,
     npc_object,
-    messages
+    messages,
+    extract_memories=True,
 ):
     """
-    Runs memory extraction and context compression in a background thread.
+    Runs memory extraction in a background thread.
     These operations will not block the main stream.
     """
     print(f"🌋 Background task started for conversation {conversation_id}!")
 
-    try:
-        if len(conversation_turn_text) > 50:
-            memories_for_approval = extract_and_store_memories(
-                conversation_turn_text,
-                conversation_id,
-                command_history,
-                npc_name,
-                team_name,
-                current_path,
-                model,
-                provider,
-                npc_object
-            )
-            if memories_for_approval:
-                print(f"🔥 Background: Extracted {len(memories_for_approval)} memories for approval for conversation {conversation_id}. Stored as pending in the database (table: memory_lifecycle).")
-        else:
-            print(f"Background: Conversation turn too short ({len(conversation_turn_text)} chars) for memory extraction. Skipping.")
-    except Exception as e:
-        print(f"🌋 Background: Error during memory extraction and KG insertion for conversation {conversation_id}: {e}")
-        traceback.print_exc()
+    if not extract_memories:
+        print(f"Background: Memory extraction disabled for conversation {conversation_id}. Skipping.")
+        return
 
     try:
-        if len(messages) > 30:
-            breathe_result = breathe(
-                messages=messages,
-                model=model,
-                provider=provider,
-                npc=npc_object
-            )
-            compressed_output = breathe_result.get('output', '')
-            
-            if compressed_output:
-                compressed_message_id = generate_message_id()
-                save_conversation_message(
-                    command_history,
-                    conversation_id,
-                    "system",
-                    f"[AUTOMATIC CONTEXT COMPRESSION]: {compressed_output}",
-                    wd=current_path,
-                    model=model,
-                    provider=provider,
-                    npc=npc_name,
-                    team=team_name,
-                    message_id=compressed_message_id
-                )
-                print(f"💨 Background: Compressed context for conversation {conversation_id} saved as new system message: {compressed_output[:100]}...")
-            else:
-                print(f"Background: Context compression returned no output for conversation {conversation_id}. Skipping saving.")
-        else:
-            print(f"Background: Conversation messages count ({len(messages)}) below threshold for context compression. Skipping.")
+        memories_for_approval = extract_and_store_memories(
+            conversation_turn_text,
+            conversation_id,
+            npc_name,
+            team_name,
+            current_path,
+            model,
+            provider,
+            npc_object
+        )
+        if memories_for_approval:
+            print(f"🔥 Background: Extracted {len(memories_for_approval)} memories for approval for conversation {conversation_id}. Written to local .knowledge.yaml.")
     except Exception as e:
-        print(f"🌋 Background: Error during context compression with breathe for conversation {conversation_id}: {e}")
+        print(f"🌋 Background: Error during memory extraction for conversation {conversation_id}: {e}")
         traceback.print_exc()
 
     print(f"🌋 Background task finished for conversation {conversation_id}!")
@@ -5480,6 +5668,7 @@ def stream():
     frontend_user_message_id = data.get("userMessageId", None)
     frontend_assistant_message_id = data.get("assistantMessageId", None)
     user_parent_message_id = data.get("userParentMessageId", None)
+    extract_memories = bool(data.get("extractMemories", True))
     params = {}
     if data.get("temperature") is not None:
         params["temperature"] = data.get("temperature")
@@ -5605,13 +5794,11 @@ def stream():
                 print(f"Warning: Could not load NPC {npc_name}")
 
     attachments = data.get("attachments", [])
+    images: list = []
+    attachment_paths_for_llm: list = []
+    attachments_for_db: list = []
     print(f"[DEBUG] Received attachments: {attachments}")
-    command_history = CommandHistory(app.config.get('DB_PATH'))
-    images = []
-    attachments_for_db = []
-    attachment_paths_for_llm = []
 
-    message_id = frontend_user_message_id if frontend_user_message_id else generate_message_id()
     if attachments:
         print(f"[DEBUG] Processing {len(attachments)} attachments")
 
@@ -5753,21 +5940,15 @@ def stream():
         extra_mcp_path = data.get("mcpServerPath")
         if extra_mcp_path:
             extra_mcp_path = resolve_mcp_server_path(current_path, extra_mcp_path, False)
-        elif not tools_for_llm:
-            # Fallback: if NPC has no tools and no ad-hoc server, try team/global server
-            fallback_path = None
-            if team_object and hasattr(team_object, 'team_ctx') and team_object.team_ctx:
-                mcp_servers_list = team_object.team_ctx.get('mcp_servers', [])
-                if mcp_servers_list and isinstance(mcp_servers_list, list):
-                    first_server_obj = next((s for s in mcp_servers_list if isinstance(s, dict) and 'value' in s), None)
-                    if first_server_obj:
-                        fallback_path = first_server_obj['value']
-                elif isinstance(team_object.team_ctx.get('mcp_server'), str):
-                    fallback_path = team_object.team_ctx.get('mcp_server')
-            extra_mcp_path = resolve_mcp_server_path(current_path, fallback_path, False)
+        # Note: removed auto-fallback to team/global MCP server.
+        # MCP servers should only be used when explicitly requested by the frontend.
 
         if extra_mcp_path:
             client = app.mcp_clients_cache.get(extra_mcp_path)
+            if client and not client.is_connected():
+                client.disconnect_sync()
+                app.mcp_clients_cache.pop(extra_mcp_path, None)
+                client = None
             if not client:
                 client = MCPClientNPC()
                 if client.connect_sync(extra_mcp_path):
@@ -6115,23 +6296,21 @@ IMPORTANT AGENT BEHAVIOR:
                   user_message_filled += txt
     
     if not is_resend:
-        save_conversation_message(
-            command_history,
-            conversation_id,
-            "user",
-            user_message_filled if len(user_message_filled) > 0 else commandstr,
+        user_message_id = frontend_user_message_id or generate_message_id()
+        _save_conversation_message(
+            conversation_id=conversation_id,
+            role="user",
+            content=commandstr,
+            message_id=user_message_id,
             wd=current_path,
             model=model,
             provider=provider,
             npc=npc_name,
             team=team,
             attachments=attachments_for_db,
-            message_id=message_id,
             parent_message_id=user_parent_message_id,
-            gen_params=params,
+            execution_mode=exe_mode,
         )
-
-    message_id = frontend_assistant_message_id if frontend_assistant_message_id else generate_message_id()
 
     def event_stream(current_stream_id):
         complete_response = []
@@ -6398,48 +6577,17 @@ IMPORTANT AGENT BEHAVIOR:
 
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
 
-            if tool_call_data.get("function_name") or tool_call_data.get("arguments"):
-                save_conversation_message(
-                    command_history,
-                    conversation_id,
-                    "assistant",
-                    {"tool_call": tool_call_data},
-                    wd=current_path,
-                    model=model,
-                    provider=provider,
-                    npc=npc_name,
-                    team=team,
-                    message_id=generate_message_id(),
-                )
-
-            if tool_results_for_db:
-                for tr in tool_results_for_db:
-                    save_conversation_message(
-                        command_history,
-                        conversation_id,
-                        "tool",
-                        {"tool_name": tr.get("name"), "tool_call_id": tr.get("tool_call_id"), "content": tr.get("content")},
-                        wd=current_path,
-                        model=model,
-                        provider=provider,
-                        npc=npc_name,
-                        team=team,
-                        message_id=generate_message_id(),
-                    )
-
-            npc_name_to_save = npc_object.name if npc_object else ''
-            cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else None
-            save_conversation_message(
-                command_history,
-                conversation_id,
-                "assistant",
-                final_response_text,
+            assistant_message_id = frontend_assistant_message_id or generate_message_id()
+            _save_conversation_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=final_response_text,
+                message_id=assistant_message_id,
                 wd=current_path,
                 model=model,
                 provider=provider,
-                npc=npc_name_to_save,
+                npc=npc_name_to_save if 'npc_name_to_save' in dir() else (npc_object.name if npc_object else ''),
                 team=team,
-                message_id=message_id,
                 reasoning_content=''.join(complete_reasoning) if complete_reasoning else None,
                 tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
                 tool_results=tool_results_for_db if tool_results_for_db else None,
@@ -6447,29 +6595,29 @@ IMPORTANT AGENT BEHAVIOR:
                 gen_params=params,
                 input_tokens=total_input_tokens if total_input_tokens else None,
                 output_tokens=total_output_tokens if total_output_tokens else None,
-                cost=cost,
+                cost=stream_cost if 'stream_cost' in dir() else None,
+                execution_mode=exe_mode,
             )
 
-            # Auto memory extraction and context compression disabled —
-            # these are now controlled via scheduled jobs / cron instead
-            # conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
-            # background_thread = threading.Thread(
-            #     target=_run_stream_post_processing,
-            #     args=(
-            #         conversation_turn_text,
-            #         conversation_id,
-            #         command_history,
-            #         npc_name,
-            #         team,
-            #         current_path,
-            #         model,
-            #         provider,
-            #         npc_object,
-            #         messages
-            #     )
-            # )
-            # background_thread.daemon = True
-            # background_thread.start()
+            # Async memory extraction to local .knowledge.yaml
+            conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
+            background_thread = threading.Thread(
+                target=_run_stream_post_processing,
+                args=(
+                    conversation_turn_text,
+                    conversation_id,
+                    npc_name,
+                    team,
+                    current_path,
+                    model,
+                    provider,
+                    npc_object,
+                    messages,
+                    extract_memories,
+                )
+            )
+            background_thread.daemon = True
+            background_thread.start()
 
             _cleanup_stream(current_stream_id)
     return Response(event_stream(stream_id), mimetype="text/event-stream", headers={
@@ -6483,23 +6631,23 @@ def delete_message():
     data = request.json
     conversation_id = data.get('conversationId')
     message_id = data.get('messageId')
-    
+
     if not conversation_id or not message_id:
         return jsonify({"error": "Missing conversationId or messageId"}), 400
-    
+
     try:
-        command_history = CommandHistory(app.config.get('DB_PATH'))
-        
-        result = command_history.delete_message(conversation_id, message_id)
-        
-        print(f"[DELETE_MESSAGE] Deleted message {message_id} from conversation {conversation_id}. Rows affected: {result}")
-        
+        engine = get_db_connection()
+        with engine.begin() as conn:
+            result = conn.execute(
+                text("DELETE FROM conversation_history WHERE conversation_id = :cid AND message_id = :mid"),
+                {"cid": conversation_id, "mid": message_id}
+            )
+        print(f"[DELETE_MESSAGE] Deleted message {message_id} from conversation {conversation_id}. Rows affected: {result.rowcount}")
         return jsonify({
             "success": True,
             "deletedMessageId": message_id,
-            "rowsAffected": result
+            "rowsAffected": result.rowcount
         }), 200
-        
     except Exception as e:
         print(f"[DELETE_MESSAGE] Error: {e}")
         traceback.print_exc()
@@ -6507,17 +6655,20 @@ def delete_message():
 
 @app.route("/api/memory/approve", methods=["POST"])
 def approve_memories():
+    """Approve or reject memories in the local .knowledge.yaml."""
     try:
         data = request.json
         approvals = data.get("approvals", [])
+        directory_path = data.get("currentPath", os.getcwd())
 
-        command_history = CommandHistory(app.config.get('DB_PATH'))
+        from npcpy.memory.knowledge_store import get_store_for_path
+        store = get_store_for_path(directory_path)
 
         for approval in approvals:
-            command_history.update_memory_status(
-                approval['memory_id'],
-                approval['decision'],
-                approval.get('final_memory')
+            store.update_memory(
+                mem_id=str(approval['memory_id']),
+                status=approval['decision'],
+                final_memory=approval.get('final_memory'),
             )
 
         return jsonify({"success": True, "processed": len(approvals)})
@@ -6527,28 +6678,32 @@ def approve_memories():
 
 @app.route("/api/memory/search", methods=["GET"])
 def search_memories():
-    """Search memories with optional scope filtering"""
+    """Search memories in the local .knowledge.yaml."""
     try:
         q = request.args.get("q", "")
         npc = request.args.get("npc")
         team = request.args.get("team")
-        directory_path = request.args.get("directory_path")
+        directory_path = request.args.get("directory_path", os.getcwd())
         status = request.args.get("status")
         limit = int(request.args.get("limit", 50))
 
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-        command_history = CommandHistory(app.config.get('DB_PATH'))
-        results = command_history.search_memory(
-            query=q,
-            npc=npc,
-            team=team,
-            directory_path=directory_path,
-            status_filter=status,
-            limit=limit
-        )
-
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(directory_path)
+        results = store.search_memories(q, limit=limit)
+        if npc or team or status:
+            filtered = []
+            for mem in results:
+                if npc and mem.get('npc') != npc:
+                    continue
+                if team and mem.get('team') != team:
+                    continue
+                if status and mem.get('status') != status:
+                    continue
+                filtered.append(mem)
+            results = filtered
         return jsonify({"memories": results, "count": len(results)})
 
     except Exception as e:
@@ -6557,28 +6712,25 @@ def search_memories():
 
 @app.route("/api/memory/pending", methods=["GET"])
 def get_pending_memories():
-    """Get memories awaiting approval"""
+    """Get memories awaiting approval from the local .knowledge.yaml."""
     try:
         limit = int(request.args.get("limit", 50))
         npc = request.args.get("npc")
         team = request.args.get("team")
-        directory_path = request.args.get("directory_path")
+        directory_path = request.args.get("directory_path", os.getcwd())
 
-        command_history = CommandHistory(app.config.get('DB_PATH'))
-        results = command_history.get_pending_memories(limit=limit)
-
-        if npc or team or directory_path:
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(directory_path)
+        results = store.get_memories(status="pending_approval", limit=limit)
+        if npc or team:
             filtered = []
             for mem in results:
                 if npc and mem.get('npc') != npc:
                     continue
                 if team and mem.get('team') != team:
                     continue
-                if directory_path and mem.get('directory_path') != directory_path:
-                    continue
                 filtered.append(mem)
             results = filtered
-
         return jsonify({"memories": results, "count": len(results)})
 
     except Exception as e:
@@ -6587,100 +6739,27 @@ def get_pending_memories():
 
 @app.route("/api/memory/scope", methods=["GET"])
 def get_memories_by_scope():
-    """Get memories for a specific scope (npc/team/directory)"""
+    """Get memories for a specific scope from the local .knowledge.yaml."""
     try:
         npc = request.args.get("npc", "")
         team = request.args.get("team", "")
-        directory_path = request.args.get("directory_path", "")
+        directory_path = request.args.get("directory_path", os.getcwd())
         status = request.args.get("status")
 
-        command_history = CommandHistory(app.config.get('DB_PATH'))
-        results = command_history.get_memories_for_scope(
-            npc=npc,
-            team=team,
-            directory_path=directory_path,
-            status=status
-        )
-
-        return jsonify({"memories": results, "count": len(results)})
+        from npcpy.memory.knowledge_store import KnowledgeStore
+        store = KnowledgeStore(directory_path)
+        results = store.get_memories(status=status)
+        filtered = []
+        for mem in results:
+            if npc and mem.get('npc') != npc:
+                continue
+            if team and mem.get('team') != team:
+                continue
+            filtered.append(mem)
+        return jsonify({"memories": filtered, "count": len(filtered)})
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/activity/log", methods=["POST"])
-def log_activity():
-    try:
-        data = request.json or {}
-        ch = CommandHistory(app.config.get('DB_PATH'))
-        ch.log_activity(
-            activity_type=data.get("type", "unknown"),
-            activity_data=json.dumps(data.get("data")) if data.get("data") else None,
-            directory_path=data.get("directoryPath"),
-            npc=data.get("npc"),
-            device_id=data.get("deviceId"),
-            session_id=data.get("sessionId"),
-        )
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/activity/list", methods=["GET"])
-def list_activities():
-    try:
-        ch = CommandHistory(app.config.get('DB_PATH'))
-        activities = ch.get_activities(
-            activity_type=request.args.get("type"),
-            limit=int(request.args.get("limit", 100)),
-            directory_path=request.args.get("directoryPath"),
-            session_id=request.args.get("sessionId"),
-        )
-        return jsonify({"activities": activities})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/autocomplete/log", methods=["POST"])
-def log_autocomplete():
-    try:
-        data = request.json or {}
-        ch = CommandHistory(app.config.get('DB_PATH'))
-        ch.log_autocomplete(
-            suggestion_type=data.get("type", "text"),
-            input_context=data.get("inputContext", ""),
-            suggestion=data.get("suggestion", ""),
-            accepted=data.get("accepted", False),
-            npc=data.get("npc"),
-            model=data.get("model"),
-            provider=data.get("provider"),
-            directory_path=data.get("directoryPath"),
-        )
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/autocomplete/stats", methods=["GET"])
-def autocomplete_stats():
-    try:
-        ch = CommandHistory(app.config.get('DB_PATH'))
-        stats = ch.get_autocomplete_stats(
-            suggestion_type=request.args.get("type"),
-            npc=request.args.get("npc"),
-        )
-        return jsonify({"stats": stats})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/autocomplete/training", methods=["GET"])
-def autocomplete_training_data():
-    try:
-        ch = CommandHistory(app.config.get('DB_PATH'))
-        data = ch.get_training_data(
-            suggestion_type=request.args.get("type"),
-            accepted_only=request.args.get("acceptedOnly") == "true",
-            limit=int(request.args.get("limit", 1000)),
-        )
-        return jsonify({"data": data, "count": len(data)})
-    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/interrupt", methods=["POST"])
@@ -6705,6 +6784,7 @@ def get_conversations():
         if not path:
             return jsonify({"error": "No path provided", "conversations": []}), 400
 
+        _ensure_execution_mode_column()
         engine = get_db_connection()
         try:
             with engine.connect() as conn:
@@ -6715,7 +6795,8 @@ def get_conversations():
                        GROUP_CONCAT(content) as preview,
                        GROUP_CONCAT(DISTINCT CASE WHEN npc IS NOT NULL AND npc != '' THEN npc END) as npcs,
                        GROUP_CONCAT(DISTINCT CASE WHEN model IS NOT NULL AND model != '' THEN model END) as models,
-                       GROUP_CONCAT(DISTINCT CASE WHEN provider IS NOT NULL AND provider != '' THEN provider END) as providers
+                       GROUP_CONCAT(DISTINCT CASE WHEN provider IS NOT NULL AND provider != '' THEN provider END) as providers,
+                       MAX(execution_mode) as execution_mode
                 FROM conversation_history
                 WHERE REPLACE(RTRIM(directory_path, '/\\'), '\\', '/') = :normalized_path
                 GROUP BY conversation_id
@@ -6744,6 +6825,7 @@ def get_conversations():
                                 "npcs": [n for n in (conv[4] or "").split(",") if n],
                                 "models": [m for m in (conv[5] or "").split(",") if m],
                                 "providers": [p for p in (conv[6] or "").split(",") if p],
+                                "execution_mode": conv[7] or "chat",
                                 # Keep singular fields for backwards compat (first entry)
                                 "npc": (conv[4] or "").split(",")[0] if conv[4] else "",
                                 "model": (conv[5] or "").split(",")[0] if conv[5] else "",
@@ -6830,22 +6912,20 @@ def get_conversation_messages(conversation_id):
             query = text("""
                 WITH ranked_messages AS (
                     SELECT
-                        ch.id,
-                        ch.message_id,
-                        ch.timestamp,
-                        ch.role,
-                        ch.content,
-                        ch.conversation_id,
-                        ch.directory_path,
-                        ch.model,
-                        ch.provider,
-                        ch.npc,
-                        ch.team,
-                        ch.reasoning_content,
-                        ch.tool_calls,
-                        ch.tool_results,
-                        ch.parent_message_id,
-                        GROUP_CONCAT(ma.id) as attachment_ids,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                         ROW_NUMBER() OVER (
                             PARTITION BY ch.role, strftime('%s', ch.timestamp)
                             ORDER BY ch.id DESC
@@ -6943,14 +7023,6 @@ def create_conversation_branch(conversation_id):
     """Create a new branch for a conversation."""
     try:
         data = request.get_json()
-        branch_id = data.get("id") or generate_message_id()
-        name = data.get("name", f"Branch {branch_id[:8]}")
-        parent_branch_id = data.get("parentBranchId", "main")
-        branch_from_message_id = data.get("branchFromMessageId")
-        created_at = data.get("createdAt") or datetime.now().isoformat()
-        metadata = json.dumps(data.get("metadata")) if data.get("metadata") else None
-
-        engine = get_db_connection()
         with engine.connect() as conn:
             query = text("""
                 INSERT INTO conversation_branches
@@ -7128,7 +7200,9 @@ def openai_chat_completions():
         current_path = request.headers.get("X-Current-Path", os.getcwd())
         registered_teams = data.get("registered_teams", [])
 
-        db_path = app.config.get('DB_PATH') or os.path.expanduser("~/npcsh_history.db")
+        db_path = app.config.get('DB_PATH')
+        if not db_path:
+            return jsonify({"error": "DB_PATH not configured"}), 500
         db_conn = create_engine(f'sqlite:///{db_path}')
 
         npc = None
@@ -7349,7 +7423,7 @@ def scan_gguf_models():
         os.path.expanduser('~/.cache/huggingface/hub'),
     ]
 
-    env_dir = os.environ.get('NPCSH_GGUF_DIR')
+    env_dir = os.environ.get('INCOGNIDE_GGUF_DIR')
     if env_dir:
         default_dirs.insert(0, os.path.expanduser(env_dir))
 
@@ -7755,11 +7829,6 @@ def start_flask_server(
         
         app.config['DB_PATH'] = db_path
         app.config['user_npc_directory'] = user_npc_directory
-
-        command_history = CommandHistory(db_path)
-        app.command_history = command_history
-
-        
         if cors_origins:
 
             CORS(
@@ -7787,22 +7856,17 @@ def start_flask_server(
 
 if __name__ == "__main__":
 
-    SETTINGS_FILE = Path(os.path.expanduser("~/.npcshrc"))
+    base_dir = os.path.expanduser("~/.npcpy")
+    db_path = os.environ.get('INCOGNIDE_DB_PATH', os.path.join(base_dir, "history.db"))
+    user_npc_directory = os.environ.get('USER_NPC_DIRECTORY', os.path.join(base_dir, "npc_team"))
 
-    # Use NPCSH_BASE if set (passed by Electron), otherwise default
-    npcsh_base = os.environ.get('NPCSH_BASE', os.path.expanduser("~/.npcsh"))
-    db_path = os.environ.get('INCOGNIDE_DB_PATH', os.path.expanduser("~/npcsh_history.db"))
-    user_npc_directory = os.path.join(npcsh_base, "npc_team")
-
-    # Ensure directories exist (critical for Windows where ~ dirs aren't pre-created)
     try:
         db_dir = os.path.dirname(db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
         os.makedirs(user_npc_directory, exist_ok=True)
         os.makedirs(os.path.join(user_npc_directory, "jinxes"), exist_ok=True)
-        os.makedirs(npcsh_base, exist_ok=True)
-        data_dir = os.environ.get('INCOGNIDE_DATA_DIR', os.path.join(npcsh_base, 'data'))
+        data_dir = os.environ.get('INCOGNIDE_DATA_DIR', os.path.join(base_dir, "data"))
         os.makedirs(data_dir, exist_ok=True)
     except Exception as dir_err:
         print(f"[SERVE] Warning: Could not create directories: {dir_err}")

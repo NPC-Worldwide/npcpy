@@ -1,0 +1,46 @@
+jinx_name: knowledge_store_skill
+description: >
+  Skill for working with local .knowledge.yaml files via KnowledgeStore.
+  Use this when you need to recall, search, or manage directory-local memories
+  and knowledge links stored in plain YAML alongside the user's project files.
+
+  KnowledgeStore is directory-scoped. Each directory that contains a
+  `.knowledge.yaml` file maintains its own append-only memory graph.
+  There is no global database — the YAML IS the source of truth.
+
+  Key operations:
+  - Load a directory's store: `npcpy.memory.knowledge_store.get_store_for_path(path)`
+  - Append a memory: `store.append_memory(initial_memory="...", status="pending_approval", ...)`
+  - Update a memory (approve/reject/edit): `store.update_memory(mem_id, status, final_memory)`
+  - Search memories (keyword substring): `store.search_memories("query", limit=20)`
+  - Get approved context for LLM prompts: `store.build_context(max_memories=10)`
+  - Get links for a memory: `store.get_links_for_memory(mem_id)`
+  - Create a link between memories: `store.append_link(from_mem, to_mem, relation="refines", agent="your_name")`
+  - Aggregate across a tree: `KnowledgeStore.aggregate(root_directory, max_depth=3)`
+
+  Memory statuses:
+  - `pending_approval` — raw extraction, needs human review
+  - `human-approved` — confirmed and available for context injection
+  - `human-rejected` — discard, can be used as negative examples
+  - `human-edited` — corrected version supersedes initial_memory
+
+  When answering questions, prefer `build_context()` for recently approved
+  local knowledge, and `search_memories()` for targeted recall. Always
+  respect `human-rejected` memories — do not repeat them.
+inputs:
+  - name: action
+    description: load | search | append | update | link | context | aggregate
+  - name: directory_path
+    description: Absolute path of the directory containing .knowledge.yaml
+  - name: query_or_memory
+    description: Search query, memory text, or JSON params depending on action
+steps:
+  - name: instruct
+    engine: python
+    code: |
+      output = """
+      KnowledgeStore skill loaded.
+      Directory: {{ directory_path }}
+      Action: {{ action }}
+      Use the KnowledgeStore API in python or reasoning steps.
+      """

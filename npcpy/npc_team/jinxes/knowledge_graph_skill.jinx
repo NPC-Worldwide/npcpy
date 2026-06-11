@@ -1,0 +1,62 @@
+jinx_name: knowledge_graph_skill
+description: >
+  Skill for searching and evolving the SQLite-backed Knowledge Graph.
+  Use this when you need structured fact/concept/link search across
+  one or more teams, NPCs, or directory scopes.
+
+  The Knowledge Graph (KG) is stored in the application's database
+  (not YAML). It is scoped by (team_name, npc_name, directory_path).
+  Facts and concepts carry generation numbers and origin tags.
+
+  Search methods (choose the right one):
+
+  1. Keyword search — fast substring match over fact statements.
+     `kg_search_facts(engine_or_kg, "keyword")` → List[str]
+
+  2. Embedding search — semantic cosine similarity via vector embeddings.
+     `kg_embedding_search(engine_or_kg, query="...", embedding_model="nomic-embed-text",
+      embedding_provider="ollama", similarity_threshold=0.6, max_results=20)`
+     → List[dict] with 'content', 'type', 'score'
+
+  3. Link search — graph traversal (BFS/DFS) starting from keyword-matched seeds.
+     `kg_link_search(engine_or_kg, query="...", max_depth=2, breadth_per_step=5,
+      strategy="bfs", max_results=20)`
+     → List[dict] with 'content', 'type', 'depth', 'path', 'score'
+
+  4. Hybrid search — combines keyword + embedding + link, boosting results
+     found by multiple methods.
+     `kg_hybrid_search(engine_or_kg, query="...", mode="all", max_depth=2,
+      similarity_threshold=0.6, max_results=20)`
+     → List[dict] with 'content', 'type', 'score', 'source'
+
+  Graph evolution (use sparingly, usually in background):
+  - `kg_initial(content, model, provider)` — build a new KG from text
+  - `kg_evolve_incremental(existing_kg, new_content_text, ...)` — add content
+  - `kg_sleep_process(existing_kg, model, provider)` — prune/deepen/consolidate
+  - `kg_dream_process(existing_kg, model, provider, num_seeds)` — speculative synthesis
+
+  When a user asks a question that spans facts, concepts, and their
+  relationships, prefer hybrid search. For pure semantic similarity
+  without graph structure, use embedding search. For exploring
+  connected neighborhoods, use link search with BFS.
+inputs:
+  - name: search_method
+    description: keyword | embedding | link | hybrid
+  - name: query
+    description: The user's query or topic to search
+  - name: scope_team
+    description: Team name to scope the search (optional)
+  - name: scope_npc
+    description: NPC name to scope the search (optional)
+  - name: scope_directory
+    description: Directory path to scope the search (optional)
+steps:
+  - name: instruct
+    engine: python
+    code: |
+      output = """
+      Knowledge Graph skill loaded.
+      Method: {{ search_method }}
+      Query: {{ query }}
+      Use kg_search_facts, kg_embedding_search, kg_link_search, or kg_hybrid_search.
+      """

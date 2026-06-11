@@ -403,22 +403,21 @@ for f in facts:
 Memories go through a lifecycle: `pending_approval` → `human-approved` / `human-rejected` / `human-edited`. Approved and rejected memories are fed back as positive and negative examples to future extraction calls, creating a self-improving quality loop.
 
 ```python
-from npcpy.memory.command_history import CommandHistory
+from npcpy.memory.knowledge_store import get_store_for_path
 
-ch = CommandHistory("~/npcsh_history.db")
+store = get_store_for_path("/my/project")
 
 # Get pending memories
-pending = ch.get_pending_memories(limit=20)
+pending = store.get_pending_memories()
 
 # Approve or reject
-ch.update_memory_status(memory_id=42, new_status="human-approved")
-ch.update_memory_status(memory_id=43, new_status="human-rejected")
+store.update_memory(mem_id="abc123...", status="human-approved")
+store.update_memory(mem_id="abc124...", status="human-rejected")
 
 # Get quality examples for future extraction
-examples = ch.get_memory_examples_for_context(
-    npc="sibiji", team="npc_team", directory_path="/my/project"
-)
-# Returns approved, rejected, and edited memories as few-shot examples
+approved = store.get_memories(status="human-approved", limit=50)
+rejected = store.get_memories(status="human-rejected", limit=50)
+# Returns memories as few-shot examples
 ```
 
 ### Backfilling Approved Memories into the KG
@@ -426,8 +425,13 @@ examples = ch.get_memory_examples_for_context(
 ```python
 from npcpy.memory.knowledge_graph import kg_backfill_from_memories
 
+# Load approved memories from local YAML
+store = get_store_for_path("/my/project")
+approved_memories = store.get_memories(status="human-approved")
+
 result = kg_backfill_from_memories(
-    engine=ch.engine,
+    engine=kg_engine,  # your existing knowledge-graph engine
+    memories=approved_memories,
     model="qwen3:4b",
     provider="ollama",
     get_concepts=True,
