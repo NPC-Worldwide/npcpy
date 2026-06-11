@@ -44,24 +44,8 @@ class KnowledgeStore:
             with open(tmp, "w", encoding="utf-8") as f:
                 yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
             os.replace(tmp, self.file_path)
-        # update index
-        try:
-            from npcpy.memory.knowledge_index import upsert_directory
-            upsert_directory(
-                self.directory,
-                memory_count=len(data.get("memories", [])),
-                link_count=len(data.get("knowledge", [])),
-            )
-        except Exception:
-            pass
 
     def _save_no_index(self, data: Dict[str, Any]):
-        data["updated_at"] = _utcnow()
-        tmp = self.file_path + ".tmp"
-        with self._lock:
-            with open(tmp, "w", encoding="utf-8") as f:
-                yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-            os.replace(tmp, self.file_path)
         data["updated_at"] = _utcnow()
         tmp = self.file_path + ".tmp"
         with self._lock:

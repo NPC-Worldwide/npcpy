@@ -1,14 +1,16 @@
 """
 Knowledge Index — fast registry of every `.knowledge.yaml` on disk.
 
-Keeps a lightweight SQLite table at `~/.npcsh/knowledge_index.db` that maps
-memory_id → (directory_path, file_mtime) so cross-directory searches don’t
-need to walk the filesystem.
+Keeps a lightweight SQLite table that maps directory → file metadata so
+cross-directory searches don't need to walk the filesystem.
 
 The indexer is updated lazily:
   - on write (append_memory / append_link) we upsert the directory row
   - on search we validate mtime and skip stale entries
   - on explicit scan we crawl a root and rebuild
+
+The database path is passed by the caller; npcpy does not hardcode any
+default location.
 """
 
 import os
@@ -17,15 +19,12 @@ import threading
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
-INDEX_DB_DIR = os.path.expanduser("~/.npcsh")
-INDEX_DB_PATH = os.path.join(INDEX_DB_DIR, "knowledge_index.db")
-
 _lock = threading.Lock()
 
 
-def _ensure_index_db():
-    os.makedirs(INDEX_DB_DIR, exist_ok=True)
-    conn = sqlite3.connect(INDEX_DB_PATH)
+def _ensure_index_db(db_path: str):
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS knowledge_files (
             directory TEXT PRIMARY KEY,
@@ -39,12 +38,12 @@ def _ensure_index_db():
     conn.close()
 
 
-def upsert_directory(directory: str, memory_count: int = 0, link_count: int = 0):
-    _ensure_index_db()
+def upsert_directory(db_path: str, directory: str, memory_count: int = 0, link_count: int = 0):
+    _ensure_index_db(db_path)
     file_path = os.path.join(directory, ".knowledge.yaml")
     mtime = os.path.getmtime(file_path) if os.path.exists(file_path) else 0
     with _lock:
-        conn = sqlite3.connect(INDEX_DB_PATH)
+        conn = sqlite3.connect(db_path)
         conn.execute(
             """INSERT INTO knowledge_files
                (directory, mtime, memory_count, link_count, last_updated)
@@ -60,18 +59,18 @@ def upsert_directory(directory: str, memory_count: int = 0, link_count: int = 0)
         conn.close()
 
 
-def remove_directory(directory: str):
-    _ensure_index_db()
+def remove_directory(db_path: str, directory: str):
+    _ensure_index_db(db_path)
     with _lock:
-        conn = sqlite3.connect(INDEX_DB_PATH)
+        conn = sqlite3.connect(db_path)
         conn.execute("DELETE FROM knowledge_files WHERE directory=?", (directory,))
         conn.commit()
         conn.close()
 
 
-def get_known_directories(min_mtime: float = None) -> List[Dict[str, Any]]:
-    _ensure_index_db()
-    conn = sqlite3.connect(INDEX_DB_PATH)
+def get_known_directories(db_path: str, min_mtime: float = None) -> List[Dict[str, Any]]:
+    _ensure_index_db(db_path)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     if min_mtime is not None:
         cursor.execute(
@@ -90,7 +89,7 @@ def get_known_directories(min_mtime: float = None) -> List[Dict[str, Any]]:
     return rows
 
 
-def scan_root(root: str, max_depth: int = 5) -> List[str]:
+def scan_root(db_path: str, root: str, max_depth: int = 5) -> List[str]:
     """Walk `root` and register every directory containing `.knowledge.yaml`."""
     found = []
     for dirpath, _dirnames, filenames in os.walk(root):
@@ -98,15 +97,13 @@ def scan_root(root: str, max_depth: int = 5) -> List[str]:
             rel = os.path.relpath(dirpath, root).split(os.sep)
             if len(rel) <= max_depth:
                 found.append(dirpath)
-    # batch upsert
-    _ensure_index_db()
+    _ensure_index_db(db_path)
     now = datetime.now(timezone.utc).isoformat()
     with _lock:
-        conn = sqlite3.connect(INDEX_DB_PATH)
+        conn = sqlite3.connect(db_path)
         for d in found:
             fp = os.path.join(d, ".knowledge.yaml")
             mtime = os.path.getmtime(fp) if os.path.exists(fp) else 0
-            # quick count
             try:
                 import yaml
                 with open(fp, "r") as f:
