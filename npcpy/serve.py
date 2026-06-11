@@ -4754,8 +4754,8 @@ def get_available_image_models(current_path=None):
     
     all_image_models = []
 
-    env_image_model = os.getenv("NPCSH_IMAGE_MODEL")
-    env_image_provider = os.getenv("NPCSH_IMAGE_PROVIDER")
+    env_image_model = os.getenv("INCOGNIDE_IMAGE_MODEL")
+    env_image_provider = os.getenv("INCOGNIDE_IMAGE_PROVIDER")
 
     if env_image_model and env_image_provider:
         all_image_models.append({
@@ -7518,7 +7518,7 @@ def scan_gguf_models():
         os.path.expanduser('~/.cache/huggingface/hub'),
     ]
 
-    env_dir = os.environ.get('NPCSH_GGUF_DIR')
+    env_dir = os.environ.get('INCOGNIDE_GGUF_DIR')
     if env_dir:
         default_dirs.insert(0, os.path.expanduser(env_dir))
 
