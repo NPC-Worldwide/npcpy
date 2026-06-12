@@ -2899,6 +2899,7 @@ class Team:
                     self.env = ctx_data.get('env', self.env if hasattr(self, 'env') else None)
                     self.mcp_servers = ctx_data.get('mcp_servers', [])
                     self.databases = ctx_data.get('databases', [])
+                    self.providers = ctx_data.get('providers', [])
                     self.forenpc_name = ctx_data.get('forenpc', self.forenpc_name)
                     self.skills_directory = ctx_data.get('SKILLS_DIRECTORY', None)
                     # external_jinx_teams: list of other team root dirs whose jinxes/

@@ -77,6 +77,7 @@ from npcpy.npc_sysenv import (
     get_data_dir, get_models_dir, get_cache_dir,
     get_images_dir, get_jobs_dir, get_triggers_dir, get_videos_dir,
     get_attachments_dir, get_logs_dir, lookup_provider,
+    get_locally_available_models,
     team_sync_status, team_sync_init, team_sync_pull,
     team_sync_resolve, team_sync_commit, team_sync_diff,
 )
@@ -2271,13 +2272,17 @@ def execute_jinx():
 @app.route("/api/models", methods=["GET"])
 def get_models():
     """
-    Return only models configured in the current project's team / NPCs.
-    Never scan external APIs (Ollama, OpenAI, Anthropic, etc.).
+    Return models configured via the `providers` field in team/NPC config.
+    If `providers` is set, dynamically scan APIs (based on env vars) for
+    the listed providers.  If not set, fall back to the explicit
+    model/provider fields.
     """
     current_path = request.args.get("currentPath") or os.path.expanduser('~')
     registered_teams = _parse_registered_teams()
     seen = set()
     formatted_models = []
+    # Cache scanned results per directory so we don't re-hit APIs
+    _scan_cache: dict = {}
 
     def _add_model(m, p):
         if not m or (m, p) in seen:
@@ -2289,16 +2294,57 @@ def get_models():
             "display_name": f"{m} | {p}",
         })
 
-    # 1. Project team
-    project_team_path = os.path.join(current_path, 'npc_team')
-    if os.path.isdir(project_team_path):
-        try:
-            team = Team(team_path=project_team_path)
+    def _resolve_providers(providers_list, scan_path):
+        if not providers_list:
+            return
+        if scan_path not in _scan_cache:
+            try:
+                _scan_cache[scan_path] = get_locally_available_models(
+                    scan_path, airplane_mode=False
+                )
+            except Exception as e:
+                print(f"[models] Failed to scan local models for {scan_path}: {e}")
+                _scan_cache[scan_path] = {}
+        available = _scan_cache[scan_path]
+        for entry in providers_list:
+            if isinstance(entry, str):
+                provider_name = entry
+                for model_name, model_provider in available.items():
+                    if model_provider == provider_name:
+                        _add_model(model_name, provider_name)
+            elif isinstance(entry, dict):
+                for provider_name, model_list in entry.items():
+                    if isinstance(model_list, list):
+                        for model_name in model_list:
+                            _add_model(model_name, provider_name)
+
+    def _collect_team_models(team, scan_path):
+        team_has_providers = False
+        # Team-level providers from .ctx
+        team_providers = getattr(team, 'providers', None)
+        if isinstance(team_providers, list) and team_providers:
+            team_has_providers = True
+            _resolve_providers(team_providers, scan_path)
+        # NPC-level .npc extra fields
+        for npc in team.npcs.values():
+            npc_providers = getattr(npc, '_extra_fields', {}).get('providers')
+            if isinstance(npc_providers, list) and npc_providers:
+                team_has_providers = True
+                _resolve_providers(npc_providers, scan_path)
+        # Fallback to explicit model/provider fields
+        if not team_has_providers:
             if team.model and team.provider:
                 _add_model(team.model, team.provider)
             for npc in team.npcs.values():
                 if npc.model and npc.provider:
                     _add_model(npc.model, npc.provider)
+
+    # 1. Project team
+    project_team_path = os.path.join(current_path, 'npc_team')
+    if os.path.isdir(project_team_path):
+        try:
+            team = Team(team_path=project_team_path)
+            _collect_team_models(team, current_path)
         except Exception as e:
             print(f"[models] Failed to load project team: {e}")
 
@@ -2308,11 +2354,7 @@ def get_models():
             continue
         try:
             team = Team(team_path=team_path)
-            if team.model and team.provider:
-                _add_model(team.model, team.provider)
-            for npc in team.npcs.values():
-                if npc.model and npc.provider:
-                    _add_model(npc.model, npc.provider)
+            _collect_team_models(team, team_path)
         except Exception as e:
             print(f"[models] Failed to load registered team {team_path}: {e}")
 
@@ -5949,23 +5991,27 @@ def stream():
                 mcp_clients_cache=app.mcp_clients_cache
             )
 
-        # If frontend sent an ad-hoc MCP server, add its tools too
-        extra_mcp_path = data.get("mcpServerPath")
-        if extra_mcp_path:
-            extra_mcp_path = resolve_mcp_server_path(current_path, extra_mcp_path, False)
-        # Note: removed auto-fallback to team/global MCP server.
-        # MCP servers should only be used when explicitly requested by the frontend.
+        # If frontend sent ad-hoc MCP server(s), add their tools too.
+        # Supports both legacy single mcpServerPath and new mcpServerPaths array.
+        extra_paths = []
+        if "mcpServerPaths" in data and isinstance(data["mcpServerPaths"], list):
+            extra_paths = [p for p in data["mcpServerPaths"] if p]
+        elif data.get("mcpServerPath"):
+            extra_paths = [data.get("mcpServerPath")]
 
-        if extra_mcp_path:
-            client = app.mcp_clients_cache.get(extra_mcp_path)
+        for extra_mcp_path in extra_paths:
+            resolved_path = resolve_mcp_server_path(current_path, extra_mcp_path, False)
+            if not resolved_path:
+                continue
+            client = app.mcp_clients_cache.get(resolved_path)
             if client and not client.is_connected():
                 client.disconnect_sync()
-                app.mcp_clients_cache.pop(extra_mcp_path, None)
+                app.mcp_clients_cache.pop(resolved_path, None)
                 client = None
             if not client:
                 client = MCPClientNPC()
-                if client.connect_sync(extra_mcp_path):
-                    app.mcp_clients_cache[extra_mcp_path] = client
+                if client.connect_sync(resolved_path):
+                    app.mcp_clients_cache[resolved_path] = client
                 else:
                     client = None
             if client:
