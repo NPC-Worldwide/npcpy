@@ -165,6 +165,10 @@ def resolve_model_provider(
             p = npc.provider
         if npc.model is not None:
             m = npc.model
+        elif team is not None and team.model is not None:
+            m = team.model
+        if p is None and team is not None and team.provider is not None:
+            p = team.provider
     elif team is not None:
         if team.model is not None:
             m = team.model

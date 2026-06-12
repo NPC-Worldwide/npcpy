@@ -2618,10 +2618,18 @@ def extract_and_store_memories(
         except Exception:
             pass
 
+    from npcpy.llm_funcs import resolve_model_provider
+    resolved_model, resolved_provider, _, _ = resolve_model_provider(
+        npc=npc_object,
+        team=npc_object.team if npc_object else None,
+        model=model,
+        provider=provider,
+    )
+
     facts = get_facts(
         conversation_text,
-        model=npc_object.model if npc_object and npc_object.model else model,
-        provider=npc_object.provider if npc_object and npc_object.provider else provider,
+        model=resolved_model,
+        provider=resolved_provider,
         npc=npc_object,
         context=memory_context
     )
@@ -2641,8 +2649,8 @@ def extract_and_store_memories(
                 directory_path=current_path or "/",
                 initial_memory=fact.get('statement', str(fact)),
                 status="pending_approval",
-                model=npc_object.model if npc_object and npc_object.model else model,
-                provider=npc_object.provider if npc_object and npc_object.provider else provider,
+                model=resolved_model,
+                provider=resolved_provider,
             )
             memories_for_approval.append({
                 "memory_id": mem_id,
