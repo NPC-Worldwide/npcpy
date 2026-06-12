@@ -2316,19 +2316,6 @@ def get_models():
         except Exception as e:
             print(f"[models] Failed to load registered team {team_path}: {e}")
 
-    # 3. Global / home team fallback
-    home_team = os.path.join(os.path.expanduser('~'), '.incognide', 'npc_team')
-    if os.path.isdir(home_team):
-        try:
-            team = Team(team_path=home_team)
-            if team.model and team.provider:
-                _add_model(team.model, team.provider)
-            for npc in team.npcs.values():
-                if npc.model and npc.provider:
-                    _add_model(npc.model, npc.provider)
-        except Exception as e:
-            print(f"[models] Failed to load home team: {e}")
-
     print(f"[models] Returning {len(formatted_models)} team-configured models")
     return jsonify({"models": formatted_models, "error": None})
 

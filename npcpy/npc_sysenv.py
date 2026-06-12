@@ -1403,17 +1403,12 @@ openai_api_key = os.getenv("OPENAI_API_KEY", None)
 
 def resolve_team_dir(team_path=None):
     """Resolve the team directory from a team_path identifier.
-    None or 'incognide' -> <data_dir>/incognide/npc_team/
-    'npcsh' -> <data_dir>/npc_team/
+    None -> <data_dir>/npc_team/
     Otherwise treat as absolute path.
     """
-    base = get_data_dir()
-    if not team_path or team_path == "incognide":
-        return os.path.join(base, "incognide", "npc_team")
-    elif team_path == "npcsh":
-        return os.path.join(base, "npc_team")
-    else:
-        return team_path
+    if not team_path:
+        return os.path.join(get_data_dir(), "npc_team")
+    return team_path
 
 
 def _git(args, cwd, timeout=15):
