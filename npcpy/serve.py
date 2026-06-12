@@ -2620,8 +2620,8 @@ def extract_and_store_memories(
 
     facts = get_facts(
         conversation_text,
-        model=npc_object.model if npc_object else model,
-        provider=npc_object.provider if npc_object else provider,
+        model=npc_object.model if npc_object and npc_object.model else model,
+        provider=npc_object.provider if npc_object and npc_object.provider else provider,
         npc=npc_object,
         context=memory_context
     )
@@ -2641,8 +2641,8 @@ def extract_and_store_memories(
                 directory_path=current_path or "/",
                 initial_memory=fact.get('statement', str(fact)),
                 status="pending_approval",
-                model=npc_object.model if npc_object else model,
-                provider=npc_object.provider if npc_object else provider,
+                model=npc_object.model if npc_object and npc_object.model else model,
+                provider=npc_object.provider if npc_object and npc_object.provider else provider,
             )
             memories_for_approval.append({
                 "memory_id": mem_id,
