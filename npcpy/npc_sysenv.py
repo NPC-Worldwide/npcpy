@@ -1288,7 +1288,9 @@ def lookup_provider(model: str) -> str:
     Returns:
         The provider name or None if not found
     """
-    if model and os.path.isdir(os.path.expanduser(model)):
+    if not model:
+        return None
+    if os.path.isdir(os.path.expanduser(model)):
         adapter_config = os.path.join(os.path.expanduser(model), 'adapter_config.json')
         if os.path.exists(adapter_config):
             return "lora"
@@ -1352,8 +1354,6 @@ def lookup_provider(model: str) -> str:
         return "anthropic"
     if model.startswith("gemini"):
         return "gemini"
-    if model.startswith("kimi"):
-        return "anthropic"
     if "diffusion" in model:
         return "diffusers"
 

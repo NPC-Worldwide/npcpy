@@ -74,7 +74,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from npcpy.npc_sysenv import (
-    get_locally_available_models, get_data_dir, get_models_dir, get_cache_dir,
+    get_data_dir, get_models_dir, get_cache_dir,
     get_images_dir, get_jobs_dir, get_triggers_dir, get_videos_dir,
     get_attachments_dir, get_logs_dir, lookup_provider,
     team_sync_status, team_sync_init, team_sync_pull,
@@ -2271,60 +2271,66 @@ def execute_jinx():
 @app.route("/api/models", methods=["GET"])
 def get_models():
     """
-    Endpoint to retrieve available models based on the current project path.
-    Checks for local configurations (.env) and Ollama.
-    Includes comprehensive error handling to prevent 500 errors.
+    Return only models configured in the current project's team / NPCs.
+    Never scan external APIs (Ollama, OpenAI, Anthropic, etc.).
     """
-    global available_models
-    current_path = request.args.get("currentPath")
-    if not current_path:
-        current_path = os.path.dirname(app.config.get('user_npc_directory')) or os.path.expanduser('~/npc_team')  
-        print("Warning: No currentPath provided for /api/models, using default.")
-
+    current_path = request.args.get("currentPath") or os.path.expanduser('~')
+    registered_teams = _parse_registered_teams()
+    seen = set()
     formatted_models = []
-    error_msg = None
-    
-    try:
-        # Wrap the model fetching in try-except to isolate failures
+
+    def _add_model(m, p):
+        if not m or (m, p) in seen:
+            return
+        seen.add((m, p))
+        formatted_models.append({
+            "value": m,
+            "provider": p,
+            "display_name": f"{m} | {p}",
+        })
+
+    # 1. Project team
+    project_team_path = os.path.join(current_path, 'npc_team')
+    if os.path.isdir(project_team_path):
         try:
-            available_models = get_locally_available_models(current_path)
-        except Exception as model_err:
-            print(f"Warning: get_locally_available_models failed: {model_err}")
-            available_models = {}
-            error_msg = f"Partial model load error: {str(model_err)}"
+            team = Team(team_path=project_team_path)
+            if team.model and team.provider:
+                _add_model(team.model, team.provider)
+            for npc in team.npcs.values():
+                if npc.model and npc.provider:
+                    _add_model(npc.model, npc.provider)
+        except Exception as e:
+            print(f"[models] Failed to load project team: {e}")
 
-        # Process available models safely
-        for m, p in available_models.items():
-            try:
-                text_only = ""
-                
-                display_model = m
-                if m.endswith(('.gguf', '.ggml')):
-                    display_model = os.path.basename(m)
-                elif p == 'lora':
-                    display_model = os.path.basename(m.rstrip('/'))
+    # 2. Registered teams
+    for team_path in registered_teams:
+        if not os.path.isdir(team_path):
+            continue
+        try:
+            team = Team(team_path=team_path)
+            if team.model and team.provider:
+                _add_model(team.model, team.provider)
+            for npc in team.npcs.values():
+                if npc.model and npc.provider:
+                    _add_model(npc.model, npc.provider)
+        except Exception as e:
+            print(f"[models] Failed to load registered team {team_path}: {e}")
 
-                display_name = f"{display_model} | {p} {text_only}".strip()
+    # 3. Global / home team fallback
+    home_team = os.path.join(os.path.expanduser('~'), '.incognide', 'npc_team')
+    if os.path.isdir(home_team):
+        try:
+            team = Team(team_path=home_team)
+            if team.model and team.provider:
+                _add_model(team.model, team.provider)
+            for npc in team.npcs.values():
+                if npc.model and npc.provider:
+                    _add_model(npc.model, npc.provider)
+        except Exception as e:
+            print(f"[models] Failed to load home team: {e}")
 
-                formatted_models.append(
-                    {
-                        "value": m,  
-                        "provider": p,
-                        "display_name": display_name,
-                    }
-                )
-            except Exception as item_err:
-                print(f"Warning: Failed to format model {m}: {item_err}")
-                continue
-                
-        print(f"Successfully loaded {len(formatted_models)} models")
-        return jsonify({"models": formatted_models, "error": error_msg})
-
-    except Exception as e:
-        print(f"Critical error in get_models: {str(e)}")
-        traceback.print_exc()
-        # Always return a valid JSON response even on error
-        return jsonify({"models": [], "error": str(e)}), 200
+    print(f"[models] Returning {len(formatted_models)} team-configured models")
+    return jsonify({"models": formatted_models, "error": None})
 
 @app.route('/api/<command>', methods=['POST'])
 def api_command(command):
@@ -5665,13 +5671,14 @@ def stream():
     print(f"🔍 Stream request - model: {model}, provider from request: {provider}")
 
     # Defensive provider resolution: validate/correct against model catalog
-    resolved_provider = available_models.get(model) or lookup_provider(model)
-    if resolved_provider and resolved_provider != provider:
-        print(f"🔍 Correcting provider from {provider} to {resolved_provider} for model {model}")
-        provider = resolved_provider
-    elif provider is None:
-        provider = resolved_provider
-        print(f"🔍 Provider looked up from available_models/lookup_provider: {provider}")
+    if model:
+        resolved_provider = available_models.get(model) or lookup_provider(model)
+        if resolved_provider and resolved_provider != provider:
+            print(f"🔍 Correcting provider from {provider} to {resolved_provider} for model {model}")
+            provider = resolved_provider
+        elif provider is None:
+            provider = resolved_provider
+            print(f"🔍 Provider looked up from available_models/lookup_provider: {provider}")
 
     npc_name = data.get("npc", None)
     npc_source = data.get("npcSource", "global")
