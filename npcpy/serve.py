@@ -2696,19 +2696,6 @@ def extract_and_store_memories(
             })
             
     
-    if kg_facts_to_save or kg_concepts_to_save:
-        temp_kg_data = {
-            "facts": kg_facts_to_save,
-            "concepts": kg_concepts_to_save,
-            "generation": current_kg_generation,
-            "fact_to_concept_links": fact_to_concept_links_temp,
-            "concept_links": [],
-            "fact_to_fact_links": []
-        }
-        
-        db_engine = get_db_connection(app.config.get('DB_PATH'))
-        
-
     return memories_for_approval
 @app.route('/api/finetuned_models', methods=['GET'])
 def get_finetuned_models():
