@@ -76,7 +76,7 @@ from sqlalchemy.orm import sessionmaker
 from npcpy.npc_sysenv import (
     get_locally_available_models, get_data_dir, get_models_dir, get_cache_dir,
     get_images_dir, get_jobs_dir, get_triggers_dir, get_videos_dir,
-    get_attachments_dir, get_logs_dir,
+    get_attachments_dir, get_logs_dir, lookup_provider,
     team_sync_status, team_sync_init, team_sync_pull,
     team_sync_resolve, team_sync_commit, team_sync_diff,
 )
@@ -5663,9 +5663,15 @@ def stream():
     model = data.get("model", None)
     provider = data.get("provider", None)
     print(f"🔍 Stream request - model: {model}, provider from request: {provider}")
-    if provider is None:
-        provider = available_models.get(model)
-        print(f"🔍 Provider looked up from available_models: {provider}")
+
+    # Defensive provider resolution: validate/correct against model catalog
+    resolved_provider = available_models.get(model) or lookup_provider(model)
+    if resolved_provider and resolved_provider != provider:
+        print(f"🔍 Correcting provider from {provider} to {resolved_provider} for model {model}")
+        provider = resolved_provider
+    elif provider is None:
+        provider = resolved_provider
+        print(f"🔍 Provider looked up from available_models/lookup_provider: {provider}")
 
     npc_name = data.get("npc", None)
     npc_source = data.get("npcSource", "global")

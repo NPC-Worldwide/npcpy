@@ -1352,9 +1352,11 @@ def lookup_provider(model: str) -> str:
         return "anthropic"
     if model.startswith("gemini"):
         return "gemini"
+    if model.startswith("kimi"):
+        return "anthropic"
     if "diffusion" in model:
         return "diffusers"
-        
+
     return None
 
 def load_custom_providers():
