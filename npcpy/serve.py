@@ -5855,7 +5855,12 @@ def stream():
                 print(f"Error processing attachment {attachment.get('name', 'N/A')}: {e}")
                 traceback.print_exc()
     print(f"[DEBUG] After processing - images: {images}, attachment_paths_for_llm: {attachment_paths_for_llm}")
-    messages = fetch_messages_for_conversation(conversation_id)
+    explicit_messages = data.get("messages")
+    if explicit_messages:
+        messages = explicit_messages
+        print(f"[DEBUG] Using explicit messages from frontend ({len(messages)} messages)")
+    else:
+        messages = fetch_messages_for_conversation(conversation_id)
 
     # clean_messages_for_llm imported from npcpy.streaming
     messages = clean_messages_for_llm(messages)
@@ -6901,6 +6906,192 @@ def search_conversations():
     except Exception as e:
         print(f"Error searching conversations: {str(e)}")
         return jsonify({"conversations": [], "error": str(e)}), 500
+
+
+@app.route("/api/unified_search", methods=["GET"])
+def unified_search():
+    """Search across conversations, memories, backend KG, and daemon KG."""
+    try:
+        q = request.args.get("q", "").strip()
+        limit = int(request.args.get("limit", 20))
+        directory_path = request.args.get("directory_path", os.getcwd())
+        if not q:
+            return jsonify({"results": [], "error": None})
+
+        engine = get_db_connection()
+        results = []
+
+        # 1. Conversations via FTS5 (fallback to LIKE if FTS5 table missing)
+        try:
+            with engine.connect() as conn:
+                fts_query = text("""
+                    SELECT DISTINCT ch.conversation_id,
+                           MIN(ch.timestamp) as start_time,
+                           MAX(ch.timestamp) as last_message_timestamp,
+                           GROUP_CONCAT(DISTINCT CASE WHEN ch.npc IS NOT NULL AND ch.npc != '' THEN ch.npc END) as npcs,
+                           ch.content
+                    FROM conversation_history_fts fts
+                    JOIN conversation_history ch ON ch.rowid = fts.rowid
+                    WHERE fts.content MATCH :q
+                    GROUP BY ch.conversation_id
+                    ORDER BY rank
+                    LIMIT :limit
+                """)
+                fts_result = conn.execute(fts_query, {"q": q, "limit": limit})
+                for row in fts_result.fetchall():
+                    preview = row[4] or ""
+                    preview = preview[:200]
+                    results.append({
+                        "type": "conversation",
+                        "id": row[0],
+                        "timestamp": row[1],
+                        "last_message_timestamp": row[2],
+                        "npc": (row[3] or "").split(",")[0] if row[3] else "",
+                        "preview": preview,
+                        "title": preview[:50] if preview else row[0][:20],
+                        "score": 1.0,
+                    })
+        except Exception as fts_err:
+            # Fallback to LIKE if FTS5 not available
+            try:
+                with engine.connect() as conn:
+                    like_query = text("""
+                        SELECT DISTINCT ch.conversation_id,
+                               MIN(ch.timestamp) as start_time,
+                               MAX(ch.timestamp) as last_message_timestamp,
+                               GROUP_CONCAT(DISTINCT CASE WHEN ch.npc IS NOT NULL AND ch.npc != '' THEN ch.npc END) as npcs,
+                               ch.content
+                        FROM conversation_history ch
+                        WHERE ch.content LIKE :pattern
+                        GROUP BY ch.conversation_id
+                        ORDER BY MAX(ch.timestamp) DESC
+                        LIMIT :limit
+                    """)
+                    like_result = conn.execute(like_query, {"pattern": f"%{q}%", "limit": limit})
+                    for row in like_result.fetchall():
+                        preview = row[4] or ""
+                        preview = preview[:200]
+                        results.append({
+                            "type": "conversation",
+                            "id": row[0],
+                            "timestamp": row[1],
+                            "last_message_timestamp": row[2],
+                            "npc": (row[3] or "").split(",")[0] if row[3] else "",
+                            "preview": preview,
+                            "title": preview[:50] if preview else row[0][:20],
+                            "score": 0.8,
+                        })
+            except Exception:
+                pass
+
+        # 2. Memories from .knowledge.yaml
+        try:
+            from npcpy.memory.knowledge_store import KnowledgeStore
+            store = KnowledgeStore(directory_path)
+            mem_results = store.search_memories(q, limit=limit)
+            for mem in mem_results:
+                results.append({
+                    "type": "memory",
+                    "id": mem.get("id"),
+                    "content": mem.get("final_memory") or mem.get("initial_memory", ""),
+                    "status": mem.get("status"),
+                    "npc": mem.get("npc"),
+                    "directory": directory_path,
+                    "score": 0.9,
+                })
+        except Exception:
+            pass
+
+        # 3. Backend KG facts and concepts
+        try:
+            with engine.connect() as conn:
+                # kg_facts
+                fact_query = text("""
+                    SELECT statement, source_text, type, generation, origin
+                    FROM kg_facts
+                    WHERE statement LIKE :pattern OR source_text LIKE :pattern
+                    LIMIT :limit
+                """)
+                fact_result = conn.execute(fact_query, {"pattern": f"%{q}%", "limit": limit})
+                for row in fact_result.fetchall():
+                    results.append({
+                        "type": "kg_fact",
+                        "statement": row[0],
+                        "source_text": row[1],
+                        "kg_type": row[2],
+                        "generation": row[3],
+                        "origin": row[4],
+                        "score": 0.85,
+                    })
+                # kg_concepts
+                concept_query = text("""
+                    SELECT name, description, generation, origin
+                    FROM kg_concepts
+                    WHERE name LIKE :pattern OR description LIKE :pattern
+                    LIMIT :limit
+                """)
+                concept_result = conn.execute(concept_query, {"pattern": f"%{q}%", "limit": limit})
+                for row in concept_result.fetchall():
+                    results.append({
+                        "type": "kg_concept",
+                        "name": row[0],
+                        "description": row[1],
+                        "generation": row[2],
+                        "origin": row[3],
+                        "score": 0.85,
+                    })
+        except Exception:
+            pass
+
+        # 4. Daemon KG entities and triples
+        try:
+            with engine.connect() as conn:
+                # kg_entities
+                ent_query = text("""
+                    SELECT name, entity_type, source, metadata
+                    FROM kg_entities
+                    WHERE name LIKE :pattern
+                    LIMIT :limit
+                """)
+                ent_result = conn.execute(ent_query, {"pattern": f"%{q}%", "limit": limit})
+                for row in ent_result.fetchall():
+                    results.append({
+                        "type": "kg_entity",
+                        "name": row[0],
+                        "entity_type": row[1],
+                        "source": row[2],
+                        "metadata": row[3],
+                        "score": 0.82,
+                    })
+                # kg_triples joined with entity names
+                triple_query = text("""
+                    SELECT eh.name AS head_name, r.name AS relation_name, et.name AS tail_name, t.weight
+                    FROM kg_triples t
+                    JOIN kg_entities eh ON t.head_entity_id = eh.id
+                    JOIN kg_relations r ON t.relation_id = r.id
+                    JOIN kg_entities et ON t.tail_entity_id = et.id
+                    WHERE eh.name LIKE :pattern OR et.name LIKE :pattern OR r.name LIKE :pattern
+                    LIMIT :limit
+                """)
+                triple_result = conn.execute(triple_query, {"pattern": f"%{q}%", "limit": limit})
+                for row in triple_result.fetchall():
+                    results.append({
+                        "type": "kg_triple",
+                        "head": row[0],
+                        "relation": row[1],
+                        "tail": row[2],
+                        "weight": row[3],
+                        "score": 0.82,
+                    })
+        except Exception:
+            pass
+
+        # Sort by score desc, then take top limit
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return jsonify({"results": results[:limit], "error": None})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"results": [], "error": str(e)}), 500
 
 
 @app.route("/api/conversation/<conversation_id>/messages", methods=["GET"])
