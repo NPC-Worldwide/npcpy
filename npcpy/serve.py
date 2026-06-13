@@ -2331,13 +2331,12 @@ def get_models():
             if isinstance(npc_providers, list) and npc_providers:
                 team_has_providers = True
                 _resolve_providers(npc_providers, scan_path)
-        # Fallback to explicit model/provider fields
-        if not team_has_providers:
-            if team.model and team.provider:
-                _add_model(team.model, team.provider)
-            for npc in team.npcs.values():
-                if npc.model and npc.provider:
-                    _add_model(npc.model, npc.provider)
+        # Always include explicit model/provider fields (NPC config is authoritative)
+        if team.model and team.provider:
+            _add_model(team.model, team.provider)
+        for npc in team.npcs.values():
+            if npc.model and npc.provider:
+                _add_model(npc.model, npc.provider)
 
     # 1. Project team
     project_team_path = os.path.join(current_path, 'npc_team')
@@ -3715,13 +3714,27 @@ def save_npc():
         else:
             npc_directory = os.path.join(current_path, "npc_team")
 
+        # Preserve existing model/provider if not explicitly provided
+        existing_npc_path = os.path.join(npc_directory, f"{npc_data['name']}.npc")
+        existing_model = npc_data.get("model", "")
+        existing_provider = npc_data.get("provider", "")
+        if os.path.exists(existing_npc_path):
+            try:
+                existing_data = load_yaml_file(existing_npc_path)
+                if existing_model in (None, "", "null") and existing_data.get("model"):
+                    existing_model = existing_data["model"]
+                if existing_provider in (None, "", "null") and existing_data.get("provider"):
+                    existing_provider = existing_data["provider"]
+            except Exception:
+                pass
+
         known_keys = {"name", "primary_directive", "model", "provider", "api_url", "use_global_jinxes", "jinxes"}
         extra = {k: v for k, v in npc_data.items() if k not in known_keys}
         npc = NPC(
             name=npc_data["name"],
             primary_directive=npc_data.get("primary_directive", ""),
-            model=npc_data.get("model", ""),
-            provider=npc_data.get("provider", ""),
+            model=existing_model,
+            provider=existing_provider,
             api_url=npc_data.get("api_url", ""),
             use_global_jinxes=npc_data.get("use_global_jinxes", True),
             jinxes=npc_data.get("jinxes"),
@@ -5285,11 +5298,16 @@ def get_mcp_tools():
             temp_mcp_client.disconnect_sync()
 
 def _parse_registered_teams():
-    """Parse registered_teams from request query params (comma-separated paths)."""
+    """Parse registered_teams from request query params (comma-separated paths).
+    Falls back to app.registered_teams if no query param is provided."""
     raw = request.args.get('registered_teams', '')
-    if not raw:
-        return []
-    return [p.strip() for p in raw.split(',') if p.strip()]
+    if raw:
+        return [p.strip() for p in raw.split(',') if p.strip()]
+    # Fallback to teams registered at server startup
+    teams_dict = getattr(app, 'registered_teams', None)
+    if teams_dict:
+        return [p for p in teams_dict.values() if isinstance(p, str) and p.strip()]
+    return []
 
 @app.route("/api/npc_tools", methods=["GET"])
 def get_npc_tools():
