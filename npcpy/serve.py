@@ -2319,19 +2319,13 @@ def get_models():
                             _add_model(model_name, provider_name)
 
     def _collect_team_models(team, scan_path):
-        team_has_providers = False
-        # Team-level providers from .ctx
         team_providers = getattr(team, 'providers', None)
         if isinstance(team_providers, list) and team_providers:
-            team_has_providers = True
             _resolve_providers(team_providers, scan_path)
-        # NPC-level .npc extra fields
         for npc in team.npcs.values():
             npc_providers = getattr(npc, '_extra_fields', {}).get('providers')
             if isinstance(npc_providers, list) and npc_providers:
-                team_has_providers = True
                 _resolve_providers(npc_providers, scan_path)
-        # Always include explicit model/provider fields (NPC config is authoritative)
         if team.model and team.provider:
             _add_model(team.model, team.provider)
         for npc in team.npcs.values():
@@ -3640,7 +3634,17 @@ def get_npc_executions():
     npc_name = request.args.get("npcName")
     try:
         engine = get_db_connection()
-        with engine.connect() as conn:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS npc_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    npc TEXT,
+                    tool_name TEXT,
+                    parameters TEXT,
+                    result TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
             if npc_name:
                 result = conn.execute(
                     text("SELECT * FROM npc_executions WHERE npc = :npc ORDER BY timestamp DESC LIMIT 1000"),
@@ -3700,21 +3704,15 @@ def save_npc():
     try:
         data = request.json
         npc_data = data.get("npc")
-        is_global = data.get("isGlobal")
-        current_path = data.get("currentPath")
-        team = data.get("team")  # 'npcsh' | 'project'
+        source_path = data.get("sourcePath")
 
         if not npc_data or "name" not in npc_data:
             return jsonify({"error": "Invalid NPC data"}), 400
 
-        if is_global:
-            npc_directory = app.config.get('user_npc_directory')
-            if not npc_directory:
-                return jsonify({"error": "user_npc_directory not configured"}), 500
-        else:
-            npc_directory = os.path.join(current_path, "npc_team")
+        npc_directory = os.path.dirname(source_path) if source_path else None
+        if not npc_directory:
+            return jsonify({"error": "sourcePath required"}), 400
 
-        # Preserve existing model/provider if not explicitly provided
         existing_npc_path = os.path.join(npc_directory, f"{npc_data['name']}.npc")
         existing_model = npc_data.get("model", "")
         existing_provider = npc_data.get("provider", "")
@@ -3728,7 +3726,7 @@ def save_npc():
             except Exception:
                 pass
 
-        known_keys = {"name", "primary_directive", "model", "provider", "api_url", "use_global_jinxes", "jinxes"}
+        known_keys = {"name", "primary_directive", "model", "provider", "api_url", "jinxes"}
         extra = {k: v for k, v in npc_data.items() if k not in known_keys}
         npc = NPC(
             name=npc_data["name"],
@@ -3736,7 +3734,6 @@ def save_npc():
             model=existing_model,
             provider=existing_provider,
             api_url=npc_data.get("api_url", ""),
-            use_global_jinxes=npc_data.get("use_global_jinxes", True),
             jinxes=npc_data.get("jinxes"),
             **extra,
         )
@@ -5298,12 +5295,10 @@ def get_mcp_tools():
             temp_mcp_client.disconnect_sync()
 
 def _parse_registered_teams():
-    """Parse registered_teams from request query params (comma-separated paths).
-    Falls back to app.registered_teams if no query param is provided."""
+    """Parse registered_teams from request query params (comma-separated paths)."""
     raw = request.args.get('registered_teams', '')
     if raw:
         return [p.strip() for p in raw.split(',') if p.strip()]
-    # Fallback to teams registered at server startup
     teams_dict = getattr(app, 'registered_teams', None)
     if teams_dict:
         return [p for p in teams_dict.values() if isinstance(p, str) and p.strip()]
@@ -8056,7 +8051,7 @@ def track_activity():
 def start_flask_server(
     port=5337,
     cors_origins=None,
-    static_files=None, 
+    static_files=None,
     debug=False,
     teams=None,
     npcs=None,
@@ -8064,33 +8059,26 @@ def start_flask_server(
     user_npc_directory = None
 ):
     try:
-        
         if teams:
             app.registered_teams = teams
             print(f"Registered {len(teams)} teams: {list(teams.keys())}")
         else:
             app.registered_teams = {}
-            
         if npcs:
             app.registered_npcs = npcs
             print(f"Registered {len(npcs)} NPCs: {list(npcs.keys())}")
         else:
             app.registered_npcs = {}
-        
         app.config['DB_PATH'] = db_path
         app.config['user_npc_directory'] = user_npc_directory
         if cors_origins:
-
             CORS(
                 app,
                 origins=cors_origins,
                 allow_headers=["Content-Type", "Authorization"],
                 methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                 supports_credentials=True,
-                
             )
-
-        
         print(f"Starting Flask server on http://0.0.0.0:{port}")
         app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
     except OSError as e:
