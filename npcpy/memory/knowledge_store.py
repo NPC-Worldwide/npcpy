@@ -1,3 +1,4 @@
+import hashlib
 import os
 import uuid
 import yaml
@@ -35,6 +36,7 @@ class KnowledgeStore:
                 data.setdefault("knowledge", [])
                 data.setdefault("concepts", [])
                 data.setdefault("links", [])
+                data.setdefault("scanned_files", {})
                 return data
             except Exception:
                 return self._empty_template()
@@ -61,6 +63,7 @@ class KnowledgeStore:
             "updated_at": _utcnow(),
             "last_extracted_at": None,
             "last_evolved_at": None,
+            "scanned_files": {},
             "memories": [],
             "knowledge": [],
             "concepts": [],
@@ -215,14 +218,59 @@ class KnowledgeStore:
         except Exception:
             return ""
 
+    @staticmethod
+    def _is_noise_file(fpath: str, text: str) -> bool:
+        """Heuristic: is this file just noise/boilerplate not worth a memory?"""
+        name = os.path.basename(fpath).lower()
+        # Lockfiles / manifests with no semantic value
+        if name in {
+            "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+            "poetry.lock", "pipfile.lock", "cargo.lock", "gemfile.lock",
+            "composer.lock", "go.sum", "requirements.lock",
+        }:
+            return True
+        # Minified JS detection: average line length > 200 chars
+        lines = text.splitlines()
+        if len(lines) > 5:
+            avg_len = sum(len(l) for l in lines) / len(lines)
+            if avg_len > 200:
+                return True
+        # Too small after stripping — probably config or stub
+        stripped = text.strip()
+        if len(stripped) < 60:
+            return True
+        # Binary-looking content ratio (non-printable chars)
+        printable = sum(1 for c in text if 32 <= ord(c) < 127 or c in "\n\r\t")
+        if len(text) > 0 and printable / len(text) < 0.85:
+            return True
+        return False
+
+    @staticmethod
+    def _file_hash(fpath: str) -> str:
+        """Fast SHA-256 hash of file contents."""
+        h = hashlib.sha256()
+        try:
+            with open(fpath, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+        except OSError:
+            return ""
+        return h.hexdigest()
+
     def extract_from_directory(
         self,
         include_extensions=None,
         exclude_dirs=None,
         max_chunk_size=2000,
-        incremental=True,
     ) -> Dict[str, Any]:
         """Walk this store's directory, extract text from files, create memories.
+
+        Per-file state is tracked in ``scanned_files`` so unchanged files are
+        skipped.  Files whose content hasn't meaningfully changed are marked as
+        noise and skipped until they change again.
 
         Returns stats about what was extracted.
         """
@@ -241,10 +289,12 @@ class KnowledgeStore:
                             "venv", ".venv", "env", ".env", ".tox", ".egg-info"}
 
         data = self.load()
-        last_extracted = data.get("last_extracted_at")
+        tracker = data.get("scanned_files", {})
         new_memories = 0
         files_scanned = 0
         files_skipped = 0
+        files_noise = 0
+        files_changed = 0
 
         for root, dirs, files in os.walk(self.directory):
             # Prune excluded dirs in-place
@@ -258,24 +308,48 @@ class KnowledgeStore:
                     continue
 
                 fpath = os.path.join(root, fname)
+                rel_path = os.path.relpath(fpath, self.directory)
+
                 try:
-                    mtime = os.path.getmtime(fpath)
+                    stat = os.stat(fpath)
                 except OSError:
                     continue
 
-                if incremental and last_extracted:
-                    try:
-                        last_dt = datetime.fromisoformat(last_extracted.replace("Z", "+00:00"))
-                        if datetime.fromtimestamp(mtime, tz=timezone.utc) <= last_dt:
-                            files_skipped += 1
-                            continue
-                    except Exception:
-                        pass
+                size = stat.st_size
+                mtime = stat.st_mtime
+                fhash = self._file_hash(fpath)
 
-                files_scanned += 1
+                prev = tracker.get(rel_path, {})
+                # Skip if unchanged
+                if prev.get("hash") == fhash:
+                    files_skipped += 1
+                    continue
+
+                files_changed += 1
                 text = self._extract_text(fpath)
                 if not text or not text.strip():
+                    # Update tracker so we don't try again until it changes
+                    tracker[rel_path] = {
+                        "hash": fhash,
+                        "size": size,
+                        "mtime": mtime,
+                        "decision": "empty",
+                        "scanned_at": _utcnow(),
+                    }
                     continue
+
+                if self._is_noise_file(fpath, text):
+                    files_noise += 1
+                    tracker[rel_path] = {
+                        "hash": fhash,
+                        "size": size,
+                        "mtime": mtime,
+                        "decision": "noise",
+                        "scanned_at": _utcnow(),
+                    }
+                    continue
+
+                files_scanned += 1
 
                 # Chunk large texts into memory-sized pieces
                 chunks = []
@@ -302,20 +376,32 @@ class KnowledgeStore:
                         initial_memory=chunk,
                         status="auto-extracted",
                         source_type="file",
-                        source_id=fpath,
+                        source_id=rel_path,
                         final_memory=chunk,
                         directory_path=self.directory,
                         **{"chunk_index": i, "total_chunks": len(chunks)},
                     )
                     new_memories += 1
 
+                tracker[rel_path] = {
+                    "hash": fhash,
+                    "size": size,
+                    "mtime": mtime,
+                    "decision": "extracted",
+                    "chunks": len(chunks),
+                    "scanned_at": _utcnow(),
+                }
+
         data = self.load()
+        data["scanned_files"] = tracker
         data["last_extracted_at"] = _utcnow()
         self.save(data)
 
         return {
-            "files_scanned": files_scanned,
+            "files_changed": files_changed,
             "files_skipped": files_skipped,
+            "files_noise": files_noise,
+            "files_scanned": files_scanned,
             "new_memories": new_memories,
             "last_extracted_at": data["last_extracted_at"],
         }
@@ -371,26 +457,20 @@ class KnowledgeStore:
 
     def evolve(self, model=None, provider=None, npc=None, context='',
                include_memories=True, include_knowledge=True, full_rebuild=False,
-               all_facts=None, all_concepts=None,
-               extract_first=False, incremental_extract=True) -> Dict[str, Any]:
+               all_facts=None, all_concepts=None) -> Dict[str, Any]:
         """Run concept extraction and linking on this store.
 
         If ``all_facts`` and ``all_concepts`` are supplied they are treated as the
         aggregated corpus (e.g. from multiple stores) so that cross-store linking
         works while the results are still persisted into *this* store.
 
-        When ``extract_first`` is True, the store's directory is scanned for
-        documents, code, and plain-text files; memories are created from any
-        files newer than ``last_extracted_at``.  Subsequent evolution then picks
-        up those newly-created memories as facts.
+        Extraction runs automatically first: only files whose content hash has
+        changed since the last scan are re-evaluated.  Noise files (lockfiles,
+        minified JS, tiny stubs) are skipped until they change again.
         """
         from npcpy.memory.knowledge_graph import kg_evolve_incremental
 
-        extraction_stats = None
-        if extract_first:
-            extraction_stats = self.extract_from_directory(incremental=incremental_extract)
-
-        data = self.load()
+        extraction_stats = self.extract_from_directory()
 
         data = self.load()
         memories = data.get("memories", [])
