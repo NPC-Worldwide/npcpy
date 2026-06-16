@@ -33,6 +33,8 @@ class KnowledgeStore:
                     return self._empty_template()
                 data.setdefault("memories", [])
                 data.setdefault("knowledge", [])
+                data.setdefault("concepts", [])
+                data.setdefault("links", [])
                 return data
             except Exception:
                 return self._empty_template()
@@ -59,6 +61,8 @@ class KnowledgeStore:
             "updated_at": _utcnow(),
             "memories": [],
             "knowledge": [],
+            "concepts": [],
+            "links": [],
         }
 
     def append_memory(self,
@@ -155,6 +159,12 @@ class KnowledgeStore:
     def get_links(self) -> List[Dict[str, Any]]:
         return list(self.load().get("knowledge", []))
 
+    def get_yaml_links(self) -> List[Dict[str, Any]]:
+        return list(self.load().get("links", []))
+
+    def get_concepts(self) -> List[Dict[str, Any]]:
+        return list(self.load().get("concepts", []))
+
     def get_links_for_memory(self, mem_id: str) -> Dict[str, List[Dict[str, Any]]]:
         data = self.load()
         out = []
@@ -166,6 +176,35 @@ class KnowledgeStore:
                 inn.append(link)
         return {"outgoing": out, "incoming": inn}
 
+    def add_concept(self, name: str, description: str = "", memory_ids: List[str] = None) -> str:
+        cid = _make_id()
+        concept = {
+            "id": cid,
+            "name": name,
+            "description": description,
+            "memory_ids": list(memory_ids or []),
+            "created_at": _utcnow(),
+        }
+        data = self.load()
+        data["concepts"].append(concept)
+        self.save(data)
+        return cid
+
+    def add_link(self, from_id: str, to_id: str, relation: str, link_type: str = "memory_to_memory") -> str:
+        lid = _make_id()
+        link = {
+            "id": lid,
+            "from": from_id,
+            "to": to_id,
+            "relation": relation,
+            "type": link_type,
+            "created_at": _utcnow(),
+        }
+        data = self.load()
+        data["links"].append(link)
+        self.save(data)
+        return lid
+
     def build_context(self, max_memories: int = 10) -> str:
         parts = []
         mems = self.get_memories(status="human-approved", limit=max_memories)
@@ -174,6 +213,193 @@ class KnowledgeStore:
             for m in mems:
                 parts.append(f"- {m.get('final_memory') or m.get('initial_memory')}")
         return "\n".join(parts) if parts else ""
+
+    def evolve(self, model=None, provider=None, npc=None, context='',
+               include_memories=True, include_knowledge=True, full_rebuild=False,
+               all_facts=None, all_concepts=None) -> Dict[str, Any]:
+        """Run concept extraction and linking on this store.
+
+        If ``all_facts`` and ``all_concepts`` are supplied they are treated as the
+        aggregated corpus (e.g. from multiple stores) so that cross-store linking
+        works while the results are still persisted into *this* store.
+        """
+        from npcpy.memory.knowledge_graph import kg_evolve_incremental
+
+        data = self.load()
+        memories = data.get("memories", [])
+
+        # 1. Build facts preserving memory IDs
+        facts = []
+        if include_memories:
+            for mem in memories:
+                stmt = mem.get("final_memory") or mem.get("initial_memory", "")
+                if stmt:
+                    facts.append({
+                        "statement": stmt,
+                        "source_text": stmt,
+                        "type": "memory",
+                        "generation": 0,
+                        "memory_id": mem.get("id"),
+                    })
+        if include_knowledge:
+            for entry in data.get("knowledge", []):
+                txt = entry.get("relation") or entry.get("to") or ""
+                if txt:
+                    facts.append({
+                        "statement": txt,
+                        "source_text": txt,
+                        "type": "knowledge",
+                        "generation": 0,
+                        "memory_id": entry.get("id"),
+                    })
+
+        # Allow caller to inject an already-aggregated corpus
+        if all_facts is not None:
+            facts = list(all_facts)
+
+        # 2. Build existing KG from current YAML state
+        existing_concepts = all_concepts if all_concepts is not None else [
+            {"name": c["name"], "description": c.get("description", ""), "generation": 0}
+            for c in data.get("concepts", [])
+        ]
+        existing_kg = {
+            "generation": 0,
+            "facts": facts,
+            "concepts": existing_concepts,
+            "concept_links": [],
+            "fact_to_concept_links": {},
+            "fact_to_fact_links": [],
+        }
+
+        if not facts:
+            return {"status": "skipped", "reason": "no_facts", "concepts_added": 0, "links_added": 0}
+
+        # 3. Evolve
+        new_kg, _ = kg_evolve_incremental(
+            existing_kg=existing_kg,
+            new_facts=facts,
+            model=model,
+            provider=provider,
+            npc=npc,
+            context=context,
+            get_concepts=True,
+            link_concepts_facts=True,
+            link_concepts_concepts=True,
+            link_facts_facts=True,
+        )
+
+        # 4. Map statement -> memory_id(s)
+        stmt_to_ids = {}
+        for f in facts:
+            sid = f["statement"]
+            stmt_to_ids.setdefault(sid, []).append(f.get("memory_id"))
+
+        # 5. Build concepts with stable IDs (reuse if name already exists)
+        name_to_cid = {c["name"]: c["id"] for c in data.get("concepts", [])}
+        yaml_concepts = data.get("concepts", []) if not full_rebuild else []
+        for c in new_kg.get("concepts", []):
+            cname = c["name"]
+            if cname not in name_to_cid:
+                name_to_cid[cname] = _make_id()
+            cid = name_to_cid[cname]
+            # Find memory IDs tied to this concept
+            mem_ids = set()
+            for stmt, concept_names in new_kg.get("fact_to_concept_links", {}).items():
+                if cname in concept_names:
+                    for mid in stmt_to_ids.get(stmt, []):
+                        if mid:
+                            mem_ids.add(mid)
+            existing = next((x for x in yaml_concepts if x.get("name") == cname), None)
+            if existing:
+                existing["description"] = c.get("description", existing.get("description", ""))
+                existing["generation"] = c.get("generation", existing.get("generation", 0))
+                if mem_ids:
+                    existing["memory_ids"] = list(set(existing.get("memory_ids", [])) | mem_ids)
+            else:
+                yaml_concepts.append({
+                    "id": cid,
+                    "name": cname,
+                    "description": c.get("description", ""),
+                    "generation": c.get("generation", 0),
+                    "memory_ids": sorted(mem_ids),
+                    "created_at": _utcnow(),
+                })
+
+        # 6. Build links from fact->concept, fact->fact, concept->concept
+        seen_links = set()
+        yaml_links = data.get("links", []) if not full_rebuild else []
+        for link in yaml_links:
+            seen_links.add((link.get("from"), link.get("to"), link.get("relation"), link.get("type")))
+
+        # fact -> concept
+        for stmt, concept_names in new_kg.get("fact_to_concept_links", {}).items():
+            for mid in stmt_to_ids.get(stmt, []):
+                if not mid:
+                    continue
+                for cname in concept_names:
+                    cid = name_to_cid.get(cname)
+                    if not cid:
+                        continue
+                    key = (mid, cid, "belongs_to", "memory_to_concept")
+                    if key not in seen_links:
+                        seen_links.add(key)
+                        yaml_links.append({
+                            "id": _make_id(),
+                            "from": mid,
+                            "to": cid,
+                            "relation": "belongs_to",
+                            "type": "memory_to_concept",
+                            "created_at": _utcnow(),
+                        })
+
+        # fact -> fact
+        for s1, s2 in new_kg.get("fact_to_fact_links", []):
+            for m1 in stmt_to_ids.get(s1, []):
+                if not m1:
+                    continue
+                for m2 in stmt_to_ids.get(s2, []):
+                    if not m2 or m1 == m2:
+                        continue
+                    key = tuple(sorted((m1, m2))) + ("related_to", "memory_to_memory")
+                    if key not in seen_links:
+                        seen_links.add(key)
+                        yaml_links.append({
+                            "id": _make_id(),
+                            "from": m1,
+                            "to": m2,
+                            "relation": "related_to",
+                            "type": "memory_to_memory",
+                            "created_at": _utcnow(),
+                        })
+
+        # concept -> concept
+        for c1_name, c2_name in new_kg.get("concept_links", []):
+            c1 = name_to_cid.get(c1_name)
+            c2 = name_to_cid.get(c2_name)
+            if not c1 or not c2 or c1 == c2:
+                continue
+            key = tuple(sorted((c1, c2))) + ("related_to", "concept_to_concept")
+            if key not in seen_links:
+                seen_links.add(key)
+                yaml_links.append({
+                    "id": _make_id(),
+                    "from": c1,
+                    "to": c2,
+                    "relation": "related_to",
+                    "type": "concept_to_concept",
+                    "created_at": _utcnow(),
+                })
+
+        data["concepts"] = yaml_concepts
+        data["links"] = yaml_links
+        self.save(data)
+
+        return {
+            "status": "success",
+            "concepts_added": len(yaml_concepts),
+            "links_added": len(yaml_links),
+            "generation": new_kg.get("generation", 0),
+        }
 
     @staticmethod
     def find_all(root_directory: str) -> List["KnowledgeStore"]:
