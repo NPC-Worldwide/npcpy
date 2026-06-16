@@ -74,8 +74,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from npcpy.npc_sysenv import (
-    get_data_dir, get_models_dir, get_cache_dir,
-    get_images_dir, get_jobs_dir, get_triggers_dir, get_videos_dir,
+    get_data_dir, get_models_dir,
+    get_images_dir, get_videos_dir,
     get_attachments_dir, get_logs_dir, lookup_provider,
     get_locally_available_models,
     team_sync_status, team_sync_init, team_sync_pull,
@@ -90,7 +90,6 @@ from npcpy.gen.embeddings import get_embeddings
 from termcolor import cprint
 
 from npcpy.tools import auto_tools
-from npcpy.work.plan import schedule_job, unschedule_job, list_jobs, job_status
 from npcpy.streaming import (
     StreamConfig, StreamEvent,
     clean_messages_for_llm,
@@ -115,7 +114,7 @@ cancellation_lock = threading.Lock()
 
 class ServeState:
     """Minimal server-side execution context for jinxes and tools.
-    Replaces npcsh.ShellState so serve.py has no npcsh dependency."""
+    Minimal server-side execution context for jinxes and tools."""
     def __init__(
         self,
         npc=None,
@@ -234,7 +233,6 @@ class MCPClientNPC:
         extra_env = server_spec.get("env", {})
         env = {**os.environ, **extra_env}
 
-        # Clean up old session first
         if self.session and self._exit_stack:
             try:
                 await self._exit_stack.aclose()
@@ -246,7 +244,6 @@ class MCPClientNPC:
         self._exit_stack = AsyncExitStack()
 
         if "url" in server_spec:
-            # SSE transport
             from mcp.client.sse import sse_client
             url = server_spec["url"]
             self._log(f"Connecting to SSE server: {url}")
@@ -255,7 +252,6 @@ class MCPClientNPC:
             self.session = await self._exit_stack.enter_async_context(ClientSession(*sse_transport))
 
         elif "command" in server_spec:
-            # Arbitrary command (npx, docker, uvx, node, etc.)
             command = server_spec["command"]
             args = server_spec.get("args", [])
             self._log(f"Connecting via command: {command} {' '.join(str(a) for a in args)}")
@@ -269,7 +265,6 @@ class MCPClientNPC:
             self.session = await self._exit_stack.enter_async_context(ClientSession(*stdio_transport))
 
         elif "path" in server_spec:
-            # Existing path-based logic (Python script or executable)
             abs_path = os.path.abspath(os.path.expanduser(server_spec["path"]))
             if not os.path.exists(abs_path):
                 raise FileNotFoundError(f"MCP server script not found: {abs_path}")
@@ -423,20 +418,17 @@ class MCPServerManager:
     def start(self, server_path: str, env_vars: dict = None):
         server_path = os.path.expanduser(server_path)
 
-        # Build environment with optional extra vars
         proc_env = os.environ.copy()
         if env_vars:
             proc_env.update(env_vars)
 
-        # Detect command type: npx, uvx, node, etc. vs local file path
         is_command = _is_command_string(server_path)
         stripped = server_path.strip()
 
         if is_command:
-            # For commands like "npx -y @modelcontextprotocol/server-github"
             import shlex
             cmd = shlex.split(stripped)
-            key = stripped  # Use the full command string as key
+            key = stripped
             cwd = os.getcwd()
         else:
             abs_path = os.path.abspath(server_path)
@@ -725,7 +717,6 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
       - Fallback: use `python -m npcpy.mcp_server` (the module, not a deployed script)
     """
     if explicit_path:
-        # Command strings pass through directly
         if _is_command_string(explicit_path):
             return explicit_path.strip()
 
@@ -733,7 +724,6 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
         if os.path.exists(abs_path):
             return abs_path
 
-    # Fallback: use npcpy.mcp_server module directly (no deployed scripts)
     team_path = None
     if current_path:
         candidate = os.path.join(current_path, "npc_team")
@@ -742,7 +732,6 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
     if team_path:
         return f"{sys.executable} -m npcpy.mcp_server --team {team_path}"
 
-    # Last resort: let the module auto-discover
     return f"{sys.executable} -m npcpy.mcp_server"
 
 extension_map = {
@@ -803,14 +792,11 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
             continue
         npc_path = os.path.join(npc_directory, f"{name}.npc")
         if not os.path.exists(npc_path):
-            # Also check agents/ subdirectory and markdown-declared agents
             if not any(os.path.exists(os.path.join(npc_directory, p)) for p in (
                 'agents.md', 'AGENTS.md', 'CLAUDE.md', 'agents'
             )):
                 continue
         try:
-            # Route NPC loading through a Team so the _npc_jinja_context is
-            # built and Jinja templates in .npc files render before YAML parse.
             team = Team(team_path=npc_directory, db_conn=db_conn)
             npc = team.npcs.get(name)
             if npc is not None:
@@ -918,7 +904,6 @@ def get_graph_data():
     nodes = []
     nodes.extend([{'id': name, 'type': 'concept'} for name in concepts_df['name']])
 
-    # Fact nodes carry memory_id when the fact was produced from a memory (FK -> memory_lifecycle).
     has_memory_id = 'memory_id' in facts_df.columns
     for _, row in facts_df.iterrows():
         node = {'id': row['statement'], 'type': 'fact'}
@@ -1177,7 +1162,6 @@ def get_kg_facts():
 
         _, facts_df, _ = load_kg_data(generation)
 
-        # Collect memory_id lookup in one shot, avoid N+1 on memory_lifecycle.
         memory_status_by_id = {}
         try:
             memory_ids = [
@@ -1249,7 +1233,6 @@ def get_kg_concepts():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# ── KG Node/Edge CRUD ───────────────────────────────────────────────
 
 @app.route('/api/kg/node', methods=['POST'])
 def add_kg_node():
@@ -1265,7 +1248,6 @@ def add_kg_node():
 
         engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
 
-        # Get current max generation so we slot into the existing gen
         with engine.connect() as conn:
             row = conn.execute(text("SELECT MAX(generation) as gen FROM kg_facts")).fetchone()
             current_gen = (row.gen if row and row.gen is not None else 0)
@@ -1376,10 +1358,8 @@ def trigger_kg_process():
         db_path = app.config.get('DB_PATH')
         engine = create_engine('sqlite:///' + db_path)
 
-        # Load current KG from DB
 
 
-        # Get model/provider from app config
         model = app.config.get('DEFAULT_MODEL', None)
         provider = app.config.get('DEFAULT_PROVIDER', None)
 
@@ -1403,7 +1383,6 @@ def trigger_kg_process():
         else:
             return jsonify({"error": f"Unknown process type: {process_type}. Use 'sleep', 'dream', or 'evolve'."}), 400
 
-        # Save evolved KG back to DB
 
 
 
@@ -1442,7 +1421,6 @@ def ingest_to_kg():
 
 
         if not existing_kg or not existing_kg.get('facts'):
-            # First-time: build KG from scratch
             from npcpy.memory.knowledge_graph import kg_initial
             new_kg = kg_initial(
                 content=content_text,
@@ -1501,7 +1479,6 @@ def query_kg():
         model = app.config.get('DEFAULT_MODEL', None)
         provider = app.config.get('DEFAULT_PROVIDER', None)
 
-        # Sememolution: route to a population for ranked multi-candidate answer
         if mode == 'sememolution' and population_id:
             from npcpy.memory.kg_population import load_population, save_population
             mgr = load_population(engine, population_id)
@@ -1510,7 +1487,6 @@ def query_kg():
             if model: mgr.model = model
             if provider: mgr.provider = provider
             rankings = mgr.query_and_rank(question)
-            # Persist fitness updates
             try: save_population(engine, population_id, population_id, mgr)
             except Exception: pass
             return jsonify({
@@ -1541,7 +1517,6 @@ def query_kg():
         facts = existing_kg.get('facts', [])
         concepts = existing_kg.get('concepts', [])
 
-        # Traversal: reuse Poisson-sampled search logic via an ephemeral individual
         if mode == 'traversal':
             from npcpy.memory.kg_population import KGGenome, KGIndividual, SememolutionPopulation
             genome = KGGenome(
@@ -1550,7 +1525,6 @@ def query_kg():
                 similarity_threshold=similarity_threshold,
             )
             ind = KGIndividual(individual_id='ephemeral', genome=genome, kg_data=existing_kg)
-            # SememolutionPopulation.search_individual is stateless w.r.t. the population; instantiate a trivial one to reuse it
             if not model:
                 return jsonify({"error": "No model specified for knowledge graph search."}), 400
             mgr = SememolutionPopulation(engine=engine, model=model, provider=provider or "ollama", population_size=1, sample_size=1)
@@ -1559,7 +1533,6 @@ def query_kg():
             if not relevant_facts:
                 relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
         else:
-            # keyword mode (default)
             q_words = set(question.lower().split())
             scored_facts = []
             for f in facts:
@@ -1619,7 +1592,6 @@ def rollback_kg():
         engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
 
         with engine.begin() as conn:
-            # Delete facts, concepts, and links added after target generation
             conn.execute(
                 text("DELETE FROM kg_facts WHERE generation > :gen"),
                 {"gen": target_generation}
@@ -1628,7 +1600,6 @@ def rollback_kg():
                 text("DELETE FROM kg_concepts WHERE generation > :gen"),
                 {"gen": target_generation}
             )
-            # Links don't have generation column, so clean up orphans
             conn.execute(text("""
                 DELETE FROM kg_links WHERE source NOT IN (
                     SELECT name FROM kg_concepts WHERE generation <= :gen
@@ -1638,7 +1609,6 @@ def rollback_kg():
                     UNION SELECT statement FROM kg_facts WHERE generation <= :gen
                 )
             """), {"gen": target_generation})
-            # Update metadata generation
             conn.execute(text("""
                 INSERT OR REPLACE INTO kg_metadata (team_name, npc_name, directory_path, key, value)
                 VALUES ('', '', '', 'generation', :gen)
@@ -1653,10 +1623,6 @@ def rollback_kg():
         return jsonify({"error": str(e)}), 500
 
 
-# ── Sememolution: KG population management ─────────────────────────────
-# Endpoints for managing populations of KGIndividuals: create, list, get,
-# delete, evolve generation, update genome, query-with-ranking. All state
-# persists in kg_populations / kg_individuals.
 
 @app.route('/api/kg/populations', methods=['GET'])
 def list_kg_populations():
@@ -1708,8 +1674,6 @@ def create_kg_population():
         mgr.initialize()
 
         if seed_from_kg:
-            # Prime each individual with a copy of the current global KG, so searches have something to traverse.
-
             import copy as _copy
             for ind in mgr.ga.population:
                 ind.kg_data = _copy.deepcopy(existing)
@@ -1826,15 +1790,27 @@ def evolve_kg_population(population_id):
 
 @app.route("/api/knowledge/load", methods=["GET"])
 def knowledge_load():
-    """Load the .knowledge.yaml for the current directory."""
+    """Load the .knowledge.yaml for the current directory or a list of directories."""
     try:
-        current_path = request.args.get("currentPath", os.getcwd())
         from npcpy.memory.knowledge_store import KnowledgeStore
+        dirs_param = request.args.get("dirs")
+        if dirs_param:
+            dirs = [d.strip() for d in dirs_param.split(",") if d.strip()]
+            all_memories = []
+            all_knowledge = []
+            for d in dirs:
+                store = KnowledgeStore(d)
+                data = store.load()
+                all_memories.extend(data.get("memories", []))
+                all_knowledge.extend(data.get("knowledge", []))
+            return jsonify({
+                "memories": all_memories,
+                "knowledge": all_knowledge,
+            })
+        current_path = request.args.get("currentPath", os.getcwd())
         store = KnowledgeStore(current_path)
         data = store.load()
         return jsonify({
-            "directory": data.get("directory"),
-            "version": data.get("version"),
             "memories": data.get("memories", []),
             "knowledge": data.get("knowledge", []),
         })
@@ -1931,16 +1907,19 @@ def knowledge_context():
 
 @app.route("/api/knowledge/all_memories", methods=["GET"])
 def knowledge_all_memories():
-    """Return aggregated memories from all indexed .knowledge.yaml files."""
+    """Return aggregated memories from all directories that have had conversations."""
     try:
         limit = request.args.get("limit")
         limit = int(limit) if limit else None
-        from npcpy.memory.knowledge_index import get_known_directories
         from npcpy.memory.knowledge_store import KnowledgeStore
-        dirs = get_known_directories(app.config.get('DB_PATH'))
+        from sqlalchemy import create_engine, text
+        db_path = app.config.get('DB_PATH')
+        engine = create_engine('sqlite:///' + db_path)
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT DISTINCT directory_path FROM conversation_history WHERE directory_path IS NOT NULL AND directory_path != ''")).fetchall()
+        dirs = sorted(set(r[0] for r in rows))
         all_memories = []
-        for row in dirs:
-            d = row["directory"]
+        for d in dirs:
             fp = os.path.join(d, ".knowledge.yaml")
             if not os.path.exists(fp):
                 continue
@@ -1959,16 +1938,19 @@ def knowledge_all_memories():
 
 @app.route("/api/knowledge/all_search", methods=["GET"])
 def knowledge_all_search():
-    """Search across all indexed .knowledge.yaml files."""
+    """Search across all directories that have had conversations."""
     try:
         q = request.args.get("q", "").lower()
         limit = int(request.args.get("limit", 20))
-        from npcpy.memory.knowledge_index import get_known_directories
         from npcpy.memory.knowledge_store import KnowledgeStore
-        dirs = get_known_directories(app.config.get('DB_PATH'))
+        from sqlalchemy import create_engine, text
+        db_path = app.config.get('DB_PATH')
+        engine = create_engine('sqlite:///' + db_path)
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT DISTINCT directory_path FROM conversation_history WHERE directory_path IS NOT NULL AND directory_path != ''")).fetchall()
+        dirs = sorted(set(r[0] for r in rows))
         results = []
-        for row in dirs:
-            d = row["directory"]
+        for d in dirs:
             fp = os.path.join(d, ".knowledge.yaml")
             if not os.path.exists(fp):
                 continue
@@ -2170,21 +2152,12 @@ def execute_jinx():
                 break
 
     if not jinx:
-        global_jinxes_base = os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')
-        for j in load_jinxes_from_directory(global_jinxes_base):
-            if j.jinx_name == jinx_name:
-                jinx = j
-                print(f"Found jinx in global jinxes", file=sys.stderr)
-                break
-    
-    if not jinx:
         print(f"ERROR: Jinx '{jinx_name}' not found", file=sys.stderr)
         searched_paths = []
         if npc_object:
             searched_paths.append(f"NPC {npc_name} jinxes_dict")
         if current_path:
             searched_paths.append(f"Project jinxes at {os.path.join(current_path, 'npc_team', 'jinxes')}")
-        searched_paths.append(f"Global jinxes at {os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')}")
         print(f"Searched in: {', '.join(searched_paths)}", file=sys.stderr)
         return jsonify({"error": f"Jinx '{jinx_name}' not found"}), 404
     
@@ -2332,7 +2305,6 @@ def get_models():
             if npc.model and npc.provider:
                 _add_model(npc.model, npc.provider)
 
-    # 1. Project team
     project_team_path = os.path.join(current_path, 'npc_team')
     if os.path.isdir(project_team_path):
         try:
@@ -2341,7 +2313,6 @@ def get_models():
         except Exception as e:
             print(f"[models] Failed to load project team: {e}")
 
-    # 2. Registered teams
     for team_path in registered_teams:
         if not os.path.isdir(team_path):
             continue
@@ -2679,6 +2650,8 @@ def extract_and_store_memories(
                 status="pending_approval",
                 model=resolved_model,
                 provider=resolved_provider,
+                source_type="conversation",
+                source_id=conversation_id,
             )
             memories_for_approval.append({
                 "memory_id": mem_id,
@@ -3745,16 +3718,6 @@ def save_npc():
         print(f"Error saving NPC: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/api/jinxes/global")
-def get_jinxes_global():
-    user_npc_dir = app.config.get('user_npc_directory')
-    if not user_npc_dir:
-        return jsonify({"jinxes": [], "error": "user_npc_directory not configured"}), 500
-    global_jinx_directory = os.path.join(user_npc_dir, "jinxes")
-    if not os.path.exists(global_jinx_directory):
-        return jsonify({"jinxes": [], "error": None})
-    return jsonify({"jinxes": _serialize_jinxes_from_dir(global_jinx_directory), "error": None})
-
 @app.route("/api/jinxes/project", methods=["GET"])
 def get_jinxes_project():
     project_dir = request.args.get("currentPath")
@@ -3899,26 +3862,6 @@ def list_npcsql_models():
 
 ## ── Cron / Scheduling ─────────────────────────────────────────────
 
-@app.route("/api/cron/jobs", methods=["GET"])
-def list_cron_jobs():
-    return jsonify(list_jobs())
-
-@app.route("/api/cron/schedule", methods=["POST"])
-def schedule_cron_job():
-    data = request.json
-    ok, msg = schedule_job(data["schedule"], data["command"], data["jobName"])
-    return jsonify({"success": ok, "message": msg})
-
-@app.route("/api/cron/unschedule", methods=["POST"])
-def unschedule_cron_job():
-    data = request.json
-    ok, msg = unschedule_job(data["jobName"])
-    return jsonify({"success": ok, "message": msg})
-
-@app.route("/api/cron/status/<job_name>", methods=["GET"])
-def cron_job_status(job_name):
-    return jsonify(job_status(job_name))
-
 @app.route("/api/cron/crontab", methods=["GET"])
 def get_crontab():
     system = platform.system()
@@ -3952,7 +3895,7 @@ def get_crontab():
             r = subprocess.run(["systemctl", "list-timers", "--all", "--no-pager"], capture_output=True, text=True)
             if r.returncode == 0:
                 result["timers"] = r.stdout
-            # Systemd services (user + system npcsh-related)
+            # Systemd services
             r = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"], capture_output=True, text=True)
             if r.returncode == 0:
                 result["services"] = r.stdout
@@ -3961,7 +3904,7 @@ def get_crontab():
 @app.route("/api/cron/daemons", methods=["GET"])
 def list_system_daemons():
     system = platform.system()
-    result = {"services": "", "npcsh_services": [], "platform": system.lower()}
+    result = {"services": "", "platform": system.lower()}
     if system == "Linux":
         r = subprocess.run(["systemctl", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"], capture_output=True, text=True)
         result["services"] = r.stdout if r.returncode == 0 else ""
@@ -3969,20 +3912,9 @@ def list_system_daemons():
         r2 = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"], capture_output=True, text=True)
         if r2.returncode == 0:
             result["user_services"] = r2.stdout
-        # npcsh-specific triggers
-        triggers_dir = get_triggers_dir()
-        if os.path.isdir(triggers_dir):
-            for f in os.listdir(triggers_dir):
-                result["npcsh_services"].append(f)
     elif system == "Darwin":
         r = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
         result["services"] = r.stdout if r.returncode == 0 else ""
-        # npcsh agents
-        agents_dir = os.path.expanduser("~/Library/LaunchAgents")
-        if os.path.isdir(agents_dir):
-            for f in os.listdir(agents_dir):
-                if "npcsh" in f:
-                    result["npcsh_services"].append(f)
     elif system == "Windows":
         r = subprocess.run(["tasklist", "/fo", "CSV", "/nh"], capture_output=True, text=True)
         result["services"] = r.stdout if r.returncode == 0 else ""
@@ -4070,6 +4002,22 @@ def get_npc_team_project():
 
     return jsonify({"npcs": npc_data, "error": None})
 
+@app.route("/api/npc_team_from_path", methods=["GET"])
+def get_npc_team_from_path():
+    team_path = request.args.get("path")
+    if not team_path or not os.path.isdir(team_path):
+        return jsonify({"npcs": [], "error": "invalid path"})
+    try:
+        team = Team(team_path=team_path, db_conn=get_db_connection())
+        npc_data = []
+        for npc in team.npcs.values():
+            d = npc.to_dict()
+            d["team"] = os.path.basename(team_path)
+            npc_data.append(d)
+        return jsonify({"npcs": npc_data, "error": None})
+    except Exception as e:
+        print(f"Error loading team from {team_path}: {e}")
+        return jsonify({"npcs": [], "error": str(e)})
 
 @app.route("/api/npc-team/import", methods=["POST"])
 def import_npc_team():
@@ -4255,7 +4203,15 @@ def read_ctx_file(file_path):
 
                 
                 if 'databases' in data and isinstance(data['databases'], list):
-                    data['databases'] = [{"value": item} for item in data['databases']]
+                    normalized = []
+                    for item in data['databases']:
+                        if isinstance(item, dict):
+                            # Already a dict (e.g. {name, path} or legacy {value})
+                            normalized.append(item)
+                        else:
+                            # Plain string → wrap as {path: str}
+                            normalized.append({"path": str(item)})
+                    data['databases'] = normalized
                 
                 
                 if 'mcp_servers' in data and isinstance(data['mcp_servers'], list):
@@ -4288,7 +4244,18 @@ def write_ctx_file(file_path, data):
 
     
     if 'databases' in data_to_save and isinstance(data_to_save['databases'], list):
-        data_to_save['databases'] = [item.get("value", "") for item in data_to_save['databases'] if isinstance(item, dict)]
+        normalized = []
+        for item in data_to_save['databases']:
+            if isinstance(item, dict):
+                # Preserve {name, path} dicts as-is
+                # Legacy {value: ...} with no other keys → write back as plain string
+                if set(item.keys()) == {"value"}:
+                    normalized.append(item["value"])
+                else:
+                    normalized.append(item)
+            elif isinstance(item, str):
+                normalized.append(item)
+        data_to_save['databases'] = normalized
     
     
     if 'mcp_servers' in data_to_save and isinstance(data_to_save['mcp_servers'], list):
@@ -4391,67 +4358,6 @@ def init_project_team():
         return jsonify({"message": "Project team initialized.", "path": result, "error": None})
     except Exception as e:
         print(f"Error initializing project team: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/npcsh/check", methods=["GET"])
-def check_npcsh_folder():
-    """Check if npcsh has been initialized by looking for actual npc_team content."""
-    try:
-        user_npc_dir = app.config.get('user_npc_directory')
-        initialized = False
-        if user_npc_dir and os.path.isdir(user_npc_dir):
-            initialized = any(
-                f.endswith('.npc') for f in os.listdir(user_npc_dir)
-            ) if os.path.exists(user_npc_dir) else False
-        return jsonify({
-            "initialized": initialized,
-            "path": user_npc_dir,
-            "error": None
-        })
-    except Exception as e:
-        print(f"Error checking npcsh: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/npcsh/package-contents", methods=["GET"])
-def get_package_contents():
-    """Get NPCs and jinxes available in the npcsh package for installation."""
-    package_npc_team_dir = app.config.get('PACKAGE_NPC_TEAM_DIR')
-    npcs = []
-    jinxes = []
-
-    if package_npc_team_dir and os.path.exists(package_npc_team_dir):
-        try:
-            team = Team(team_path=package_npc_team_dir, db_conn=get_db_connection())
-            npcs = [npc.to_dict() for npc in team.npcs.values()]
-        except Exception as e:
-            print(f"Error loading package NPCs: {e}")
-
-        jinxes_dir = os.path.join(package_npc_team_dir, "jinxes")
-        if os.path.exists(jinxes_dir):
-            jinxes = _serialize_jinxes_from_dir(jinxes_dir)
-
-    return jsonify({
-        "npcs": npcs,
-        "jinxes": jinxes,
-        "package_dir": package_npc_team_dir,
-        "error": None
-    })
-
-@app.route("/api/npcsh/init", methods=["POST"])
-def init_npcsh_folder():
-    """Initialize npcsh with config and default npc_team."""
-    try:
-        db_path = app.config.get('DB_PATH')
-        db_dir = os.path.dirname(db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        return jsonify({
-            "message": "npcsh initialized",
-            "path": db_dir or db_path,
-            "error": None
-        })
-    except Exception as e:
-        print(f"Error initializing npcsh: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ============== NPC Team Sync (git-based) ==============
@@ -5331,19 +5237,19 @@ def get_npc_tools():
         if npc_name_param and team_obj and npc_name_param in team_obj.npcs:
             npc_obj = team_obj.npcs[npc_name_param]
         elif npc_name_param:
-            # Try to find NPC file
             search_dirs = []
             if current_path_arg:
-                search_dirs.append(os.path.join(os.path.abspath(current_path_arg), "npc_team", "npcs"))
+                search_dirs.append(os.path.join(os.path.abspath(current_path_arg), "npc_team"))
             for team_path in registered_teams:
-                search_dirs.append(os.path.join(team_path, "npcs"))
+                search_dirs.append(team_path)
             for d in search_dirs:
                 npc_file = os.path.join(d, f"{npc_name_param}.npc")
                 if os.path.exists(npc_file):
                     try:
-                        npc_obj = NPC(npc_file=npc_file, team=team_obj)
+                        team_obj = Team(team_path=d, db_conn=get_db_connection())
+                        npc_obj = team_obj.npcs.get(npc_name_param)
                     except Exception as e:
-                        print(f"[npc_tools] Failed to load NPC {npc_file}: {e}")
+                        print(f"[npc_tools] Failed to load team/NPC from {d}: {e}")
                     break
 
         npc_tools = []
@@ -5713,6 +5619,7 @@ def stream():
     npc_source = data.get("npcSource", "global")
     current_path = data.get("currentPath")
     registered_teams = data.get("registered_teams", [])
+    print(f"[STREAM] registered_teams received: {registered_teams}")
     is_resend = data.get("isResend", False)
     parent_message_id = data.get("parentMessageId", None)
     frontend_user_message_id = data.get("userMessageId", None)
@@ -5782,23 +5689,29 @@ def stream():
             npc_object.team = team_object
         if not npc_object and registered_teams:
             db_conn = get_db_connection()
+            print(f"[STREAM] Searching for {npc_name} in {len(registered_teams)} registered teams")
             for team_path in registered_teams:
                 if not team_path or not os.path.isdir(team_path):
+                    print(f"[STREAM] Skipping invalid team path: {team_path}")
                     continue
                 try:
                     team_obj = Team(team_path=team_path, db_conn=db_conn)
+                    print(f"[STREAM] Loaded team {team_obj.name} from {team_path} with {len(team_obj.jinxes_dict)} jinxes, npcs: {list(team_obj.npcs.keys())}")
                     if npc_name in team_obj.npcs:
                         npc_object = team_obj.npcs[npc_name]
                         team_object = team_obj
-                        print(f"Found NPC {npc_name} in registered team {team_path}")
+                        print(f"[STREAM] Found NPC {npc_name} in registered team {team_path}")
+                        print(f"[STREAM] NPC {npc_name} jinxes_spec: {getattr(npc_object, 'jinxes_spec', None)}")
+                        print(f"[STREAM] NPC {npc_name} jinxes_dict keys: {list(npc_object.jinxes_dict.keys())}")
                         break
                     elif hasattr(team_obj, 'forenpc') and team_obj.forenpc and team_obj.forenpc.name == npc_name:
                         npc_object = team_obj.forenpc
                         team_object = team_obj
-                        print(f"Found NPC {npc_name} as forenpc in registered team {team_path}")
+                        print(f"[STREAM] Found NPC {npc_name} as forenpc in registered team {team_path}")
                         break
                 except Exception as e:
-                    print(f"Error loading registered team {team_path}: {e}")
+                    print(f"[STREAM] Error loading registered team {team_path}: {e}")
+                    traceback.print_exc()
                     continue
 
         if not npc_object:
@@ -6821,6 +6734,114 @@ def get_memories_by_scope():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/knowledge/extract", methods=["POST"])
+def extract_facts_preview():
+    """Extract facts from arbitrary conversation text without storing. Returns facts for review."""
+    try:
+        data = request.json or {}
+        conversation_text = data.get("conversation_text", "")
+        conversation_id = data.get("conversation_id", "")
+        model = data.get("model", "")
+        provider = data.get("provider", "")
+        npc_name = data.get("npc", "")
+        team_name = data.get("team", "")
+        current_path = data.get("currentPath", "")
+
+        if not conversation_text:
+            return jsonify({"facts": [], "error": "No conversation_text provided"}), 400
+
+        npc_object = None
+        if npc_name and current_path:
+            try:
+                from npcpy.npc_compiler import load_npcs
+                npcs = load_npcs(current_path)
+                npc_object = npcs.get(npc_name)
+            except Exception:
+                pass
+
+        from npcpy.llm_funcs import get_facts, resolve_model_provider
+        resolved_model, resolved_provider, _, _ = resolve_model_provider(
+            npc=npc_object,
+            team=npc_object.team if npc_object else None,
+            model=model,
+            provider=provider,
+        )
+
+        memory_context = ""
+        if current_path:
+            try:
+                from npcpy.memory.knowledge_store import get_store_for_path
+                store = get_store_for_path(current_path)
+                memory_context = store.build_context(max_memories=10)
+            except Exception:
+                pass
+
+        facts = get_facts(
+            conversation_text,
+            model=resolved_model,
+            provider=resolved_provider,
+            npc=npc_object,
+            context=memory_context
+        )
+
+        return jsonify({
+            "facts": facts or [],
+            "count": len(facts) if facts else 0,
+            "model": resolved_model,
+            "provider": resolved_provider,
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/extract-and-store", methods=["POST"])
+def extract_and_store_facts():
+    """Extract facts from conversation text and store as pending memories."""
+    try:
+        data = request.json or {}
+        conversation_text = data.get("conversation_text", "")
+        conversation_id = data.get("conversation_id", "")
+        model = data.get("model", "")
+        provider = data.get("provider", "")
+        npc_name = data.get("npc", "")
+        team_name = data.get("team", "")
+        current_path = data.get("currentPath", "")
+
+        if not conversation_text:
+            return jsonify({"facts": [], "error": "No conversation_text provided"}), 400
+
+        npc_object = None
+        if npc_name and current_path:
+            try:
+                from npcpy.npc_compiler import load_npcs
+                npcs = load_npcs(current_path)
+                npc_object = npcs.get(npc_name)
+            except Exception:
+                pass
+
+        memories = extract_and_store_memories(
+            conversation_text=conversation_text,
+            conversation_id=conversation_id,
+            npc_name=npc_name or "default",
+            team_name=team_name or "default",
+            current_path=current_path,
+            model=model,
+            provider=provider,
+            npc_object=npc_object,
+        )
+
+        return jsonify({
+            "memories": memories or [],
+            "count": len(memories) if memories else 0,
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/interrupt", methods=["POST"])
 def interrupt_stream():
     data = request.json
@@ -7664,7 +7685,6 @@ def scan_gguf_models():
         os.path.join(models_dir, 'gguf'),
         models_dir,
         os.path.expanduser('~/models'),
-        os.path.join(get_cache_dir(), 'huggingface/hub'),
         os.path.expanduser('~/.cache/huggingface/hub'),
     ]
 

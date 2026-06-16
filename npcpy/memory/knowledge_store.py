@@ -55,8 +55,6 @@ class KnowledgeStore:
 
     def _empty_template(self) -> Dict[str, Any]:
         return {
-            "version": "1.0",
-            "directory": self.directory,
             "created_at": _utcnow(),
             "updated_at": _utcnow(),
             "memories": [],
@@ -75,6 +73,9 @@ class KnowledgeStore:
                       model: str = "",
                       provider: str = "",
                       final_memory: str = None,
+                      source_type: str = "",
+                      source_id: str = "",
+                      **kwargs,
                       ) -> str:
         mem_id = mem_id or _make_id()
         mem = {
@@ -91,7 +92,10 @@ class KnowledgeStore:
             "model": model,
             "provider": provider,
             "created_at": _utcnow(),
+            "source_type": source_type,
+            "source_id": source_id,
         }
+        mem.update(kwargs)
         data = self.load()
         data["memories"].append(mem)
         self.save(data)
@@ -196,7 +200,6 @@ class KnowledgeStore:
             all_memories.extend(d.get("memories", []))
             all_knowledge.extend(d.get("knowledge", []))
         return {
-            "version": "1.0-aggregate",
             "root": root_directory,
             "sources": [s.directory for s in stores],
             "memories": all_memories,

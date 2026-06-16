@@ -27,10 +27,7 @@ def _discover_team_path(explicit: Optional[str] = None) -> str:
     cwd_team = os.path.join(os.getcwd(), "npc_team")
     if os.path.isdir(cwd_team):
         return cwd_team
-    global_team = os.path.expanduser("~/.npcsh/npc_team")
-    if os.path.isdir(global_team):
-        return global_team
-    raise FileNotFoundError("No npc_team found. Checked: ./npc_team, ~/.npcsh/npc_team")
+    raise FileNotFoundError("No npc_team found. Checked: ./npc_team")
 
 
 def _load_team(team_path: str):

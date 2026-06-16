@@ -25,8 +25,6 @@ import math
 import random
 import base64
 from npcpy.npc_sysenv import (
-    ensure_dirs_exist,
-    init_db_tables,
     get_system_message,
     print_and_process_stream_with_markdown,
     )
@@ -144,22 +142,22 @@ def find_file_path(filename, search_dirs, suffix=None):
             
     return None
 
-def get_log_entries(entity_id, entry_type=None, limit=10, db_path="~/npcsh_history.db"):
+def get_log_entries(entity_id, db_path, entry_type=None, limit=10):
     """Get log entries for an NPC or team"""
     db_path = os.path.expanduser(db_path)
     with sqlite3.connect(db_path) as conn:
         query = "SELECT entry_type, content, metadata, timestamp FROM npc_log WHERE entity_id = ?"
         params = [entity_id]
-        
+
         if entry_type:
             query += " AND entry_type = ?"
             params.append(entry_type)
-        
+
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
-        
+
         results = conn.execute(query, params).fetchall()
-        
+
         return [
             {
                 "entry_type": r[0],
@@ -169,6 +167,16 @@ def get_log_entries(entity_id, entry_type=None, limit=10, db_path="~/npcsh_histo
             }
             for r in results
         ]
+
+def log_entry(entity_id, db_path, entry_type, content, metadata=None):
+    """Log an entry for an NPC or team"""
+    db_path = os.path.expanduser(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO npc_log (entity_id, entry_type, content, metadata) VALUES (?, ?, ?, ?)",
+            (entity_id, entry_type, json.dumps(content), json.dumps(metadata) if metadata else None)
+        )
+        conn.commit()
 
 def _json_dumps_with_undefined(obj, **kwargs):
     """Custom JSON dumps that handles SilentUndefined objects"""
@@ -210,7 +218,7 @@ def load_yaml_file(file_path, jinja_context=None):
         print(f"Error loading YAML file {file_path}: {e}")
         return None
 
-def log_entry(entity_id, entry_type, content, metadata=None, db_path="~/npcsh_history.db"):
+def log_entry(entity_id, entry_type, content, metadata=None, db_path="~/npcpy_history.db"):
     """Log an entry for an NPC or team"""
     db_path = os.path.expanduser(db_path)
     with sqlite3.connect(db_path) as conn:
@@ -222,18 +230,11 @@ def log_entry(entity_id, entry_type, content, metadata=None, db_path="~/npcsh_hi
 
 def initialize_npc_project(
     directory=None,
-    templates=None,
     context=None,
     model=None,
     provider=None,
-    include_jinx_groups=None,
 ) -> str:
-    """Initialize an NPC project.
-
-    Args:
-        include_jinx_groups: List of jinx subdir paths to copy from the global
-            team (e.g. ['lib/core', 'lib/utils', 'modes']).  None = skip.
-    """
+    """Initialize an NPC project."""
     if directory is None:
         directory = os.getcwd()
     directory = os.path.expanduser(os.fspath(directory))
@@ -254,37 +255,9 @@ def initialize_npc_project(
                    "mcp_servers"]:
         os.makedirs(os.path.join(npc_team_dir, subdir), exist_ok=True)
 
-    # Copy selected jinx groups from the global npcsh team
-    if include_jinx_groups:
-        global_jinxes = os.path.expanduser("~/.npcsh/npc_team/jinxes")
-        if not os.path.isdir(global_jinxes):
-            pkg_jinxes = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     '..', 'npcsh', 'npcsh', 'npc_team', 'jinxes')
-            if os.path.isdir(pkg_jinxes):
-                global_jinxes = pkg_jinxes
-        if os.path.isdir(global_jinxes):
-            dest_jinxes = os.path.join(npc_team_dir, "jinxes")
-            for group in include_jinx_groups:
-                src_group = os.path.join(global_jinxes, group)
-                if not os.path.isdir(src_group):
-                    continue
-                for dirpath, dirnames, filenames in os.walk(src_group):
-                    rel = os.path.relpath(dirpath, global_jinxes)
-                    dest_dir = os.path.join(dest_jinxes, rel)
-                    os.makedirs(dest_dir, exist_ok=True)
-                    for fname in filenames:
-                        if fname.endswith('.jinx'):
-                            src = os.path.join(dirpath, fname)
-                            dst = os.path.join(dest_dir, fname)
-                            if not os.path.exists(dst):
-                                shutil.copy2(src, dst)
-    
     forenpc_path = os.path.join(npc_team_dir, "forenpc.npc")
-    
 
-    
     if not os.path.exists(forenpc_path):
-        
         default_npc = {
             "name": "forenpc",
             "primary_directive": "You are the forenpc of an NPC team",
@@ -295,16 +268,6 @@ def initialize_npc_project(
             default_npc["provider"] = provider
         with open(forenpc_path, "w", encoding="utf-8") as f:
             yaml.dump(default_npc, f)
-    parsed_templates: List[str] = []
-    if templates:
-        if isinstance(templates, str):
-            parsed_templates = [
-                t.strip() for t in re.split(r"[,\s]+", templates) if t.strip()
-            ]
-        elif isinstance(templates, (list, tuple, set)):
-            parsed_templates = [str(t).strip() for t in templates if str(t).strip()]
-        else:
-            parsed_templates = [str(templates).strip()]
 
     ctx_destination: Optional[str] = None
     preexisting_ctx = [
@@ -318,143 +281,25 @@ def initialize_npc_project(
             print(
                 "Warning: Multiple .ctx files already present; using first and ignoring the rest."
             )
-    
-    def _resolve_template_path(template_name: str) -> Optional[str]:
-        expanded = os.path.expanduser(template_name)
-        if os.path.exists(expanded):
-            return expanded
 
-        embedded_templates = {
-            "slean": """name: slean
-primary_directive: You are slean, the marketing innovator AI. Your responsibility is to create marketing campaigns and manage them effectively, while also thinking creatively to solve marketing challenges. Guide the strategy that drives customer engagement and brand awareness.
-""",
-            "turnic": """name: turnic
-primary_directive: Assist with sales challenges and questions. Opt for straightforward solutions that help sales professionals achieve quick results.
-""",
-            "budgeto": """name: budgeto
-primary_directive: You manage marketing budgets, ensuring resources are allocated efficiently and spend is optimized.
-""",
-            "relatio": """name: relatio
-primary_directive: You manage customer relationships and ensure satisfaction throughout the sales process. Focus on nurturing clients and maintaining long-term connections.
-""",
-            "funnel": """name: funnel
-primary_directive: You oversee the sales pipeline, track progress, and optimize conversion rates to move leads efficiently.
-""",
-        }
-
-        base_dirs = [
-            os.path.expanduser("~/.npcsh/npc_team/templates"),
-            os.path.expanduser("~/.npcpy/npc_team/templates"),
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tests", "template_tests", "npc_team")),
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "examples", "npc_team")),
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "example_npc_project", "npc_team")),
-        ]
-        base_dirs = [d for d in base_dirs if os.path.isdir(d)]
-
-        for base in base_dirs:
-            direct = os.path.join(base, template_name)
-            if os.path.exists(direct):
-                return direct
-            if not direct.endswith(".npc") and os.path.exists(direct + ".npc"):
-                return direct + ".npc"
-            for root, _, files in os.walk(base):
-                for fname in files:
-                    stem, ext = os.path.splitext(fname)
-                    if ext == ".npc" and stem == template_name:
-                        return os.path.join(root, fname)
-
-        if template_name in embedded_templates:
-            embedded_dir = os.path.join(npc_team_dir, "_embedded_templates", template_name)
-            os.makedirs(embedded_dir, exist_ok=True)
-            npc_file = os.path.join(embedded_dir, f"{template_name}.npc")
-            if not os.path.exists(npc_file):
-                with open(npc_file, "w", encoding="utf-8") as f:
-                    f.write(embedded_templates[template_name])
-            return embedded_dir
-        return None
-
-    def _copy_template(src_path: str) -> List[str]:
-        nonlocal ctx_destination
-        copied: List[str] = []
-        src_path = os.path.expanduser(src_path)
-
-        allowed_exts = {".npc", ".tool", ".pipe", ".sql", ".job", ".ctx", ".yaml", ".yml"}
-
-        if os.path.isfile(src_path):
-            if os.path.splitext(src_path)[1] in allowed_exts:
-                if os.path.splitext(src_path)[1] == ".ctx":
-                    if ctx_destination:
-                        print(
-                            f"Warning: Skipping extra context file '{src_path}' because one already exists."
-                        )
-                        return copied
-                    dest_path = os.path.join(npc_team_dir, os.path.basename(src_path))
-                    ctx_destination = dest_path
-                else:
-                    dest_path = os.path.join(npc_team_dir, os.path.basename(src_path))
-                if not os.path.exists(dest_path):
-                    shutil.copy2(src_path, dest_path)
-                copied.append(dest_path)
-            return copied
-
-        for root, _, files in os.walk(src_path):
-            rel_dir = os.path.relpath(root, src_path)
-            dest_dir = npc_team_dir if rel_dir == "." else os.path.join(npc_team_dir, rel_dir)
-            os.makedirs(dest_dir, exist_ok=True)
-            for fname in files:
-                if os.path.splitext(fname)[1] not in allowed_exts:
-                    continue
-                if os.path.splitext(fname)[1] == ".ctx":
-                    if ctx_destination:
-                        print(
-                            f"Warning: Skipping extra context file '{os.path.join(root, fname)}' because one already exists."
-                        )
-                        continue
-                    dest_path = os.path.join(npc_team_dir, fname)
-                    ctx_destination = dest_path
-                else:
-                    dest_path = os.path.join(dest_dir, fname)
-                if not os.path.exists(dest_path):
-                    shutil.copy2(os.path.join(root, fname), dest_path)
-                copied.append(dest_path)
-        return copied
-
-    applied_templates: List[str] = []
-    if parsed_templates:
-        for template_name in parsed_templates:
-            template_path = _resolve_template_path(template_name)
-            if not template_path:
-                print(f"Warning: Template '{template_name}' not found in known template directories.")
-                continue
-            copied = _copy_template(template_path)
-            if copied:
-                applied_templates.append(template_name)
-    
-    if applied_templates:
-        applied_templates = sorted(set(applied_templates))
     if not ctx_destination:
         default_ctx_path = os.path.join(npc_team_dir, "team.ctx")
         default_ctx = {
             'name': '',
-            'context' : context or '', 
-            'preferences': '', 
-            'mcp_servers': '', 
-            'databases':'', 
-            'use_global_jinxes': True,
+            'context' : context or '',
+            'preferences': '',
+            'mcp_servers': '',
+            'databases':'',
             'forenpc': 'forenpc'
         }
         if model:
             default_ctx['model'] = model
         if provider:
             default_ctx['provider'] = provider
-        if parsed_templates:
-            default_ctx['templates'] = parsed_templates
         with open(default_ctx_path, "w", encoding="utf-8") as f:
             yaml.dump(default_ctx, f)
         ctx_destination = default_ctx_path
 
-    if applied_templates:
-        return f"NPC project initialized in {npc_team_dir} using templates: {', '.join(applied_templates)}"
     return f"NPC project initialized in {npc_team_dir}"
 
 def write_yaml_file(file_path, data):
@@ -466,6 +311,52 @@ def write_yaml_file(file_path, data):
     except Exception as e:
         print(f"Error writing YAML file {file_path}: {e}")
         return False
+
+
+def render_jinja_content(content):
+    from jinja2 import Environment
+    env = Environment()
+    env.globals['Jinx'] = lambda name: name
+    try:
+        return env.from_string(content).render()
+    except Exception:
+        return content
+
+
+def _update_field_in_yaml(content, field, new_value):
+    lines = content.split('\n')
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = re.match(r'^(\s*)(' + re.escape(field) + r'):\s*(.*)$', line)
+        if match:
+            indent = match.group(1)
+            if isinstance(new_value, list):
+                result.append(f"{indent}{field}:")
+                for item in new_value:
+                    result.append(f"{indent}  - {item}")
+            elif isinstance(new_value, str) and '\n' in new_value:
+                result.append(f"{indent}{field}: |2")
+                for sub in new_value.split('\n'):
+                    result.append(f"{indent}  {sub}")
+            else:
+                result.append(f"{indent}{field}: {new_value}")
+            i += 1
+            target_indent = len(indent)
+            while i < len(lines):
+                next_line = lines[i]
+                if next_line.strip() == '':
+                    i += 1
+                    continue
+                next_indent = len(next_line) - len(next_line.lstrip())
+                if next_indent <= target_indent:
+                    break
+                i += 1
+            continue
+        result.append(line)
+        i += 1
+    return '\n'.join(result)
 
 
 # Default jinx set for markdown-loaded agents (agents.md / AGENTS.md / CLAUDE.md /
@@ -906,7 +797,7 @@ class Jinx:
 
     def save(self, directory):
         jinx_path = os.path.join(directory, f"{self.jinx_name}.jinx")
-        ensure_dirs_exist(os.path.dirname(jinx_path))
+        os.makedirs(os.path.dirname(jinx_path), exist_ok=True)
         return write_yaml_file(jinx_path, self.to_dict())
         
     @classmethod
@@ -1340,7 +1231,6 @@ class NPC:
         api_url: str = None,
         api_key: str = None,
         db_conn=None,
-        use_global_jinxes=False,
         memory = False,
         **kwargs
     ):
@@ -1377,10 +1267,7 @@ class NPC:
             self.api_key = api_key
             self._extra_fields = kwargs
 
-            if use_global_jinxes:
-                self.jinxes_directory = os.path.expanduser('~/.npcsh/npc_team/jinxes/')
-            else:
-                self.jinxes_directory = None
+            self.jinxes_directory = None
             self.npc_directory = None
 
         if not hasattr(self, 'jinxes_spec') or jinxes is not None:
@@ -1396,7 +1283,6 @@ class NPC:
             self.tool_map = {}
             self.tools_schema = []
         self.plain_system_message = plain_system_message
-        self.use_global_jinxes = use_global_jinxes
         self.jinx_tool_catalog: Dict[str, Dict[str, Any]] = {}
         self.mcp_servers = []
         
@@ -1465,14 +1351,18 @@ class NPC:
         for key, value in kwargs.items():
             setattr(self, key, value)
             
-        if db_conn is not None:
-            init_db_tables()
-
     def initialize_jinxes(self, team_raw_jinxes: Optional[List['Jinx']] = None):
         """
         Loads and performs first-pass Jinja rendering for NPC-specific jinxes,
         now that the NPC's team context is fully established.
         """
+        print(f"[JINX] initialize_jinxes called for NPC '{self.name}'")
+        print(f"[JINX] NPC '{self.name}' jinxes_spec: {self.jinxes_spec}")
+        if self.team:
+            print(f"[JINX] NPC '{self.name}' team: {self.team.name} team_path: {getattr(self.team, 'team_path', None)}")
+            print(f"[JINX] NPC '{self.name}' team jinxes_dict keys: {list(self.team.jinxes_dict.keys())}")
+        else:
+            print(f"[JINX] NPC '{self.name}' has NO TEAM")
         npc_jinxes_raw_list = []
         
         if self.jinxes_spec == "*":
@@ -1761,6 +1651,21 @@ class NPC:
             if not self.api_key and hasattr(self.team, 'api_key'):
                 self.api_key = self.team.api_key
 
+            # Resolve named provider references from team.providers
+            # Each entry: {name, api_url, api_key, provider_type, model, models: [...]}
+            if self.provider and hasattr(self.team, 'providers') and isinstance(self.team.providers, list):
+                for prov in self.team.providers:
+                    if isinstance(prov, dict) and prov.get('name') == self.provider:
+                        if not self.api_url and prov.get('api_url'):
+                            self.api_url = os.path.expandvars(prov['api_url'])
+                        if not self.api_key and prov.get('api_key'):
+                            self.api_key = os.path.expandvars(prov['api_key'])
+                        if not self.model and prov.get('model'):
+                            self.model = prov['model']
+                        if prov.get('provider_type'):
+                            self.provider = prov['provider_type']
+                        break
+
 
         self.name = npc_data.get("name", self.name)
 
@@ -1768,7 +1673,7 @@ class NPC:
         known_keys = {
             "name", "primary_directive", "jinxes", "model", "provider",
             "api_url", "api_key", "mcp_servers", "plain_system_message",
-            "use_global_jinxes", "tools", "team", "memory",
+            "tools", "team", "memory",
         }
         self._extra_fields = {k: v for k, v in npc_data.items() if k not in known_keys}
 
@@ -1789,8 +1694,14 @@ class NPC:
         tool_executors = {}
         seen = set()
 
+        print(f"[TOOLS] resolve_tools called for NPC '{self.name}'")
+        print(f"[TOOLS] NPC '{self.name}' jinxes_dict has {len(self.jinxes_dict)} entries: {list(self.jinxes_dict.keys())}")
+        print(f"[TOOLS] NPC '{self.name}' jinx_tool_catalog has {len(self.jinx_tool_catalog or {})} entries")
+        print(f"[TOOLS] NPC '{self.name}' mcp_servers: {self.mcp_servers}")
+
         # 1. Jinx tools
         catalog = self.jinx_tool_catalog or build_jinx_tool_catalog(self.jinxes_dict)
+        print(f"[TOOLS] Built catalog with {len(catalog)} jinx entries")
         for name, tool_def in catalog.items():
             if name not in seen:
                 tools_for_llm.append(tool_def)
@@ -2469,20 +2380,44 @@ Requirements:
             "api_url": self.api_url,
             "api_key": self.api_key,
             "jinxes": self.jinxes_spec,
-            "use_global_jinxes": self.use_global_jinxes,
         })
         result["source_path"] = source_path
         result["source_ext"] = source_ext
         return result
         
     def save(self, directory=None):
-        """Save NPC to file"""
+        """Save NPC to file, preserving original {{ Jinx('...') }} syntax."""
         if directory is None:
             directory = self.npc_directory
-            
-        ensure_dirs_exist(directory)
+        os.makedirs(directory, exist_ok=True)
         npc_path = os.path.join(directory, f"{self.name}.npc")
-        
+
+        if os.path.exists(npc_path):
+            with open(npc_path, 'r', encoding='utf-8') as f:
+                original_content = f.read()
+            rendered = render_jinja_content(original_content)
+            try:
+                current = yaml.safe_load(rendered) or {}
+            except Exception:
+                current = {}
+            content = original_content
+            updates = self.to_dict()
+            for field in ['name', 'model', 'provider', 'api_url', 'api_key', 'primary_directive']:
+                if field in updates and updates[field] != current.get(field):
+                    content = _update_field_in_yaml(content, field, updates[field])
+            jinxes = updates.get('jinxes')
+            if isinstance(jinxes, list):
+                jinx_values = []
+                for j in jinxes:
+                    if isinstance(j, str) and re.match(r'^[a-zA-Z0-9_]+$', j):
+                        jinx_values.append(f"{{{{ Jinx('{j}') }}}}")
+                    else:
+                        jinx_values.append(str(j))
+                content = _update_field_in_yaml(content, 'jinxes', jinx_values)
+            with open(npc_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return True
+
         return write_yaml_file(npc_path, self.to_dict())
     
     def __str__(self):
@@ -2559,7 +2494,6 @@ class Team:
         self.forenpc: Optional['NPC'] = None
         self.forenpc_name: Optional[str] = None
         self.skills_directory: Optional[str] = None
-        self.external_jinx_teams: List[str] = []
 
         if team_path:
             self.name = os.path.basename(os.path.abspath(team_path))
@@ -2606,9 +2540,6 @@ class Team:
         for npc_obj in self.npcs.values():
             npc_obj.initialize_jinxes(team_raw_jinxes=self._raw_jinxes_list) 
         
-        if db_conn is not None:
-            init_db_tables()
-
     def _load_from_directory_and_initialize_forenpc(self):
         """
         Consolidated method to load NPCs, team context, and resolve the forenpc.
@@ -2631,21 +2562,6 @@ class Team:
         if os.path.exists(jinxes_dir):
             for jinx_obj in load_jinxes_from_directory(jinxes_dir):
                 self._raw_jinxes_list.append(jinx_obj)
-
-        # Merge jinxes from external teams listed in team.ctx (external_jinx_teams).
-        # Own-team jinxes take precedence — external ones only fill in gaps by name.
-        if getattr(self, 'external_jinx_teams', None):
-            existing_names = {j.jinx_name for j in self._raw_jinxes_list}
-            for ext_team_root in self.external_jinx_teams:
-                ext_jinxes_dir = os.path.join(ext_team_root, "jinxes")
-                if not os.path.isdir(ext_jinxes_dir):
-                    print(f"[TEAM] external_jinx_teams: skipping missing {ext_jinxes_dir}", file=sys.stderr)
-                    continue
-                for jinx_obj in load_jinxes_from_directory(ext_jinxes_dir):
-                    if jinx_obj.jinx_name in existing_names:
-                        continue
-                    self._raw_jinxes_list.append(jinx_obj)
-                    existing_names.add(jinx_obj.jinx_name)
 
         if hasattr(self, 'skills_directory') and self.skills_directory:
             skills_path = os.path.expanduser(self.skills_directory)
@@ -2691,9 +2607,9 @@ class Team:
               {{ Jinx('edit_file') }}                                 — own team (or already-loaded external)
               {{ Jinx('kg_search_keyword', '/abs/team/root') }}       — positional path to foreign team
               {{ Jinx('kg_search_keyword', path='/abs/team/root') }}  — same, keyword
-              {{ Jinx('kg_search_keyword', repo='npc-worldwide/npcsh') }}
+              {{ Jinx('kg_search_keyword', repo='owner/repo') }}
                   — foreign team in a GitHub repo; cached to
-                    ~/.npcsh/jinx_cache/<owner>_<repo>[@<ref>]/ on first use
+                    ~/.cache/npcpy/jinxes/<owner>_<repo>[@<ref>]/ on first use
               {{ Jinx('x', repo='owner/repo', ref='v1.2.0') }}        — pin a branch/tag
 
             Foreign jinxes are loaded into this team's pool on first resolve,
@@ -2726,7 +2642,7 @@ class Team:
         def _resolve_external_team_root(repo=None, path=None, ref=None):
             """Return a local filesystem path to a team root (directory containing
             a jinxes/ folder), fetching from GitHub if needed. Caches under
-            ~/.npcsh/jinx_cache/. Looks recursively for a directory named
+            ~/.cache/npcpy/jinxes/. Looks recursively for a directory named
             npc_team inside the cloned repo."""
             if path:
                 expanded = os.path.expanduser(path)
@@ -2735,7 +2651,7 @@ class Team:
             if not repo:
                 return None
 
-            cache_root = os.path.expanduser('~/.npcsh/jinx_cache')
+            cache_root = os.path.expanduser('~/.cache/npcpy/jinxes')
             os.makedirs(cache_root, exist_ok=True)
             slug = repo.replace('/', '_')
             if ref:
@@ -2902,14 +2818,6 @@ class Team:
                     self.providers = ctx_data.get('providers', [])
                     self.forenpc_name = ctx_data.get('forenpc', self.forenpc_name)
                     self.skills_directory = ctx_data.get('SKILLS_DIRECTORY', None)
-                    # external_jinx_teams: list of other team root dirs whose jinxes/
-                    # directory should also be loaded into this team. Enables jinx
-                    # reuse across teams (e.g. an app-specific team pulling in the
-                    # global npcsh lib/) without copying files.
-                    _ext = ctx_data.get('external_jinx_teams') or ctx_data.get('EXTERNAL_JINX_TEAMS') or []
-                    if isinstance(_ext, str):
-                        _ext = [_ext]
-                    self.external_jinx_teams = [os.path.expanduser(str(p)) for p in _ext if p]
                 return ctx_data
         return {}
 
@@ -3084,7 +2992,7 @@ class Team:
         """Load sub-teams from subdirectories.
 
         A subdirectory becomes a sub-team if it contains either:
-          - one or more .npc files (npcsh-native team), or
+          - one or more .npc files (.npc file team), or
           - agents.md / AGENTS.md / CLAUDE.md / an agents/ directory
             (markdown-declared team — inherits this team's jinxes).
 
@@ -3207,7 +3115,7 @@ class Team:
                             model = fm.get('model', model)
                             provider = fm.get('provider', provider)
                             name = fm.get('name', name)
-                            # Accept either `jinxes:` (npcsh native) or `tools:`
+                            # Accept either `jinxes:` (native) or `tools:`
                             # (Claude-Code / Agents-md convention).
                             fm_jinxes = fm.get('jinxes', fm.get('tools'))
                             if isinstance(fm_jinxes, list):
@@ -3398,7 +3306,7 @@ class Team:
         if not directory:
             raise ValueError("No directory specified for saving team")
             
-        ensure_dirs_exist(directory)
+        os.makedirs(directory, exist_ok=True)
         
         if hasattr(self, 'context') and self.context:
             ctx_path = os.path.join(directory, "team.ctx")
@@ -3408,7 +3316,7 @@ class Team:
             npc.save(directory)
             
         jinxes_dir = os.path.join(directory, "jinxes")
-        ensure_dirs_exist(jinxes_dir)
+        os.makedirs(jinxes_dir, exist_ok=True)
         
         for jinx in self.jinxes_dict.values():
             jinx.save(jinxes_dir)
@@ -4089,7 +3997,7 @@ def _is_cli_provider(provider: str) -> bool:
 class CLIAgent(Agent):
     """Agent that runs CLI tools (claude, opencode, kimi, kilo) as subprocesses.
 
-    Session context is managed by npcsh via temp files tied to conversation_id.
+    Session context is managed via temp files tied to conversation_id.
     """
 
     CLI_COMMANDS = {
@@ -4100,7 +4008,6 @@ class CLIAgent(Agent):
         "kimi": ["kimi"],
         "kilo_code": ["kilo", "run"],
         "kilo": ["kilo", "run"],
-        "npcsh": ["npcsh"],
         "gemini": ["gemini"],
         "codex": ["codex"],
         "nanocoder": ["nanocoder"],

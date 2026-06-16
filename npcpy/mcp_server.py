@@ -273,7 +273,7 @@ def build_server(state: NPCServerState):
     """Build and return a FastMCP server from an NPCServerState."""
     from mcp.server.fastmcp import FastMCP, Context
 
-    mcp = FastMCP("npcsh_mcp")
+    mcp = FastMCP("npcpy_mcp")
     state.mcp = mcp
 
     # Register active NPC's jinxes

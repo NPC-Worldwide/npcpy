@@ -25,14 +25,14 @@ def _npc_bin_path():
     return shutil.which('npc') or 'npc'
 
 
-def _plist_path(job_name):
+def _plist_path(job_name, launchd_prefix='com.job.'):
     return os.path.expanduser(
-        '~/Library/LaunchAgents/com.npcsh.job.' + job_name + '.plist'
+        '~/Library/LaunchAgents/' + launchd_prefix + job_name + '.plist'
     )
 
 
-def _cron_tag(job_name):
-    return '# npcsh:' + job_name
+def _cron_tag(job_name, cron_tag_prefix='# job:'):
+    return cron_tag_prefix + job_name
 
 
 # ── Core scheduling primitives ──────────────────────────────────────
@@ -43,20 +43,23 @@ def compile_job_script(command, job_name):
     The command is a jinx name + args. The compiled script calls the ``npc``
     binary with its full absolute path so it works in a minimal cron environment.
 
-    Returns the path to the generated script (``~/.npcsh/jobs/<name>.sh``).
+    Returns the path to the generated script.
     """
     os.makedirs(JOBS_DIR, exist_ok=True)
     script_path = os.path.join(JOBS_DIR, job_name + '.sh')
     npc = _npc_bin_path()
     with open(script_path, 'w') as f:
-        f.write('#!/bin/bash\n# npcsh job: ' + job_name
+        f.write('#!/bin/bash\n# scheduled job: ' + job_name
                 + '\nset -euo pipefail\n\n'
                 + npc + ' ' + command.lstrip('/') + '\n')
     os.chmod(script_path, 0o755)
     return script_path
 
 
-def schedule_job(schedule, command, job_name):
+def schedule_job(schedule, command, job_name,
+                 launchd_prefix='com.job.',
+                 cron_tag_prefix='# job:',
+                 win_task_prefix='TASK_'):
     """Compile *command* and register it with the OS scheduler.
 
     Returns ``(success: bool, message: str)``.
@@ -67,34 +70,42 @@ def schedule_job(schedule, command, job_name):
     system = platform.system()
 
     if system == 'Darwin':
-        return _schedule_launchd(script_path, schedule, job_name, log_path)
+        return _schedule_launchd(script_path, schedule, job_name, log_path,
+                                 launchd_prefix=launchd_prefix)
     elif system == 'Windows':
-        return _schedule_windows(script_path, schedule, job_name, log_path)
-    return _schedule_crontab(script_path, schedule, job_name, log_path)
+        return _schedule_windows(script_path, schedule, job_name, log_path,
+                                 win_task_prefix=win_task_prefix)
+    return _schedule_crontab(script_path, schedule, job_name, log_path,
+                             cron_tag_prefix=cron_tag_prefix)
 
 
-def unschedule_job(job_name):
+def unschedule_job(job_name,
+                   launchd_prefix='com.job.',
+                   cron_tag_prefix='# job:',
+                   win_task_prefix='TASK_'):
     """Remove a scheduled job. Returns ``(success, message)``."""
     system = platform.system()
     if system == 'Darwin':
-        return _unschedule_launchd(job_name)
+        return _unschedule_launchd(job_name, launchd_prefix=launchd_prefix)
     elif system == 'Windows':
-        return _unschedule_windows(job_name)
-    return _unschedule_crontab(job_name)
+        return _unschedule_windows(job_name, win_task_prefix=win_task_prefix)
+    return _unschedule_crontab(job_name, cron_tag_prefix=cron_tag_prefix)
 
 
-def list_jobs():
-    """Return a list of ``{'name': …, 'active': bool}`` for all npcsh jobs."""
+def list_jobs(launchd_prefix='com.job.',
+              cron_tag_prefix='# job:',
+              win_task_prefix='TASK_'):
+    """Return a list of ``{'name': …, 'active': bool}`` for all scheduled jobs."""
     system = platform.system()
     jobs = []
     if system == 'Darwin':
         agents = os.path.expanduser('~/Library/LaunchAgents/')
         if os.path.isdir(agents):
             for f in sorted(os.listdir(agents)):
-                if f.startswith('com.npcsh.job.') and f.endswith('.plist'):
-                    name = f.replace('com.npcsh.job.', '').replace('.plist', '')
+                if f.startswith(launchd_prefix) and f.endswith('.plist'):
+                    name = f.replace(launchd_prefix, '').replace('.plist', '')
                     r = subprocess.run(
-                        ['launchctl', 'list', 'com.npcsh.job.' + name],
+                        ['launchctl', 'list', launchd_prefix + name],
                         capture_output=True, text=True,
                     )
                     jobs.append({'name': name, 'active': r.returncode == 0})
@@ -105,45 +116,54 @@ def list_jobs():
         )
         if r.returncode == 0:
             for line in r.stdout.splitlines():
-                if 'NPCSH_' in line:
+                if win_task_prefix in line:
                     parts = line.split(',')
                     if parts:
-                        name = parts[0].strip('"').replace('\\NPCSH_', '').replace('NPCSH_', '')
+                        name = parts[0].strip('"').replace('\\' + win_task_prefix, '').replace(win_task_prefix, '')
                         jobs.append({'name': name, 'active': True})
     else:
         r = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
         if r.returncode == 0:
             for line in r.stdout.splitlines():
-                tag_pos = line.find('# npcsh:')
+                tag_pos = line.find(cron_tag_prefix)
                 if tag_pos >= 0:
-                    name = line[tag_pos + 8:].strip()
+                    name = line[tag_pos + len(cron_tag_prefix):].strip()
                     jobs.append({'name': name, 'active': True})
     return jobs
 
 
-def job_is_active(job_name):
+def job_is_active(job_name,
+                  launchd_prefix='com.job.',
+                  cron_tag_prefix='# job:',
+                  win_task_prefix='TASK_'):
     """Quick check whether *job_name* is currently scheduled."""
     system = platform.system()
     if system == 'Darwin':
-        return os.path.exists(_plist_path(job_name))
+        return os.path.exists(_plist_path(job_name, launchd_prefix=launchd_prefix))
     elif system == 'Windows':
         r = subprocess.run(
-            ['schtasks', '/query', '/tn', 'NPCSH_' + job_name],
+            ['schtasks', '/query', '/tn', win_task_prefix + job_name],
             capture_output=True, text=True,
         )
         return r.returncode == 0
     r = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
     if r.returncode == 0:
-        return any(_cron_tag(job_name) in l for l in r.stdout.splitlines())
+        return any(_cron_tag(job_name, cron_tag_prefix=cron_tag_prefix) in l for l in r.stdout.splitlines())
     return False
 
 
-def job_status(job_name):
+def job_status(job_name,
+               launchd_prefix='com.job.',
+               cron_tag_prefix='# job:',
+               win_task_prefix='TASK_'):
     """Detailed status dict for a job."""
     log_path = os.path.join(LOGS_DIR, job_name + '.log')
     info = {
         'name': job_name,
-        'active': job_is_active(job_name),
+        'active': job_is_active(job_name,
+                                launchd_prefix=launchd_prefix,
+                                cron_tag_prefix=cron_tag_prefix,
+                                win_task_prefix=win_task_prefix),
         'log': log_path,
         'recent_log': [],
     }
@@ -158,8 +178,9 @@ def job_status(job_name):
 
 # ── macOS (launchd) ─────────────────────────────────────────────────
 
-def _schedule_launchd(script_path, schedule, job_name, log_path):
-    ppath = _plist_path(job_name)
+def _schedule_launchd(script_path, schedule, job_name, log_path,
+                      launchd_prefix='com.job.'):
+    ppath = _plist_path(job_name, launchd_prefix=launchd_prefix)
     os.makedirs(os.path.dirname(ppath), exist_ok=True)
 
     parts = schedule.split()
@@ -169,7 +190,7 @@ def _schedule_launchd(script_path, schedule, job_name, log_path):
         ' "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
         '<plist version="1.0">\n<dict>\n'
         '  <key>Label</key>\n'
-        '  <string>com.npcsh.job.' + job_name + '</string>\n'
+        '  <string>' + launchd_prefix + job_name + '</string>\n'
         '  <key>ProgramArguments</key>\n  <array>\n'
         '    <string>' + script_path + '</string>\n'
         '  </array>\n'
@@ -200,8 +221,8 @@ def _schedule_launchd(script_path, schedule, job_name, log_path):
     return True, 'Scheduled "' + job_name + '": ' + schedule
 
 
-def _unschedule_launchd(job_name):
-    ppath = _plist_path(job_name)
+def _unschedule_launchd(job_name, launchd_prefix='com.job.'):
+    ppath = _plist_path(job_name, launchd_prefix=launchd_prefix)
     if os.path.exists(ppath):
         subprocess.run(['launchctl', 'unload', ppath], capture_output=True)
         os.remove(ppath)
@@ -211,10 +232,11 @@ def _unschedule_launchd(job_name):
 
 # ── Linux (crontab) ─────────────────────────────────────────────────
 
-def _schedule_crontab(script_path, schedule, job_name, log_path):
+def _schedule_crontab(script_path, schedule, job_name, log_path,
+                      cron_tag_prefix='# job:'):
     r = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
     existing = r.stdout if r.returncode == 0 else ''
-    entry = schedule + ' ' + script_path + ' >> ' + log_path + ' 2>&1 ' + _cron_tag(job_name)
+    entry = schedule + ' ' + script_path + ' >> ' + log_path + ' 2>&1 ' + _cron_tag(job_name, cron_tag_prefix=cron_tag_prefix)
     new_crontab = existing.rstrip('\n') + '\n' + entry + '\n'
     p = subprocess.run(['crontab', '-'], input=new_crontab, capture_output=True, text=True)
     if p.returncode == 0:
@@ -222,10 +244,10 @@ def _schedule_crontab(script_path, schedule, job_name, log_path):
     return False, 'Failed: ' + p.stderr
 
 
-def _unschedule_crontab(job_name):
+def _unschedule_crontab(job_name, cron_tag_prefix='# job:'):
     r = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
     if r.returncode == 0:
-        tag = _cron_tag(job_name)
+        tag = _cron_tag(job_name, cron_tag_prefix=cron_tag_prefix)
         lines = [l for l in r.stdout.splitlines() if tag not in l]
         p = subprocess.run(['crontab', '-'], input='\n'.join(lines) + '\n', capture_output=True, text=True)
         if p.returncode == 0:
@@ -236,8 +258,9 @@ def _unschedule_crontab(job_name):
 
 # ── Windows (Task Scheduler) ────────────────────────────────────────
 
-def _schedule_windows(script_path, schedule, job_name, log_path):
-    task_name = 'NPCSH_' + job_name
+def _schedule_windows(script_path, schedule, job_name, log_path,
+                      win_task_prefix='TASK_'):
+    task_name = win_task_prefix + job_name
     schedule_params = schedule.split()
     cmd = (
         ['schtasks', '/create', '/tn', task_name, '/tr',
@@ -250,8 +273,8 @@ def _schedule_windows(script_path, schedule, job_name, log_path):
     return False, 'Failed: ' + r.stderr
 
 
-def _unschedule_windows(job_name):
-    task_name = 'NPCSH_' + job_name
+def _unschedule_windows(job_name, win_task_prefix='TASK_'):
+    task_name = win_task_prefix + job_name
     r = subprocess.run(
         ['schtasks', '/delete', '/tn', task_name, '/f'],
         capture_output=True, text=True,
@@ -288,7 +311,7 @@ def execute_plan_command(
 set -euo pipefail
 IFS=$'\\n\\t'
 
-LOGFILE=\"$HOME/.npcsh/logs/cpu_usage.log\"
+LOGFILE=\"$HOME/logs/cpu_usage.log\"
 
 log_info() {
     echo \"[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*\" >> \"$LOGFILE\"
@@ -329,7 +352,7 @@ record_cpu",
 set -euo pipefail
 IFS=$'\\n\\t'
 
-LOGFILE=\"$HOME/.npcsh/logs/cpu_usage.log\"
+LOGFILE=\"$HOME/logs/cpu_usage.log\"
 
 log_info() {
     echo \"[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*\" >> \"$LOGFILE\"
@@ -368,7 +391,7 @@ record_cpu",
     {
         "script": "$ErrorActionPreference = 'Stop'
 
-$LogFile = \"$HOME\\.npcsh\\logs\\cpu_usage.log\"
+$LogFile = \"$HOME\\logs\\cpu_usage.log\"
 
 function Write-Log {
     param($Message, $Type = 'INFO')
