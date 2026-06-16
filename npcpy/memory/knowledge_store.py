@@ -59,6 +59,8 @@ class KnowledgeStore:
         return {
             "created_at": _utcnow(),
             "updated_at": _utcnow(),
+            "last_extracted_at": None,
+            "last_evolved_at": None,
             "memories": [],
             "knowledge": [],
             "concepts": [],
@@ -165,6 +167,159 @@ class KnowledgeStore:
     def get_concepts(self) -> List[Dict[str, Any]]:
         return list(self.load().get("concepts", []))
 
+    def _extract_text(self, file_path: str) -> str:
+        """Extract plain text from a supported document or code file."""
+        ext = os.path.splitext(file_path)[1].lower()
+        try:
+            if ext == ".pdf":
+                from pypdf import PdfReader
+                reader = PdfReader(file_path)
+                return "\n".join((p.extract_text() or "") for p in reader.pages)
+            if ext == ".docx":
+                from docx import Document
+                doc = Document(file_path)
+                return "\n".join(p.text for p in doc.paragraphs)
+            if ext == ".pptx":
+                from pptx import Presentation
+                prs = Presentation(file_path)
+                parts = []
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text"):
+                            parts.append(shape.text)
+                return "\n".join(parts)
+            if ext in (".xlsx", ".xls"):
+                import pandas as pd
+                sheets = pd.read_excel(file_path, sheet_name=None)
+                parts = []
+                for name, df in sheets.items():
+                    parts.append(f"Sheet: {name}\n{df.to_string(index=False)}")
+                return "\n\n".join(parts)
+            if ext == ".csv":
+                import pandas as pd
+                df = pd.read_csv(file_path)
+                return df.to_string(index=False)
+            if ext == ".html" or ext == ".htm":
+                from bs4 import BeautifulSoup
+                with open(file_path, "r", encoding="utf-8") as f:
+                    soup = BeautifulSoup(f, "html.parser")
+                return soup.get_text(separator="\n", strip=True)
+            if ext == ".json":
+                import json
+                with open(file_path, "r", encoding="utf-8") as f:
+                    obj = json.load(f)
+                return json.dumps(obj, indent=2, ensure_ascii=False)
+            # Plain text / code fallback
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except Exception:
+            return ""
+
+    def extract_from_directory(
+        self,
+        include_extensions=None,
+        exclude_dirs=None,
+        max_chunk_size=2000,
+        incremental=True,
+    ) -> Dict[str, Any]:
+        """Walk this store's directory, extract text from files, create memories.
+
+        Returns stats about what was extracted.
+        """
+        if include_extensions is None:
+            include_extensions = {
+                ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h",
+                ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala",
+                ".sh", ".bash", ".zsh", ".ps1", ".bat",
+                ".txt", ".md", ".rst", ".log",
+                ".csv", ".json", ".xml", ".yaml", ".yml",
+                ".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm",
+            }
+        if exclude_dirs is None:
+            exclude_dirs = {".git", ".hg", ".svn", "node_modules", "__pycache__",
+                            ".pytest_cache", ".mypy_cache", "dist", "build",
+                            "venv", ".venv", "env", ".env", ".tox", ".egg-info"}
+
+        data = self.load()
+        last_extracted = data.get("last_extracted_at")
+        new_memories = 0
+        files_scanned = 0
+        files_skipped = 0
+
+        for root, dirs, files in os.walk(self.directory):
+            # Prune excluded dirs in-place
+            dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
+
+            for fname in files:
+                if fname == DEFAULT_KNOWLEDGE_FILE:
+                    continue
+                ext = os.path.splitext(fname)[1].lower()
+                if ext not in include_extensions:
+                    continue
+
+                fpath = os.path.join(root, fname)
+                try:
+                    mtime = os.path.getmtime(fpath)
+                except OSError:
+                    continue
+
+                if incremental and last_extracted:
+                    try:
+                        last_dt = datetime.fromisoformat(last_extracted.replace("Z", "+00:00"))
+                        if datetime.fromtimestamp(mtime, tz=timezone.utc) <= last_dt:
+                            files_skipped += 1
+                            continue
+                    except Exception:
+                        pass
+
+                files_scanned += 1
+                text = self._extract_text(fpath)
+                if not text or not text.strip():
+                    continue
+
+                # Chunk large texts into memory-sized pieces
+                chunks = []
+                if len(text) <= max_chunk_size:
+                    chunks = [text]
+                else:
+                    # Split by paragraphs first, then by chunks if needed
+                    paras = text.split("\n")
+                    buf = ""
+                    for para in paras:
+                        if len(buf) + len(para) + 1 <= max_chunk_size:
+                            buf += para + "\n"
+                        else:
+                            if buf:
+                                chunks.append(buf.rstrip("\n"))
+                            buf = para + "\n"
+                    if buf:
+                        chunks.append(buf.rstrip("\n"))
+
+                for i, chunk in enumerate(chunks):
+                    if not chunk.strip():
+                        continue
+                    self.append_memory(
+                        initial_memory=chunk,
+                        status="auto-extracted",
+                        source_type="file",
+                        source_id=fpath,
+                        final_memory=chunk,
+                        directory_path=self.directory,
+                        **{"chunk_index": i, "total_chunks": len(chunks)},
+                    )
+                    new_memories += 1
+
+        data = self.load()
+        data["last_extracted_at"] = _utcnow()
+        self.save(data)
+
+        return {
+            "files_scanned": files_scanned,
+            "files_skipped": files_skipped,
+            "new_memories": new_memories,
+            "last_extracted_at": data["last_extracted_at"],
+        }
+
     def get_links_for_memory(self, mem_id: str) -> Dict[str, List[Dict[str, Any]]]:
         data = self.load()
         out = []
@@ -216,14 +371,26 @@ class KnowledgeStore:
 
     def evolve(self, model=None, provider=None, npc=None, context='',
                include_memories=True, include_knowledge=True, full_rebuild=False,
-               all_facts=None, all_concepts=None) -> Dict[str, Any]:
+               all_facts=None, all_concepts=None,
+               extract_first=False, incremental_extract=True) -> Dict[str, Any]:
         """Run concept extraction and linking on this store.
 
         If ``all_facts`` and ``all_concepts`` are supplied they are treated as the
         aggregated corpus (e.g. from multiple stores) so that cross-store linking
         works while the results are still persisted into *this* store.
+
+        When ``extract_first`` is True, the store's directory is scanned for
+        documents, code, and plain-text files; memories are created from any
+        files newer than ``last_extracted_at``.  Subsequent evolution then picks
+        up those newly-created memories as facts.
         """
         from npcpy.memory.knowledge_graph import kg_evolve_incremental
+
+        extraction_stats = None
+        if extract_first:
+            extraction_stats = self.extract_from_directory(incremental=incremental_extract)
+
+        data = self.load()
 
         data = self.load()
         memories = data.get("memories", [])
@@ -392,14 +559,19 @@ class KnowledgeStore:
 
         data["concepts"] = yaml_concepts
         data["links"] = yaml_links
+        data["last_evolved_at"] = _utcnow()
         self.save(data)
 
-        return {
+        result = {
             "status": "success",
             "concepts_added": len(yaml_concepts),
             "links_added": len(yaml_links),
             "generation": new_kg.get("generation", 0),
+            "last_evolved_at": data["last_evolved_at"],
         }
+        if extraction_stats:
+            result["extraction"] = extraction_stats
+        return result
 
     @staticmethod
     def find_all(root_directory: str) -> List["KnowledgeStore"]:
