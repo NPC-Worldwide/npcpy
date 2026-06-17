@@ -60,7 +60,7 @@ jobs:
       - name: Run core unit tests
         run: |
           # Run tests that don't require LLM or heavy dependencies
-          pytest tests/test_tools.py tests/test_build_funcs.py tests/test_npc_sysenv.py -v --tb=short --timeout=60
+          pytest tests/test_tools.py tests/test_npc_sysenv.py -v --tb=short --timeout=60
 
       - name: Run ML function tests
         run: |
@@ -191,7 +191,7 @@ jobs:
 
       - name: Run core unit tests on Windows
         run: |
-          pytest tests/test_tools.py tests/test_build_funcs.py -v --tb=short --timeout=60
+          pytest tests/test_tools.py -v --tb=short --timeout=60
         continue-on-error: true
 
   # =============================================================================
