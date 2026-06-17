@@ -2165,7 +2165,8 @@ Requirements:
             summary_data = conversation_summary.get('output', '')
             
             conversation_text = "\n".join([msg['content'] for msg in messages])
-            extracted_facts = get_facts(conversation_text, model=self.model, provider=self.provider, npc=self)
+            from npcpy.llm_funcs import CONVERSATION_RULES
+            extracted_facts = get_facts(conversation_text, model=self.model, provider=self.provider, npc=self, rules=CONVERSATION_RULES)
             
             user_inputs = [msg['content'] for msg in messages if msg.get('role') == 'user']
             assistant_outputs = [msg['content'] for msg in messages if msg.get('role') == 'assistant']

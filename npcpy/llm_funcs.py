@@ -175,8 +175,10 @@ def resolve_model_provider(
         if team.provider is not None:
             p = team.provider
     else:
-        p = "ollama"
-        m = None
+        # No fallback.  Caller must supply model/provider or configure an
+        # npc/team that carries one.  Returning (None, None) surfaces the
+        # problem immediately instead of silently hardcoding "ollama".
+        pass
     # Always resolve api_url and api_key from npc/team if not explicitly provided
     if a_url is None and npc is not None and getattr(npc, 'api_url', None) is not None:
         a_url = npc.api_url
@@ -1432,44 +1434,84 @@ def abstract(groups,
 
     return response["response"].get("groups", [])
 
-def get_facts(content_text, 
-              model= None,
-              provider = None,
+CONVERSATION_RULES = """
+ABSOLUTE RULES — violations return EMPTY array:
+1. NEVER attribute statements to speakers. No "the user", "the assistant",
+   "I asked", "they said". Strip all speaker/agent attribution completely.
+2. NEVER describe interaction mechanics: opening panes, clicking buttons,
+   invoking functions, loading pages, API calls.
+3. NEVER extract greetings, pleasantries, apologies, or meta-chat.
+4. NEVER output generic truisms that lack specific context (e.g. "testing is important").
+5. If the text is purely commands, greetings, or operational chatter, return EMPTY.
+
+EXTRACT ONLY facts containing specific technical substance:
+- Concrete implementation decisions with rationale (WHAT was changed, WHY, in WHAT system)
+- Quantified observations with metrics or thresholds
+- Causal relationships and their conditions
+- Architectural constraints or requirements
+- Error patterns and their specific resolutions
+- Domain-specific methodologies with their applicability conditions
+"""
+
+FILE_RULES = """
+ABSOLUTE RULES — violations return EMPTY array:
+1. NEVER output generic truisms ("code should be tested", "imports are necessary").
+2. NEVER describe trivial syntax ("this file uses Python functions").
+3. NEVER restate the filename as a fact.
+4. If the file is purely boilerplate, auto-generated, or contains no
+   substantive logic, return EMPTY.
+
+EXTRACT facts containing specific technical substance:
+- Purpose and responsibilities of modules/classes/functions (WHAT it does)
+- Dependencies and integrations with other systems (WHAT it connects to)
+- Configuration values and their semantic meaning (WHAT each setting controls)
+- Algorithms, data structures, or protocols implemented (HOW it works)
+- Design constraints, performance characteristics, or limitations (WHY it works this way)
+- API surfaces: endpoints, arguments, return types, error conditions
+- Security or correctness considerations
+"""
+
+
+def get_facts(content_text,
+              model=None,
+              provider=None,
               npc=None,
-              context : str=None, 
+              context: str = None,
               attempt_number=1,
               n_attempts=3,
-
+              rules=None,
               **kwargs):
-    """Extract facts from content text"""
-    
+    """Extract facts from content text.
+
+    ``rules`` is injected directly into the prompt after the base
+    instructions. Callers pass ``CONVERSATION_RULES`` or
+    ``FILE_RULES`` (or any custom rules string).
+    """
+
+    rules = rules or FILE_RULES
+
+    # Merge NPC context with any additional passed context
+    full_context = ""
+    if npc and hasattr(npc, "context") and npc.context:
+        full_context = str(npc.context)
+    if context:
+        if full_context:
+            full_context += "\n\n" + str(context)
+        else:
+            full_context = str(context)
+
     instruction = f"""
-    Extract substantive, self-contained domain facts from this transcript.
+    Extract substantive, self-contained domain facts from the following content.
 
     A valid fact is a rich statement that captures non-obvious technical knowledge,
     including the context needed to understand what system or domain it pertains to.
     Facts should preserve nuance: uncertainty, conditions, trade-offs, and causal
     relationships. They should NOT be shallow one-liners like "X is Y".
 
-    ABSOLUTE RULES — violations return EMPTY array:
-    1. NEVER attribute statements to speakers. No "the user", "the assistant",
-       "I asked", "they said". Strip all speaker/agent attribution completely.
-    2. NEVER describe interaction mechanics: opening panes, clicking buttons,
-       invoking functions, loading pages, API calls.
-    3. NEVER extract greetings, pleasantries, apologies, or meta-chat.
-    4. NEVER output generic truisms that lack specific context (e.g. "testing is important").
-    5. If the text is purely commands, greetings, or operational chatter, return EMPTY.
-
-    EXTRACT ONLY facts containing specific technical substance:
-    - Concrete implementation decisions with rationale (WHAT was changed, WHY, in WHAT system)
-    - Quantified observations with metrics or thresholds
-    - Causal relationships and their conditions
-    - Architectural constraints or requirements
-    - Error patterns and their specific resolutions
-    - Domain-specific methodologies with their applicability conditions
+    {rules}
 
     YOUR TASK — extract up to 5 facts from:
-    \"{content_text}\"
+    "{content_text}"
 
     If no facts meet the criteria, return an EMPTY facts array.
     Respond with JSON:
@@ -1499,68 +1541,7 @@ def get_facts(content_text,
       ]
     }
 
-    Input: "The knowledge graph wasn't rendering because ForceGraph2D requires its
-    container to have computed dimensions, but h-full fails in nested flex contexts
-    in React. Switching the container from h-full to flex-1 with relative positioning
-    fixed the zero-height issue."
-
-    Output:
-    {
-      "facts": [
-        {
-          "statement": "In React applications using nested flex layouts, the CSS utility h-full does not provide computed dimensions to child canvas elements, causing ForceGraph2D to render at zero height",
-          "source_text": "ForceGraph2D requires its container to have computed dimensions, but h-full fails in nested flex contexts in React",
-          "type": "explicit"
-        },
-        {
-          "statement": "Replacing h-full with flex-1 combined with relative positioning resolves the zero-height rendering issue for ForceGraph2D canvas containers in React nested flex contexts",
-          "source_text": "Switching the container from h-full to flex-1 with relative positioning fixed the zero-height issue",
-          "type": "explicit"
-        }
-      ]
-    }
-
-    Input: "I tried using a brute force solver for the Sudoku constraint satisfaction
-    problem but the state space exploded to 2^50 possible configurations. I switched
-    to constraint propagation with arc consistency, which solved easy instances in
-    under a second but still timed out on hard instances at 30 seconds. I suspect the
-    issue is lack of heuristic variable ordering — probably need MRV with degree tie-breaking."
-
-    Output:
-    {
-      "facts": [
-        {
-          "statement": "For Sudoku modeled as a constraint satisfaction problem, brute force search explodes to approximately 2^50 configurations, making it computationally infeasible",
-          "source_text": "the state space exploded to 2^50 possible configurations",
-          "type": "explicit"
-        },
-        {
-          "statement": "Constraint propagation with arc consistency was adopted as the search strategy for the Sudoku solver after brute force proved infeasible",
-          "source_text": "I switched to constraint propagation with arc consistency",
-          "type": "explicit"
-        },
-        {
-          "statement": "Arc consistency solves easy Sudoku instances in under one second but fails to complete hard instances within a 30-second timeout",
-          "source_text": "solved easy instances in under a second but still timed out on hard instances at 30 seconds",
-          "type": "explicit"
-        },
-        {
-          "statement": "The suspected cause of timeout on hard Sudoku instances is the absence of heuristic variable ordering; Minimum Remaining Values with degree tie-breaking is proposed as the specific heuristic to implement",
-          "source_text": "I suspect the issue is lack of heuristic variable ordering — probably need MRV with degree tie-breaking",
-          "type": "inferred"
-        }
-      ]
-    }
-
     Input: "Can you open the knowledge graph editor? I want to see if the nodes show up."
-
-    Output:
-    {
-      "facts": []
-    }
-
-    Input: "The user asked the assistant to open a browser. The assistant apologized
-    and said it couldn't do that."
 
     Output:
     {
@@ -1578,26 +1559,37 @@ def get_facts(content_text,
     json_fmt = '{"facts": [{"statement": "rich self-contained domain claim with full contextual specificity", "source_text": "relevant excerpt", "type": "explicit or inferred"}]}'
 
     prompt = instruction + examples + json_fmt
-    
-    response = get_llm_response(prompt, 
-                                model=model,
-                                provider=provider, 
-                                npc=npc,
-                                format="json", 
-                                context=context,
-                                **kwargs)
 
-    if len(response.get("response", {}).get("facts", [])) == 0 and attempt_number < n_attempts:
-        print(f"  Attempt {attempt_number} to extract facts yielded no results. Retrying...")
-        return get_facts(content_text, 
-                         model=model, 
-                         provider=provider, 
-                         npc=npc,
-                         context=context,
-                         attempt_number=attempt_number+1,
-                         n_attempts=n_attempts,
-                         **kwargs)
+    response = get_llm_response(prompt,
+                                model=model,
+                                provider=provider,
+                                npc=npc,
+                                format="json",
+                                context=full_context,
+                                **kwargs)
+    try:
     
+        if len(response.get("response", {}).get("facts", [])) == 0 and attempt_number < n_attempts:
+            print(f"  Attempt {attempt_number} to extract facts yielded no results. Retrying...")
+            return get_facts(content_text,
+                             model=model,
+                             provider=provider,
+                             npc=npc,
+                             context=full_context,
+                             attempt_number=attempt_number+1,
+                             n_attempts=n_attempts,
+                             rules=rules,
+                             **kwargs)
+    except AttributeError:
+        return get_facts(content_text,
+                 model=model,
+                 provider=provider,
+                 npc=npc,
+                 context=full_context,
+                 attempt_number=attempt_number+1,
+                 n_attempts=n_attempts,
+                 rules=rules,
+                 **kwargs)
     return response["response"].get("facts", [])
 
         

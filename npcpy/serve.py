@@ -557,21 +557,71 @@ def load_project_env(current_path):
     
     return loaded_vars
 
-def load_kg_data(generation=None):
-    """Helper function to load data up to a specific generation."""
-    engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-    
-    query_suffix = f" WHERE generation <= {generation}" if generation is not None else ""
-    
-    concepts_df = pd.read_sql_query(f"SELECT * FROM kg_concepts{query_suffix}", engine)
-    facts_df = pd.read_sql_query(f"SELECT * FROM kg_facts{query_suffix}", engine)
-    
-    
-    all_links_df = pd.read_sql_query("SELECT * FROM kg_links", engine)
-    valid_nodes = set(concepts_df['name']).union(set(facts_df['statement']))
-    links_df = all_links_df[all_links_df['source'].isin(valid_nodes) & all_links_df['target'].isin(valid_nodes)]
-        
+def _load_kg_from_yaml_stores(store_paths):
+    """Aggregate .knowledge.yaml stores from explicit paths into DataFrames."""
+    from npcpy.memory.knowledge_store import KnowledgeStore
+    concepts = []
+    facts = []
+    links = []
+    for store_dir in store_paths:
+        store = KnowledgeStore(store_dir)
+        data = store.load()
+        for c in data.get('concepts', []):
+            concepts.append({
+                'name': c.get('name'),
+                'description': c.get('description', ''),
+                'generation': c.get('generation', 0),
+                'created_at': c.get('created_at'),
+            })
+        for m in data.get('memories', []):
+            stmt = m.get('final_memory') or m.get('initial_memory', '')
+            if stmt:
+                facts.append({
+                    'statement': stmt,
+                    'source_text': m.get('source_id', ''),
+                    'type': m.get('source_type', 'memory'),
+                    'generation': 0,
+                    'memory_id': m.get('id'),
+                    'npc_name': m.get('npc', ''),
+                    'team_name': m.get('team', ''),
+                })
+        for l in data.get('links', []):
+            links.append({
+                'source': l.get('from'),
+                'target': l.get('to'),
+                'link_type': l.get('type', 'memory_to_memory'),
+                'weight': 1,
+            })
+    concepts_df = pd.DataFrame(concepts) if concepts else pd.DataFrame(columns=['name', 'description', 'generation', 'created_at'])
+    facts_df = pd.DataFrame(facts) if facts else pd.DataFrame(columns=['statement', 'source_text', 'type', 'generation', 'memory_id', 'npc_name', 'team_name'])
+    links_df = pd.DataFrame(links) if links else pd.DataFrame(columns=['source', 'target', 'link_type', 'weight'])
     return concepts_df, facts_df, links_df
+
+
+def _load_kg_from_yaml(workspace):
+    """DEPRECATED — kept for backward compat until callers migrate to storePaths."""
+    return _load_kg_from_yaml_stores([])
+
+
+def load_kg_data(store_paths=None):
+    """Load KG data from a specific list of .knowledge.yaml store directories.
+    store_paths is a list of directory paths."""
+    return _load_kg_from_yaml_stores(store_paths or [])
+
+
+def _get_registered_stores():
+    """Read ~/.incognide/kg_registry.yaml and return list of store directory paths."""
+    registry_path = os.path.expanduser('~/.incognide/kg_registry.yaml')
+    if not os.path.exists(registry_path):
+        return []
+    try:
+        with open(registry_path, 'r') as f:
+            data = yaml.safe_load(f) or {}
+        stores = data.get('stores', [])
+        return [str(s) for s in stores if isinstance(s, str) and s]
+    except Exception:
+        return []
+
 
 app = Flask(__name__)
 app.config["REDIS_URL"] = "redis://localhost:6379"
@@ -882,24 +932,13 @@ def fetch_messages_for_conversation(conversation_id):
             
 @app.route('/api/kg/generations')
 def list_generations():
-    try:
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        
-        query = "SELECT DISTINCT generation FROM kg_concepts UNION SELECT DISTINCT generation FROM kg_facts"
-        generations_df = pd.read_sql_query(query, engine)
-        generations = generations_df.iloc[:, 0].tolist()
-        return jsonify({"generations": sorted([g for g in generations if g is not None])})
-    except Exception as e:
-        
-        print(f"Error listing generations (likely new DB): {e}")
-        return jsonify({"generations": []})
+    # YAML stores have a single implicit generation 0
+    return jsonify({"generations": [0]})
 
 @app.route('/api/kg/graph')
 def get_graph_data():
-    generation_str = request.args.get('generation')
-    generation = int(generation_str) if generation_str and generation_str != 'null' else None
-
-    concepts_df, facts_df, links_df = load_kg_data(generation)
+    store_paths = request.args.getlist('storePaths')
+    concepts_df, facts_df, links_df = load_kg_data(store_paths)
 
     nodes = []
     nodes.extend([{'id': name, 'type': 'concept'} for name in concepts_df['name']])
@@ -922,8 +961,8 @@ def get_graph_data():
 
 @app.route('/api/kg/network-stats')
 def get_network_stats():
-    generation = request.args.get('generation', type=int)
-    _, _, links_df = load_kg_data(generation)
+    store_paths = request.args.getlist('storePaths')
+    _, _, links_df = load_kg_data(store_paths)
     G = nx.DiGraph()
     for _, link in links_df.iterrows():
         G.add_edge(link['source'], link['target'])
@@ -939,9 +978,9 @@ def get_network_stats():
 
 @app.route('/api/kg/cooccurrence')
 def get_cooccurrence_network():
-    generation = request.args.get('generation', type=int)
+    store_paths = request.args.getlist('storePaths')
     min_cooccurrence = request.args.get('min_cooccurrence', 2, type=int)
-    _, _, links_df = load_kg_data(generation)
+    _, _, links_df = load_kg_data(store_paths)
     fact_to_concepts = defaultdict(set)
     for _, link in links_df.iterrows():
         if link['type'] == 'fact_to_concept':
@@ -967,8 +1006,8 @@ def get_cooccurrence_network():
 
 @app.route('/api/kg/centrality')
 def get_centrality_data():
-    generation = request.args.get('generation', type=int)
-    concepts_df, _, links_df = load_kg_data(generation)
+    store_paths = request.args.getlist('storePaths')
+    concepts_df, _, links_df = load_kg_data(store_paths)
     G = nx.Graph()
     fact_concept_links = links_df[links_df['type'] == 'fact_to_concept']
     for _, link in fact_concept_links.iterrows():
@@ -982,14 +1021,14 @@ def search_kg():
     """Search facts and concepts by keyword"""
     try:
         q = request.args.get('q', '').strip().lower()
-        generation = request.args.get('generation', type=int)
+        store_paths = request.args.getlist('storePaths')
         search_type = request.args.get('type', 'both')
         limit = request.args.get('limit', 50, type=int)
 
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-        concepts_df, facts_df, links_df = load_kg_data(generation)
+        concepts_df, facts_df, links_df = load_kg_data(store_paths)
         results = {"facts": [], "concepts": [], "query": q}
 
         if search_type in ('both', 'fact'):
@@ -1029,13 +1068,13 @@ def search_kg():
 
 @app.route('/api/kg/embed', methods=['POST'])
 def embed_kg_facts():
-    """Embed existing facts from SQL to Chroma for semantic search"""
+    """Embed existing facts from YAML stores to Chroma for semantic search"""
     try:
         data = request.get_json() or {}
-        generation = data.get('generation')
+        store_paths = data.get('storePaths', [])
         batch_size = data.get('batch_size', 10)
 
-        _, facts_df, _ = load_kg_data(generation)
+        _, facts_df, _ = load_kg_data(store_paths)
 
         if facts_df.empty:
             return jsonify({"message": "No facts to embed", "count": 0})
@@ -1101,7 +1140,7 @@ def search_kg_semantic():
     """Semantic search for facts using vector similarity"""
     try:
         q = request.args.get('q', '').strip()
-        generation = request.args.get('generation', type=int)
+        store_paths = request.args.getlist('storePaths')
         limit = request.args.get('limit', 10, type=int)
 
         if not q:
@@ -1119,16 +1158,12 @@ def search_kg_semantic():
                 "query": q
             }), 200
 
-        metadata_filter = None
-        if generation is not None:
-            metadata_filter = {"generation": generation}
-
         similar_facts = find_similar_facts_chroma(
             chroma_collection,
             q,
             query_embedding=query_embedding,
             n_results=limit,
-            metadata_filter=metadata_filter
+            metadata_filter=None
         )
 
         results = {
@@ -1153,30 +1188,13 @@ def search_kg_semantic():
 
 @app.route('/api/kg/facts')
 def get_kg_facts():
-    """Get facts, optionally filtered by generation. Includes memory_id + memory_status when the
-    fact was produced from an approved memory (FK: kg_facts.memory_id -> memory_lifecycle.id)."""
+    """Get facts from YAML stores."""
     try:
-        generation = request.args.get('generation', type=int)
+        store_paths = request.args.getlist('storePaths')
         limit = request.args.get('limit', 100, type=int)
         offset = request.args.get('offset', 0, type=int)
 
-        _, facts_df, _ = load_kg_data(generation)
-
-        memory_status_by_id = {}
-        try:
-            memory_ids = [
-                int(mid) for mid in facts_df.get('memory_id', pd.Series(dtype='Int64')).dropna().unique().tolist()
-            ] if 'memory_id' in facts_df.columns else []
-            if memory_ids:
-                engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-                with engine.connect() as conn:
-                    rows = conn.execute(
-                        text("SELECT id, status FROM memory_lifecycle WHERE id IN (" + ",".join(str(i) for i in memory_ids) + ")")
-                    ).fetchall()
-                    for r in rows:
-                        memory_status_by_id[r[0]] = r[1]
-        except Exception:
-            pass
+        _, facts_df, _ = load_kg_data(store_paths)
 
         facts = []
         for i, row in facts_df.iloc[offset:offset+limit].iterrows():
@@ -1192,7 +1210,6 @@ def get_kg_facts():
                 "generation": row.get('generation'),
                 "origin": row.get('origin'),
                 "memory_id": mid_int,
-                "memory_status": memory_status_by_id.get(mid_int) if mid_int is not None else None,
             })
 
         return jsonify({
@@ -1208,12 +1225,12 @@ def get_kg_facts():
 
 @app.route('/api/kg/concepts')
 def get_kg_concepts():
-    """Get concepts, optionally filtered by generation"""
+    """Get concepts from YAML stores."""
     try:
-        generation = request.args.get('generation', type=int)
+        store_paths = request.args.getlist('storePaths')
         limit = request.args.get('limit', 100, type=int)
 
-        concepts_df, _, _ = load_kg_data(generation)
+        concepts_df, _, _ = load_kg_data(store_paths)
 
         concepts = []
         for _, row in concepts_df.head(limit).iterrows():
@@ -1236,74 +1253,92 @@ def get_kg_concepts():
 
 @app.route('/api/kg/node', methods=['POST'])
 def add_kg_node():
-    """Add a new concept or fact at the current generation (no generation bump)."""
+    """Add a new concept or fact to the selected YAML stores."""
     try:
         data = request.get_json()
         node_id = data.get('id')
         node_type = data.get('type', 'concept')
         properties = data.get('properties', {})
+        store_paths = data.get('storePaths', [])
 
         if not node_id:
             return jsonify({"error": "Missing node id"}), 400
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-
-        with engine.connect() as conn:
-            row = conn.execute(text("SELECT MAX(generation) as gen FROM kg_facts")).fetchone()
-            current_gen = (row.gen if row and row.gen is not None else 0)
-
-        with engine.begin() as conn:
+        added = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
             if node_type == 'fact':
-                conn.execute(
-                    text("INSERT OR IGNORE INTO kg_facts (statement, source_text, type, generation, origin) VALUES (:id, :id, 'manual', :gen, 'manual_add')"),
-                    {"id": node_id, "gen": current_gen}
-                )
+                exists = any((m.get('final_memory') or m.get('initial_memory')) == node_id for m in d.get('memories', []))
+                if not exists:
+                    d['memories'].append({
+                        'id': _make_id(), 'initial_memory': node_id, 'final_memory': node_id,
+                        'source_type': 'manual', 'status': 'auto-extracted',
+                        'created_at': _utcnow(),
+                    })
+                    added += 1
             else:
-                desc = properties.get('description', '')
-                conn.execute(
-                    text("INSERT OR IGNORE INTO kg_concepts (name, description, generation, origin) VALUES (:id, :desc, :gen, 'manual_add')"),
-                    {"id": node_id, "desc": desc, "gen": current_gen}
-                )
+                exists = any(c.get('name') == node_id for c in d.get('concepts', []))
+                if not exists:
+                    d['concepts'].append({
+                        'id': _make_id(), 'name': node_id,
+                        'description': properties.get('description', ''),
+                        'created_at': _utcnow(),
+                    })
+                    added += 1
+            store.save(d)
 
-        return jsonify({"success": True, "id": node_id, "generation": current_gen})
+        return jsonify({"success": True, "id": node_id, "added_to": added})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/kg/node/<path:node_id>', methods=['PUT'])
 def update_kg_node(node_id):
-    """Update a concept or fact in the knowledge graph."""
+    """Update a concept description across selected YAML stores."""
     try:
         data = request.get_json()
         properties = data.get('properties', {})
+        store_paths = data.get('storePaths', [])
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        with engine.connect() as conn:
-            result = conn.execute(
-                text("UPDATE kg_concepts SET description = :desc WHERE name = :name"),
-                {"desc": properties.get('description', ''), "name": node_id}
-            )
-            if result.rowcount == 0:
-                conn.execute(
-                    text("UPDATE kg_facts SET source_text = :src WHERE statement = :stmt"),
-                    {"src": properties.get('source_text', ''), "stmt": node_id}
-                )
-            conn.commit()
-        return jsonify({"success": True})
+        updated = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            for c in d.get('concepts', []):
+                if c.get('name') == node_id:
+                    c['description'] = properties.get('description', c.get('description', ''))
+                    updated += 1
+            store.save(d)
+        return jsonify({"success": True, "updated": updated})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/kg/node/<path:node_id>', methods=['DELETE'])
 def delete_kg_node(node_id):
-    """Delete a concept or fact and all its connections (unscoped — matches the global KG view)."""
+    """Delete a concept/fact and its links from selected YAML stores."""
     try:
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        with engine.begin() as conn:
-            r1 = conn.execute(text("DELETE FROM kg_concepts WHERE name = :id"), {"id": node_id})
-            r2 = conn.execute(text("DELETE FROM kg_facts WHERE statement = :id"), {"id": node_id})
-            conn.execute(text("DELETE FROM kg_links WHERE source = :id OR target = :id"), {"id": node_id})
-        removed = r1.rowcount + r2.rowcount
+        data = request.get_json() or {}
+        store_paths = data.get('storePaths', [])
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
+
+        removed = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            pre_concepts = len(d.get('concepts', []))
+            pre_memories = len(d.get('memories', []))
+            d['concepts'] = [c for c in d.get('concepts', []) if c.get('name') != node_id]
+            d['memories'] = [m for m in d.get('memories', []) if (m.get('final_memory') or m.get('initial_memory')) != node_id]
+            d['links'] = [l for l in d.get('links', []) if l.get('from') != node_id and l.get('to') != node_id]
+            store.save(d)
+            removed += (pre_concepts - len(d['concepts'])) + (pre_memories - len(d['memories']))
         return jsonify({"success": True, "removed": removed})
     except Exception as e:
         traceback.print_exc()
@@ -1311,86 +1346,90 @@ def delete_kg_node(node_id):
 
 @app.route('/api/kg/edge', methods=['POST'])
 def add_kg_edge():
-    """Add a new edge/link between two nodes (no generation bump)."""
+    """Add a new edge/link to selected YAML stores."""
     try:
         data = request.get_json()
         source = data.get('source')
         target = data.get('target')
         edge_type = data.get('type', 'related_to')
-        weight = data.get('weight', 1)
+        store_paths = data.get('storePaths', [])
 
         if not source or not target:
             return jsonify({"error": "Missing source or target"}), 400
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        with engine.begin() as conn:
-            conn.execute(
-                text("INSERT OR IGNORE INTO kg_links (source, target, type, weight) VALUES (:src, :tgt, :typ, :w)"),
-                {"src": source, "tgt": target, "typ": edge_type, "w": weight}
-            )
-        return jsonify({"success": True})
+        added = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            exists = any(l.get('from') == source and l.get('to') == target for l in d.get('links', []))
+            if not exists:
+                d['links'].append({
+                    'id': _make_id(), 'from': source, 'to': target,
+                    'relation': edge_type, 'type': 'manual',
+                    'created_at': _utcnow(),
+                })
+                added += 1
+            store.save(d)
+        return jsonify({"success": True, "added_to": added})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/kg/edge/<path:source_id>/<path:target_id>', methods=['DELETE'])
 def delete_kg_edge(source_id, target_id):
-    """Delete an edge/link between two nodes."""
+    """Delete an edge from selected YAML stores."""
     try:
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        with engine.begin() as conn:
-            conn.execute(
-                text("DELETE FROM kg_links WHERE source = :src AND target = :tgt"),
-                {"src": source_id, "tgt": target_id}
-            )
-        return jsonify({"success": True})
+        data = request.get_json() or {}
+        store_paths = data.get('storePaths', [])
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
+
+        removed = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            pre = len(d.get('links', []))
+            d['links'] = [l for l in d.get('links', []) if not (l.get('from') == source_id and l.get('to') == target_id)]
+            if len(d['links']) < pre:
+                removed += 1
+            store.save(d)
+        return jsonify({"success": True, "removed": removed})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/kg/trigger', methods=['POST'])
 def trigger_kg_process():
-    """Trigger a KG process (sleep or dream) to evolve the knowledge graph."""
+    """Trigger a KG process (sleep or dream) on selected YAML stores."""
     try:
         data = request.get_json() or {}
         process_type = data.get('process_type', 'sleep')
+        store_paths = data.get('storePaths', [])
+        model = data.get('model') or None
+        provider = data.get('provider') or None
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        db_path = app.config.get('DB_PATH')
-        engine = create_engine('sqlite:///' + db_path)
-
-
-
-        model = app.config.get('DEFAULT_MODEL', None)
-        provider = app.config.get('DEFAULT_PROVIDER', None)
-
-        if process_type == 'sleep':
-            from npcpy.memory.knowledge_graph import kg_sleep_process
-            new_kg, changes = kg_sleep_process(
-                existing_kg, model=model, provider=provider
-            )
-        elif process_type == 'dream':
-            from npcpy.memory.knowledge_graph import kg_dream_process
-            new_kg, changes = kg_dream_process(
-                existing_kg, model=model, provider=provider
-            )
-        elif process_type == 'evolve':
-            from npcpy.memory.knowledge_graph import kg_evolve_incremental
-            content_text = data.get('content', '')
-            new_kg, changes = kg_evolve_incremental(
-                existing_kg, new_content_text=content_text or None, model=model, provider=provider,
-                get_concepts=True, link_concepts_facts=True
-            )
-        else:
-            return jsonify({"error": f"Unknown process type: {process_type}. Use 'sleep', 'dream', or 'evolve'."}), 400
-
-
-
+        total_changes = {"concepts_added": 0, "links_added": 0}
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            if process_type == 'sleep':
+                result = store.sleep(model=model, provider=provider)
+            elif process_type == 'dream':
+                result = store.dream(model=model, provider=provider)
+            elif process_type == 'evolve':
+                result = store.assimilate(model=model, provider=provider)
+            else:
+                return jsonify({"error": f"Unknown process type: {process_type}. Use 'sleep', 'dream', or 'evolve'."}), 400
+            total_changes["concepts_added"] += result.get("concepts_added", 0)
+            total_changes["links_added"] += result.get("links_added", 0)
 
         return jsonify({
             "success": True,
             "process_type": process_type,
-            "generation": new_kg.get('generation', 0),
-            "changes": changes if isinstance(changes, dict) else {}
+            "changes": total_changes
         })
     except Exception as e:
         traceback.print_exc()
@@ -1399,56 +1438,115 @@ def trigger_kg_process():
 
 @app.route('/api/kg/ingest', methods=['POST'])
 def ingest_to_kg():
-    """Ingest text content into the knowledge graph. Accepts raw text or CSV rows."""
+    """Ingest text content into selected YAML stores."""
     try:
         data = request.get_json() or {}
         content_text = data.get('content', '')
         context = data.get('context', '')
-        get_concepts = data.get('get_concepts', True)
-        link_concepts_facts = data.get('link_concepts_facts', True)
+        store_paths = data.get('storePaths', [])
+        model = data.get('model') or None
+        provider = data.get('provider') or None
 
         if not content_text or not content_text.strip():
             return jsonify({"error": "content is required"}), 400
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        db_path = app.config.get('DB_PATH')
-        engine = create_engine('sqlite:///' + db_path)
-
-        model = app.config.get('DEFAULT_MODEL', None)
-        provider = app.config.get('DEFAULT_PROVIDER', None)
-
-        from npcpy.memory.knowledge_graph import kg_evolve_incremental, kg_initial
-
-
-
-        if not existing_kg or not existing_kg.get('facts'):
-            from npcpy.memory.knowledge_graph import kg_initial
-            new_kg = kg_initial(
-                content=content_text,
-                model=model, provider=provider,
-                context=context
-            )
-        else:
-            new_kg, _ = kg_evolve_incremental(
-                existing_kg=existing_kg,
-                new_content_text=content_text,
-                model=model, provider=provider,
-                context=context,
-                get_concepts=get_concepts,
-                link_concepts_facts=link_concepts_facts
-            )
-
-
-
+        total_facts = 0
+        total_concepts = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            result = store.create(model=model, provider=provider, context=context, content_text=content_text)
+            total_facts += result.get('facts', 0)
+            total_concepts += result.get('concepts', 0)
 
         return jsonify({
             "success": True,
-            "generation": new_kg.get('generation', 0),
-            "facts": len(new_kg.get('facts', [])),
-            "concepts": len(new_kg.get('concepts', []))
+            "facts": total_facts,
+            "concepts": total_concepts
         })
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/pipeline/run', methods=['POST'])
+def run_kg_pipeline():
+    """Run a KG pipeline step (create/assimilate/sleep/dream) on .knowledge.yaml stores.
+    Streams NDJSON log lines."""
+    from npcpy.memory.knowledge_store import KnowledgeStore
+
+    data = request.get_json() or {}
+    step = data.get('step')
+    store_paths = data.get('storePaths', [])
+    model = data.get('model') or None
+    provider = data.get('provider') or None
+    context = data.get('context', '')
+    content_text = data.get('contentText') or None
+    operations = data.get('operations') or None
+    num_seeds = data.get('numSeeds')
+    if num_seeds is not None:
+        try:
+            num_seeds = int(num_seeds)
+        except (ValueError, TypeError):
+            num_seeds = 3
+
+    if not step or not store_paths:
+        return jsonify({"error": "step and storePaths are required"}), 400
+
+    def generate():
+        job_id = data.get('jobId', f"kg_{int(time.time()*1000)}")
+        for store_dir in store_paths:
+            store = KnowledgeStore(store_dir)
+            yield json.dumps({
+                "jobId": job_id,
+                "kind": "start",
+                "message": f"Starting {step} on {store_dir}",
+                "timestamp": int(time.time() * 1000),
+            }) + "\n"
+
+            try:
+                if step == 'create':
+                    result = store.create(model=model, provider=provider, npc=None, context=context, content_text=content_text)
+                elif step == 'assimilate':
+                    result = store.assimilate(model=model, provider=provider, npc=None, context=context)
+                elif step == 'sleep':
+                    result = store.sleep(model=model, provider=provider, npc=None, context=context, operations=operations)
+                elif step == 'dream':
+                    result = store.dream(model=model, provider=provider, npc=None, context=context, num_seeds=num_seeds)
+                else:
+                    yield json.dumps({
+                        "jobId": job_id,
+                        "kind": "error",
+                        "message": f"Unknown step: {step}",
+                        "timestamp": int(time.time() * 1000),
+                    }) + "\n"
+                    continue
+
+                yield json.dumps({
+                    "jobId": job_id,
+                    "kind": "finish",
+                    "message": f"Finished {step} on {store_dir}: {result.get('concepts_added', 0)} concepts, {result.get('links_added', 0)} links",
+                    "data": result,
+                    "timestamp": int(time.time() * 1000),
+                }) + "\n"
+            except Exception as e:
+                traceback.print_exc()
+                yield json.dumps({
+                    "jobId": job_id,
+                    "kind": "error",
+                    "message": str(e),
+                    "timestamp": int(time.time() * 1000),
+                }) + "\n"
+
+        yield json.dumps({
+            "jobId": job_id,
+            "kind": "done",
+            "message": "All stores processed",
+            "timestamp": int(time.time() * 1000),
+        }) + "\n"
+
+    return Response(generate(), mimetype='application/x-ndjson')
 
 
 @app.route('/api/kg/query', methods=['POST'])
@@ -1511,11 +1609,21 @@ def query_kg():
 
 
 
-        if not existing_kg or not existing_kg.get('facts'):
-            return jsonify({"error": "Knowledge graph is empty. Ingest some data first."}), 400
+        store_paths = data.get('storePaths', [])
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        facts = existing_kg.get('facts', [])
-        concepts = existing_kg.get('concepts', [])
+        concepts_df, facts_df, _ = load_kg_data(store_paths)
+
+        facts = []
+        for _, row in facts_df.iterrows():
+            facts.append({"statement": row.get('statement', '')})
+        concepts = []
+        for _, row in concepts_df.iterrows():
+            concepts.append({"name": row.get('name', '')})
+
+        if not facts:
+            return jsonify({"error": "Knowledge graph is empty. Ingest some data first."}), 400
 
         if mode == 'traversal':
             from npcpy.memory.kg_population import KGGenome, KGIndividual, SememolutionPopulation
@@ -1524,10 +1632,17 @@ def query_kg():
                 lambda_breadth=lambda_breadth,
                 similarity_threshold=similarity_threshold,
             )
+            existing_kg = {
+                'facts': facts,
+                'concepts': concepts,
+                'concept_links': [],
+                'fact_to_concept_links': {},
+                'fact_to_fact_links': [],
+            }
             ind = KGIndividual(individual_id='ephemeral', genome=genome, kg_data=existing_kg)
             if not model:
                 return jsonify({"error": "No model specified for knowledge graph search."}), 400
-            mgr = SememolutionPopulation(engine=engine, model=model, provider=provider or "ollama", population_size=1, sample_size=1)
+            mgr = SememolutionPopulation(model=model, provider=provider or "ollama", population_size=1, sample_size=1)
             relevant_facts = mgr.search_individual(ind, question)[:top_k]
             relevant_concepts = [c.get('name', '') for c in concepts[:20]]
             if not relevant_facts:
@@ -1580,43 +1695,27 @@ Answer:"""
 
 @app.route('/api/kg/rollback', methods=['POST'])
 def rollback_kg():
-    """Rollback the KG to a specific generation by deleting newer data."""
+    """Rollback selected YAML stores by clearing concepts and links (keeps memories)."""
     try:
         data = request.get_json() or {}
-        target_generation = data.get('generation')
+        store_paths = data.get('storePaths', [])
 
-        if target_generation is None:
-            return jsonify({"error": "generation is required"}), 400
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        target_generation = int(target_generation)
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-
-        with engine.begin() as conn:
-            conn.execute(
-                text("DELETE FROM kg_facts WHERE generation > :gen"),
-                {"gen": target_generation}
-            )
-            conn.execute(
-                text("DELETE FROM kg_concepts WHERE generation > :gen"),
-                {"gen": target_generation}
-            )
-            conn.execute(text("""
-                DELETE FROM kg_links WHERE source NOT IN (
-                    SELECT name FROM kg_concepts WHERE generation <= :gen
-                    UNION SELECT statement FROM kg_facts WHERE generation <= :gen
-                ) OR target NOT IN (
-                    SELECT name FROM kg_concepts WHERE generation <= :gen
-                    UNION SELECT statement FROM kg_facts WHERE generation <= :gen
-                )
-            """), {"gen": target_generation})
-            conn.execute(text("""
-                INSERT OR REPLACE INTO kg_metadata (team_name, npc_name, directory_path, key, value)
-                VALUES ('', '', '', 'generation', :gen)
-            """), {"gen": str(target_generation)})
+        cleared = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            d['concepts'] = []
+            d['links'] = []
+            d['last_evolved_at'] = None
+            store.save(d)
+            cleared += 1
 
         return jsonify({
             "success": True,
-            "generation": target_generation
+            "cleared": cleared
         })
     except Exception as e:
         traceback.print_exc()
@@ -1907,17 +2006,12 @@ def knowledge_context():
 
 @app.route("/api/knowledge/all_memories", methods=["GET"])
 def knowledge_all_memories():
-    """Return aggregated memories from all directories that have had conversations."""
+    """Return aggregated memories from all registered knowledge stores."""
     try:
         limit = request.args.get("limit")
         limit = int(limit) if limit else None
         from npcpy.memory.knowledge_store import KnowledgeStore
-        from sqlalchemy import create_engine, text
-        db_path = app.config.get('DB_PATH')
-        engine = create_engine('sqlite:///' + db_path)
-        with engine.connect() as conn:
-            rows = conn.execute(text("SELECT DISTINCT directory_path FROM conversation_history WHERE directory_path IS NOT NULL AND directory_path != ''")).fetchall()
-        dirs = sorted(set(r[0] for r in rows))
+        dirs = _get_registered_stores()
         all_memories = []
         for d in dirs:
             fp = os.path.join(d, ".knowledge.yaml")
@@ -1938,17 +2032,12 @@ def knowledge_all_memories():
 
 @app.route("/api/knowledge/all_search", methods=["GET"])
 def knowledge_all_search():
-    """Search across all directories that have had conversations."""
+    """Search across all registered knowledge stores."""
     try:
         q = request.args.get("q", "").lower()
         limit = int(request.args.get("limit", 20))
         from npcpy.memory.knowledge_store import KnowledgeStore
-        from sqlalchemy import create_engine, text
-        db_path = app.config.get('DB_PATH')
-        engine = create_engine('sqlite:///' + db_path)
-        with engine.connect() as conn:
-            rows = conn.execute(text("SELECT DISTINCT directory_path FROM conversation_history WHERE directory_path IS NOT NULL AND directory_path != ''")).fetchall()
-        dirs = sorted(set(r[0] for r in rows))
+        dirs = _get_registered_stores()
         results = []
         for d in dirs:
             fp = os.path.join(d, ".knowledge.yaml")
@@ -1957,8 +2046,8 @@ def knowledge_all_search():
             store = KnowledgeStore(d)
             data = store.load()
             for mem in data.get("memories", []):
-                text = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
-                if q in text:
+                txt = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
+                if q in txt:
                     mem["_directory"] = d
                     results.append(mem)
             if len(results) >= limit:
@@ -2625,12 +2714,14 @@ def extract_and_store_memories(
         provider=provider,
     )
 
+    from npcpy.llm_funcs import CONVERSATION_RULES
     facts = get_facts(
         conversation_text,
         model=resolved_model,
         provider=resolved_provider,
         npc=npc_object,
-        context=memory_context
+        context=memory_context,
+        rules=CONVERSATION_RULES,
     )
     
     memories_for_approval = []
@@ -6776,12 +6867,14 @@ def extract_facts_preview():
             except Exception:
                 pass
 
+        from npcpy.llm_funcs import CONVERSATION_RULES
         facts = get_facts(
             conversation_text,
             model=resolved_model,
             provider=resolved_provider,
             npc=npc_object,
-            context=memory_context
+            context=memory_context,
+            rules=CONVERSATION_RULES,
         )
 
         return jsonify({
