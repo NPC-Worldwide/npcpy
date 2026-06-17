@@ -721,7 +721,7 @@ def create_tool_agent_stream(config: StreamConfig,
 
 
 # ---------------------------------------------------------------------------
-# check_llm_command stream (jinx-based, used by npcsh)
+# jinx-based stream
 # ---------------------------------------------------------------------------
 
 def create_jinx_stream(npc,

@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import sqlite3
 from pathlib import Path
@@ -235,121 +236,6 @@ def test_npc_execute_jinx():
 
 
 
-import os
-import tempfile
-import sqlite3
-from datetime import datetime
-import sys
-
-
-import pytest
-pytest.importorskip("npcsh", reason="npcsh package required for command history tests")
-from npcsh.history import CommandHistory, get_db_connection
-from npcpy.tools import auto_tools
-
-def test_npc_memory_crud_integration():
-    """Integration test for NPC memory CRUD operations via auto tools"""
-    
-    test_db_path = "test_npc.db"
-    db_conn = get_db_connection(test_db_path)
-    
-    test_npc = NPC(
-        name="memory_test_npc",
-        primary_directive="Test NPC with memory CRUD capabilities", 
-        model="llama3.2",
-        provider="ollama", 
-        db_conn=db_conn,
-        memory=True
-    )
-    
-    print(f"NPC '{test_npc.name}' initialized successfully")
-    print(f"Database connection: {test_npc.db_conn is not None}")
-    print(f"Command history: {test_npc.command_history is not None}")
-    
-    print("\n=== Testing Memory CRUD via Auto Tools ===")
-    
-    print("\n1. Testing create_memory via LLM response")
-    create_response = test_npc.get_llm_response(
-        "Create a memory about user preferring Python over JavaScript for backend work",
-        auto_process_tool_calls=True
-    )
-    
-    if create_response.get('tool_results'):
-        memory_id = create_response['tool_results'][0]['result']
-        print(f"✓ Memory created with ID: {memory_id}")
-    else:
-        print("✗ No memory created")
-    
-    print("\n2. Testing search_memories via LLM")
-    search_response = test_npc.get_llm_response(
-        "Search my memories for anything about Python",
-        auto_process_tool_calls=True
-    )
-    
-    if search_response.get('tool_results'):
-        search_results = search_response['tool_results'][0]['result']
-        print(f"✓ Found {len(search_results) if isinstance(search_results, list) else 1} memories")
-    else:
-        print("✗ No search results")
-    
-    print("\n3. Testing get_all_memories via LLM")
-    all_memories_response = test_npc.get_llm_response(
-        "Show me all my current memories",
-        auto_process_tool_calls=True
-    )
-    
-    if all_memories_response.get('tool_results'):
-        all_memories = all_memories_response['tool_results'][0]['result']
-        print(f"✓ Retrieved {len(all_memories) if isinstance(all_memories, list) else 1} total memories")
-    else:
-        print("✗ No memories retrieved")
-    
-    print("\n4. Testing memory stats via LLM")
-    stats_response = test_npc.get_llm_response(
-        "Give me statistics about my memories",
-        auto_process_tool_calls=True
-    )
-    
-    if stats_response.get('tool_results'):
-        stats = stats_response['tool_results'][0]['result']
-        print(f"✓ Memory stats: {stats}")
-    else:
-        print("✗ No stats retrieved")
-    
-    print("\n=== Testing Direct Tool Access ===")
-    
-    print("\n5. Direct memory creation")
-    memory_id = test_npc.create_memory("Direct memory creation test", "test")
-    print(f"✓ Created memory ID: {memory_id}")
-    
-    if memory_id:
-        print("\n6. Reading created memory")
-        memory_data = test_npc.read_memory(memory_id)
-        print(f"✓ Memory content: {memory_data['initial_memory'] if memory_data else 'None'}")
-        
-        print("\n7. Updating memory")
-        update_success = test_npc.update_memory(
-            memory_id, 
-            new_content="Updated test memory content",
-            status="verified"
-        )
-        print(f"✓ Update success: {update_success}")
-        
-        print("\n8. Reading updated memory")
-        updated_memory = test_npc.read_memory(memory_id)
-        if updated_memory:
-            print(f"✓ Updated content: {updated_memory['final_memory']}")
-            print(f"✓ New status: {updated_memory['status']}")
-    
-    print("\n9. Getting final memory statistics")
-    final_stats = test_npc.get_memory_stats()
-    print(f"✓ Final memory stats: {final_stats}")
-    
-    print("\n=== Test Complete ===")
-    print("✓ Memory CRUD operations successfully integrated as auto tools")
-    return True
-
-
 # =============================================================================
 # Jinja2 Sandboxed Environment Tests (Issue #197)
 # =============================================================================
@@ -519,12 +405,46 @@ output = 'ensemble_vote available' if callable(ensemble_vote) else 'not callable
     print("ensemble_vote is available in Jinx execution context")
 
 
+def test_npc_save_preserves_jinja_jinx_syntax():
+    """Test that NPC.save() preserves {{ Jinx('...') }} syntax in the YAML file."""
+    temp_dir = tempfile.mkdtemp()
+    try:
+        npc_path = os.path.join(temp_dir, "levi.npc")
+        original_content = """name: levi
+primary_directive: Test directive
+jinxes:
+  - {{ Jinx('open_pane') }}
+  - {{ Jinx('close_pane') }}
+model: kimi-k2.6:cloud
+provider: ollama
+"""
+        with open(npc_path, "w", encoding="utf-8") as f:
+            f.write(original_content)
+
+        team = Team(team_path=temp_dir)
+        npc = team.npcs["levi"]
+        assert npc.jinxes_spec == ["open_pane", "close_pane"]
+
+        npc.save(temp_dir)
+
+        with open(npc_path, "r", encoding="utf-8") as f:
+            saved_content = f.read()
+
+        assert "{{ Jinx('open_pane') }}" in saved_content
+        assert "{{ Jinx('close_pane') }}" in saved_content
+        assert saved_content.count("{{ Jinx(") == 2
+        print("NPC.save() correctly preserved {{ Jinx('...') }} syntax")
+    finally:
+        shutil.rmtree(temp_dir)
+
+
 if __name__ == "__main__":
     import sys
 
     tests = [
         ("NPC creation", test_npc_creation),
         ("NPC save and load", test_npc_save_and_load),
+        ("NPC save preserves Jinja jinx syntax", test_npc_save_preserves_jinja_jinx_syntax),
         ("Jinx creation", test_jinx_creation),
         ("Jinx execution", test_jinx_execution),
         ("Jinja2 sandboxed environment", test_jinja2_sandboxed_environment),

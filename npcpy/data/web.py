@@ -146,7 +146,7 @@ def search_perplexity(
     if api_key is None:
         api_key = os.environ.get("PERPLEXITY_API_KEY")
         if api_key is None:
-            raise ValueError("PERPLEXITY_API_KEY not set. Set it in your environment or ~/.npcshrc.")
+            raise ValueError("PERPLEXITY_API_KEY not set. Set it in your environment.")
         
     
     url = "https://api.perplexity.ai/chat/completions"

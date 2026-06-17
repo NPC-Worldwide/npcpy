@@ -71,7 +71,7 @@ except ImportError:
 class DatabaseAIFunctionMapper:
     # Snowflake Cortex uses non-standard model identifiers.
     # This maps common model names → Cortex identifiers so users
-    # can set e.g. NPCSH_NQL_MODEL=llama3.1-70b and it Just Works
+    # can set e.g. NQL_MODEL=llama3.1-70b and it Just Works
     # on both local (ollama) and Snowflake.
     SNOWFLAKE_CORTEX_MODELS = {
         # Claude family
@@ -456,7 +456,7 @@ class NPCSQLOperations:
     def __init__(
         self,
         npc_directory: str,
-        db_engine: Union[str, Engine] = "~/npcsh_history.db",
+        db_engine: Union[str, Engine],
         nql_model: Optional[str] = None,
         nql_provider: Optional[str] = None,
     ):

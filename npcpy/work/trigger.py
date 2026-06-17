@@ -1,9 +1,13 @@
-import os 
+import os
 import platform
 import subprocess
 from npcpy.llm_funcs import get_llm_response
+
 def execute_trigger_command(
-    command, npc=None, model=None, provider=None, messages=None, api_url=None
+    command, npc=None, model=None, provider=None, messages=None, api_url=None,
+    launchd_prefix='com.',
+    systemd_prefix='',
+    win_task_prefix='TASK_',
 ):
     parts = command.split(maxsplit=1)
     if len(parts) < 2:
@@ -22,7 +26,7 @@ def execute_trigger_command(
 
     linux_prompt_static = """Example for "Move PDFs from Downloads to Documents/PDFs":
     {
-        "script": "#!/bin/bash\\nset -euo pipefail\\nIFS=$'\\n\\t'\\n\\nLOGFILE=\\\"$HOME/.npcsh/logs/pdf_mover.log\\\"\\nSOURCE=\\\"$HOME/Downloads\\\"\\nTARGET=\\\"$HOME/Documents/PDFs\\\"\\n\\nlog_info() {\\n    echo \\\"[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*\\\" >> \\\"$LOGFILE\\\"\\n}\\n\\nlog_error() {\\n    echo \\\"[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*\\\" >> \\\"$LOGFILE\\\"\\n}\\n\\ninotifywait -m -q -e create --format '%w%f' \\\"$SOURCE\\\" | while read filepath; do\\n    if [[ \\\"$filepath\\\" =~ \\\\.pdf$ ]]; then\\n        mv \\\"$filepath\\\" \\\"$TARGET/\\\" && log_info \\\"Moved $filepath to $TARGET\\\" || log_error \\\"Failed to move $filepath\\\"\\n    fi\\ndone",
+        "script": "#!/bin/bash\\nset -euo pipefail\\nIFS=$'\\n\\t'\\n\\nLOGFILE=\\\"$HOME/logs/pdf_mover.log\\\"\\nSOURCE=\\\"$HOME/Downloads\\\"\\nTARGET=\\\"$HOME/Documents/PDFs\\\"\\n\\nlog_info() {\\n    echo \\\"[(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*\\\" >> \\\"$LOGFILE\\\"\\n}\\n\\nlog_error() {\\n    echo \\\"[(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*\\\" >> \\\"$LOGFILE\\\"\\n}\\n\\ninotifywait -m -q -e create --format '%w%f' \\\"$SOURCE\\\" | while read filepath; do\\n    if [[ \\\"$filepath\\\" =~ \\t.pdf$ ]]; then\\n        mv \\\"$filepath\\\" \\\"$TARGET/\\\" && log_info \\\"Moved $filepath to $TARGET\\\" || log_error \\\"Failed to move $filepath\\\"\\n    fi\\ndone",
         "name": "pdf_mover",
         "description": "Move PDF files from Downloads to Documents/PDFs folder"
     }
@@ -47,7 +51,7 @@ def execute_trigger_command(
 
     mac_prompt_static = """Example for "Move PDFs from Downloads to Documents/PDFs":
     {
-        "script": "#!/bin/bash\\nset -euo pipefail\\nIFS=$'\\n\\t'\\n\\nLOGFILE=\\\"$HOME/.npcsh/logs/pdf_mover.log\\\"\\nSOURCE=\\\"$HOME/Downloads\\\"\\nTARGET=\\\"$HOME/Documents/PDFs\\\"\\n\\nlog_info() {\\n    echo \\\"[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*\\\" >> \\\"$LOGFILE\\\"\\n}\\n\\nlog_error() {\\n    echo \\\"[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*\\\" >> \\\"$LOGFILE\\\"\\n}\\n\\nfswatch -0 -r -e '.*' --event Created --format '%p' \\\"$SOURCE\\\" | while read -d '' filepath; do\\n    if [[ \\\"$filepath\\\" =~ \\\\.pdf$ ]]; then\\n        mv \\\"$filepath\\\" \\\"$TARGET/\\\" && log_info \\\"Moved $filepath to $TARGET\\\" || log_error \\\"Failed to move $filepath\\\"\\n    fi\\ndone",
+        "script": "#!/bin/bash\\nset -euo pipefail\\nIFS=$'\\n\\t'\\n\\nLOGFILE=\\\"$HOME/logs/pdf_mover.log\\\"\\nSOURCE=\\\"$HOME/Downloads\\\"\\nTARGET=\\\"$HOME/Documents/PDFs\\\"\\n\\nlog_info() {\\n    echo \\\"[(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*\\\" >> \\\"$LOGFILE\\\"\\n}\\n\\nlog_error() {\\n    echo \\\"[(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*\\\" >> \\\"$LOGFILE\\\"\\n}\\n\\nfswatch -0 -r -e '.*' --event Created --format '%p' \\\"$SOURCE\\\" | while read -d '' filepath; do\\n    if [[ \\\"$filepath\\\" =~ \\t.pdf$ ]]; then\\n        mv \\\"$filepath\\\" \\\"$TARGET/\\\" && log_info \\\"Moved $filepath to $TARGET\\\" || log_error \\\"Failed to move $filepath\\\"\\n    fi\\ndone",
         "name": "pdf_mover",
         "description": "Move PDF files from Downloads to Documents/PDFs folder"
     }
@@ -72,7 +76,7 @@ def execute_trigger_command(
 
     windows_prompt_static = """Example for "Move PDFs from Downloads to Documents/PDFs":
     {
-        "script": "$ErrorActionPreference = 'Stop'\\n\\n$LogFile = \\\"$HOME\\.npcsh\\logs\\pdf_mover.log\\\"\\n$Source = \\\"$HOME\\Downloads\\\"\\n$Target = \\\"$HOME\\Documents\\PDFs\\\"\\n\\nfunction Write-Log {\\n    param($Message, $Type = 'INFO')\\n    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'\\n    \\\"[$timestamp] [$Type] $Message\\\" | Out-File -FilePath $LogFile -Append\\n}\\n\\n$watcher = New-Object System.IO.FileSystemWatcher\\n$watcher.Path = $Source\\n$watcher.Filter = \\\"*.pdf\\\"\\n$watcher.IncludeSubdirectories = $true\\n$watcher.EnableRaisingEvents = $true\\n\\n$action = {\\n    $path = $Event.SourceEventArgs.FullPath\\n    try {\\n        Move-Item -Path $path -Destination $Target\\n        Write-Log \\\"Moved $path to $Target\\\"\\n    } catch {\\n        Write-Log $_.Exception.Message 'ERROR'\\n    }\\n}\\n\\nRegister-ObjectEvent $watcher 'Created' -Action $action\\n\\nwhile ($true) { Start-Sleep 1 }",
+        "script": "$ErrorActionPreference = 'Stop'\\n\\n$LogFile = \\\"$HOME\\logs\\pdf_mover.log\\\"\\n$Source = \\\"$HOME\\Downloads\\\"\\n$Target = \\\"$HOME\\Documents\\PDFs\\\"\\n\\nfunction Write-Log {\\n    param($Message, $Type = 'INFO')\\n    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'\\n    \\\"[$timestamp] [$Type] $Message\\\" | Out-File -FilePath $LogFile -Append\\n}\\n\\n$watcher = New-Object System.IO.FileSystemWatcher\\n$watcher.Path = $Source\\n$watcher.Filter = \\\"*.pdf\\\"\\n$watcher.IncludeSubdirectories = $true\\n$watcher.EnableRaisingEvents = $true\\n\\n$action = {\\n    $path = $Event.SourceEventArgs.FullPath\\n    try {\\n        Move-Item -Path $path -Destination $Target\\n        Write-Log \\\"Moved $path to $Target\\\"\\n    } catch {\\n        Write-Log $_.Exception.Message 'ERROR'\\n    }\\n}\\n\\nRegister-ObjectEvent $watcher 'Created' -Action $action\\n\\nwhile ($true) { Start-Sleep 1 }",
         "name": "pdf_mover",
         "description": "Move PDF files from Downloads to Documents/PDFs folder"
     }
@@ -121,7 +125,7 @@ def execute_trigger_command(
 
         service_dir = os.path.expanduser("~/.config/systemd/user")
         os.makedirs(service_dir, exist_ok=True)
-        service_path = os.path.join(service_dir, f"npcsh-{trigger_name}.service")
+        service_path = os.path.join(service_dir, f"{systemd_prefix}{trigger_name}.service")
 
         service_content = f"""[Unit]
 Description={trigger_info['description']}
@@ -143,14 +147,14 @@ WantedBy=default.target
 
         subprocess.run(["systemctl", "--user", "daemon-reload"])
         subprocess.run(
-            ["systemctl", "--user", "enable", f"npcsh-{trigger_name}.service"]
+            ["systemctl", "--user", "enable", f"{systemd_prefix}{trigger_name}.service"]
         )
         subprocess.run(
-            ["systemctl", "--user", "start", f"npcsh-{trigger_name}.service"]
+            ["systemctl", "--user", "start", f"{systemd_prefix}{trigger_name}.service"]
         )
 
         status = subprocess.run(
-            ["systemctl", "--user", "status", f"npcsh-{trigger_name}.service"],
+            ["systemctl", "--user", "status", f"{systemd_prefix}{trigger_name}.service"],
             capture_output=True,
             text=True,
         )
@@ -173,14 +177,14 @@ Status:
 
         plist_dir = os.path.expanduser("~/Library/LaunchAgents")
         os.makedirs(plist_dir, exist_ok=True)
-        plist_path = os.path.join(plist_dir, f"com.npcsh.{trigger_name}.plist")
+        plist_path = os.path.join(plist_dir, f"{launchd_prefix}{trigger_name}.plist")
 
         plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.npcsh.{trigger_name}</string>
+    <string>{launchd_prefix}{trigger_name}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{script_path}</string>
@@ -214,9 +218,8 @@ Status:
         with open(script_path, "w") as f:
             f.write(trigger_info["script"])
 
-        task_name = f"NPCSH_{trigger_name}"
+        task_name = f"{win_task_prefix}{trigger_name}"
 
-        
         cmd = [
             "schtasks",
             "/create",
@@ -228,12 +231,11 @@ Status:
             "onstart",
             "/ru",
             "System",
-            "/f",  
+            "/f",
         ]
 
         subprocess.run(cmd, check=True)
 
-        
         subprocess.run(["schtasks", "/run", "/tn", task_name])
 
         output = f"""Trigger service created:

@@ -78,11 +78,7 @@ def setup_claude(uninstall: bool = False):
         "author": {"name": "NPC Worldwide", "email": "support@npcworldwide.com"},
     }, indent=2) + "\n")
 
-    # MCP server — find the npcsh team path
-    npcsh_team = Path.home() / ".npcsh" / "npc_team"
     mcp_args = ["-m", "npcpy.mcp_server"]
-    if npcsh_team.is_dir():
-        mcp_args.extend(["--team", str(npcsh_team)])
 
     _write(plugin_dir / ".mcp.json", json.dumps({
         "npc": {

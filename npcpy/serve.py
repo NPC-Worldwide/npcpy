@@ -74,9 +74,10 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from npcpy.npc_sysenv import (
-    get_locally_available_models, get_data_dir, get_models_dir, get_cache_dir,
-    get_images_dir, get_jobs_dir, get_triggers_dir, get_videos_dir,
-    get_attachments_dir, get_logs_dir,
+    get_data_dir, get_models_dir,
+    get_images_dir, get_videos_dir,
+    get_attachments_dir, get_logs_dir, lookup_provider,
+    get_locally_available_models,
     team_sync_status, team_sync_init, team_sync_pull,
     team_sync_resolve, team_sync_commit, team_sync_diff,
 )
@@ -89,7 +90,6 @@ from npcpy.gen.embeddings import get_embeddings
 from termcolor import cprint
 
 from npcpy.tools import auto_tools
-from npcpy.work.plan import schedule_job, unschedule_job, list_jobs, job_status
 from npcpy.streaming import (
     StreamConfig, StreamEvent,
     clean_messages_for_llm,
@@ -114,7 +114,7 @@ cancellation_lock = threading.Lock()
 
 class ServeState:
     """Minimal server-side execution context for jinxes and tools.
-    Replaces npcsh.ShellState so serve.py has no npcsh dependency."""
+    Minimal server-side execution context for jinxes and tools."""
     def __init__(
         self,
         npc=None,
@@ -233,7 +233,6 @@ class MCPClientNPC:
         extra_env = server_spec.get("env", {})
         env = {**os.environ, **extra_env}
 
-        # Clean up old session first
         if self.session and self._exit_stack:
             try:
                 await self._exit_stack.aclose()
@@ -245,7 +244,6 @@ class MCPClientNPC:
         self._exit_stack = AsyncExitStack()
 
         if "url" in server_spec:
-            # SSE transport
             from mcp.client.sse import sse_client
             url = server_spec["url"]
             self._log(f"Connecting to SSE server: {url}")
@@ -254,7 +252,6 @@ class MCPClientNPC:
             self.session = await self._exit_stack.enter_async_context(ClientSession(*sse_transport))
 
         elif "command" in server_spec:
-            # Arbitrary command (npx, docker, uvx, node, etc.)
             command = server_spec["command"]
             args = server_spec.get("args", [])
             self._log(f"Connecting via command: {command} {' '.join(str(a) for a in args)}")
@@ -268,7 +265,6 @@ class MCPClientNPC:
             self.session = await self._exit_stack.enter_async_context(ClientSession(*stdio_transport))
 
         elif "path" in server_spec:
-            # Existing path-based logic (Python script or executable)
             abs_path = os.path.abspath(os.path.expanduser(server_spec["path"]))
             if not os.path.exists(abs_path):
                 raise FileNotFoundError(f"MCP server script not found: {abs_path}")
@@ -422,20 +418,17 @@ class MCPServerManager:
     def start(self, server_path: str, env_vars: dict = None):
         server_path = os.path.expanduser(server_path)
 
-        # Build environment with optional extra vars
         proc_env = os.environ.copy()
         if env_vars:
             proc_env.update(env_vars)
 
-        # Detect command type: npx, uvx, node, etc. vs local file path
         is_command = _is_command_string(server_path)
         stripped = server_path.strip()
 
         if is_command:
-            # For commands like "npx -y @modelcontextprotocol/server-github"
             import shlex
             cmd = shlex.split(stripped)
-            key = stripped  # Use the full command string as key
+            key = stripped
             cwd = os.getcwd()
         else:
             abs_path = os.path.abspath(server_path)
@@ -564,21 +557,71 @@ def load_project_env(current_path):
     
     return loaded_vars
 
-def load_kg_data(generation=None):
-    """Helper function to load data up to a specific generation."""
-    engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-    
-    query_suffix = f" WHERE generation <= {generation}" if generation is not None else ""
-    
-    concepts_df = pd.read_sql_query(f"SELECT * FROM kg_concepts{query_suffix}", engine)
-    facts_df = pd.read_sql_query(f"SELECT * FROM kg_facts{query_suffix}", engine)
-    
-    
-    all_links_df = pd.read_sql_query("SELECT * FROM kg_links", engine)
-    valid_nodes = set(concepts_df['name']).union(set(facts_df['statement']))
-    links_df = all_links_df[all_links_df['source'].isin(valid_nodes) & all_links_df['target'].isin(valid_nodes)]
-        
+def _load_kg_from_yaml_stores(store_paths):
+    """Aggregate .knowledge.yaml stores from explicit paths into DataFrames."""
+    from npcpy.memory.knowledge_store import KnowledgeStore
+    concepts = []
+    facts = []
+    links = []
+    for store_dir in store_paths:
+        store = KnowledgeStore(store_dir)
+        data = store.load()
+        for c in data.get('concepts', []):
+            concepts.append({
+                'name': c.get('name'),
+                'description': c.get('description', ''),
+                'generation': c.get('generation', 0),
+                'created_at': c.get('created_at'),
+            })
+        for m in data.get('memories', []):
+            stmt = m.get('final_memory') or m.get('initial_memory', '')
+            if stmt:
+                facts.append({
+                    'statement': stmt,
+                    'source_text': m.get('source_id', ''),
+                    'type': m.get('source_type', 'memory'),
+                    'generation': 0,
+                    'memory_id': m.get('id'),
+                    'npc_name': m.get('npc', ''),
+                    'team_name': m.get('team', ''),
+                })
+        for l in data.get('links', []):
+            links.append({
+                'source': l.get('from'),
+                'target': l.get('to'),
+                'link_type': l.get('type', 'memory_to_memory'),
+                'weight': 1,
+            })
+    concepts_df = pd.DataFrame(concepts) if concepts else pd.DataFrame(columns=['name', 'description', 'generation', 'created_at'])
+    facts_df = pd.DataFrame(facts) if facts else pd.DataFrame(columns=['statement', 'source_text', 'type', 'generation', 'memory_id', 'npc_name', 'team_name'])
+    links_df = pd.DataFrame(links) if links else pd.DataFrame(columns=['source', 'target', 'link_type', 'weight'])
     return concepts_df, facts_df, links_df
+
+
+def _load_kg_from_yaml(workspace):
+    """DEPRECATED — kept for backward compat until callers migrate to storePaths."""
+    return _load_kg_from_yaml_stores([])
+
+
+def load_kg_data(store_paths=None):
+    """Load KG data from a specific list of .knowledge.yaml store directories.
+    store_paths is a list of directory paths."""
+    return _load_kg_from_yaml_stores(store_paths or [])
+
+
+def _get_registered_stores():
+    """Read ~/.incognide/kg_registry.yaml and return list of store directory paths."""
+    registry_path = os.path.expanduser('~/.incognide/kg_registry.yaml')
+    if not os.path.exists(registry_path):
+        return []
+    try:
+        with open(registry_path, 'r') as f:
+            data = yaml.safe_load(f) or {}
+        stores = data.get('stores', [])
+        return [str(s) for s in stores if isinstance(s, str) and s]
+    except Exception:
+        return []
+
 
 app = Flask(__name__)
 app.config["REDIS_URL"] = "redis://localhost:6379"
@@ -724,7 +767,6 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
       - Fallback: use `python -m npcpy.mcp_server` (the module, not a deployed script)
     """
     if explicit_path:
-        # Command strings pass through directly
         if _is_command_string(explicit_path):
             return explicit_path.strip()
 
@@ -732,7 +774,6 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
         if os.path.exists(abs_path):
             return abs_path
 
-    # Fallback: use npcpy.mcp_server module directly (no deployed scripts)
     team_path = None
     if current_path:
         candidate = os.path.join(current_path, "npc_team")
@@ -741,7 +782,6 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
     if team_path:
         return f"{sys.executable} -m npcpy.mcp_server --team {team_path}"
 
-    # Last resort: let the module auto-discover
     return f"{sys.executable} -m npcpy.mcp_server"
 
 extension_map = {
@@ -802,14 +842,11 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
             continue
         npc_path = os.path.join(npc_directory, f"{name}.npc")
         if not os.path.exists(npc_path):
-            # Also check agents/ subdirectory and markdown-declared agents
             if not any(os.path.exists(os.path.join(npc_directory, p)) for p in (
                 'agents.md', 'AGENTS.md', 'CLAUDE.md', 'agents'
             )):
                 continue
         try:
-            # Route NPC loading through a Team so the _npc_jinja_context is
-            # built and Jinja templates in .npc files render before YAML parse.
             team = Team(team_path=npc_directory, db_conn=db_conn)
             npc = team.npcs.get(name)
             if npc is not None:
@@ -895,29 +932,17 @@ def fetch_messages_for_conversation(conversation_id):
             
 @app.route('/api/kg/generations')
 def list_generations():
-    try:
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        
-        query = "SELECT DISTINCT generation FROM kg_concepts UNION SELECT DISTINCT generation FROM kg_facts"
-        generations_df = pd.read_sql_query(query, engine)
-        generations = generations_df.iloc[:, 0].tolist()
-        return jsonify({"generations": sorted([g for g in generations if g is not None])})
-    except Exception as e:
-        
-        print(f"Error listing generations (likely new DB): {e}")
-        return jsonify({"generations": []})
+    # YAML stores have a single implicit generation 0
+    return jsonify({"generations": [0]})
 
 @app.route('/api/kg/graph')
 def get_graph_data():
-    generation_str = request.args.get('generation')
-    generation = int(generation_str) if generation_str and generation_str != 'null' else None
-
-    concepts_df, facts_df, links_df = load_kg_data(generation)
+    store_paths = request.args.getlist('storePaths')
+    concepts_df, facts_df, links_df = load_kg_data(store_paths)
 
     nodes = []
     nodes.extend([{'id': name, 'type': 'concept'} for name in concepts_df['name']])
 
-    # Fact nodes carry memory_id when the fact was produced from a memory (FK -> memory_lifecycle).
     has_memory_id = 'memory_id' in facts_df.columns
     for _, row in facts_df.iterrows():
         node = {'id': row['statement'], 'type': 'fact'}
@@ -936,8 +961,8 @@ def get_graph_data():
 
 @app.route('/api/kg/network-stats')
 def get_network_stats():
-    generation = request.args.get('generation', type=int)
-    _, _, links_df = load_kg_data(generation)
+    store_paths = request.args.getlist('storePaths')
+    _, _, links_df = load_kg_data(store_paths)
     G = nx.DiGraph()
     for _, link in links_df.iterrows():
         G.add_edge(link['source'], link['target'])
@@ -953,9 +978,9 @@ def get_network_stats():
 
 @app.route('/api/kg/cooccurrence')
 def get_cooccurrence_network():
-    generation = request.args.get('generation', type=int)
+    store_paths = request.args.getlist('storePaths')
     min_cooccurrence = request.args.get('min_cooccurrence', 2, type=int)
-    _, _, links_df = load_kg_data(generation)
+    _, _, links_df = load_kg_data(store_paths)
     fact_to_concepts = defaultdict(set)
     for _, link in links_df.iterrows():
         if link['type'] == 'fact_to_concept':
@@ -981,8 +1006,8 @@ def get_cooccurrence_network():
 
 @app.route('/api/kg/centrality')
 def get_centrality_data():
-    generation = request.args.get('generation', type=int)
-    concepts_df, _, links_df = load_kg_data(generation)
+    store_paths = request.args.getlist('storePaths')
+    concepts_df, _, links_df = load_kg_data(store_paths)
     G = nx.Graph()
     fact_concept_links = links_df[links_df['type'] == 'fact_to_concept']
     for _, link in fact_concept_links.iterrows():
@@ -996,14 +1021,14 @@ def search_kg():
     """Search facts and concepts by keyword"""
     try:
         q = request.args.get('q', '').strip().lower()
-        generation = request.args.get('generation', type=int)
+        store_paths = request.args.getlist('storePaths')
         search_type = request.args.get('type', 'both')
         limit = request.args.get('limit', 50, type=int)
 
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-        concepts_df, facts_df, links_df = load_kg_data(generation)
+        concepts_df, facts_df, links_df = load_kg_data(store_paths)
         results = {"facts": [], "concepts": [], "query": q}
 
         if search_type in ('both', 'fact'):
@@ -1043,13 +1068,13 @@ def search_kg():
 
 @app.route('/api/kg/embed', methods=['POST'])
 def embed_kg_facts():
-    """Embed existing facts from SQL to Chroma for semantic search"""
+    """Embed existing facts from YAML stores to Chroma for semantic search"""
     try:
         data = request.get_json() or {}
-        generation = data.get('generation')
+        store_paths = data.get('storePaths', [])
         batch_size = data.get('batch_size', 10)
 
-        _, facts_df, _ = load_kg_data(generation)
+        _, facts_df, _ = load_kg_data(store_paths)
 
         if facts_df.empty:
             return jsonify({"message": "No facts to embed", "count": 0})
@@ -1115,7 +1140,7 @@ def search_kg_semantic():
     """Semantic search for facts using vector similarity"""
     try:
         q = request.args.get('q', '').strip()
-        generation = request.args.get('generation', type=int)
+        store_paths = request.args.getlist('storePaths')
         limit = request.args.get('limit', 10, type=int)
 
         if not q:
@@ -1133,16 +1158,12 @@ def search_kg_semantic():
                 "query": q
             }), 200
 
-        metadata_filter = None
-        if generation is not None:
-            metadata_filter = {"generation": generation}
-
         similar_facts = find_similar_facts_chroma(
             chroma_collection,
             q,
             query_embedding=query_embedding,
             n_results=limit,
-            metadata_filter=metadata_filter
+            metadata_filter=None
         )
 
         results = {
@@ -1167,31 +1188,13 @@ def search_kg_semantic():
 
 @app.route('/api/kg/facts')
 def get_kg_facts():
-    """Get facts, optionally filtered by generation. Includes memory_id + memory_status when the
-    fact was produced from an approved memory (FK: kg_facts.memory_id -> memory_lifecycle.id)."""
+    """Get facts from YAML stores."""
     try:
-        generation = request.args.get('generation', type=int)
+        store_paths = request.args.getlist('storePaths')
         limit = request.args.get('limit', 100, type=int)
         offset = request.args.get('offset', 0, type=int)
 
-        _, facts_df, _ = load_kg_data(generation)
-
-        # Collect memory_id lookup in one shot, avoid N+1 on memory_lifecycle.
-        memory_status_by_id = {}
-        try:
-            memory_ids = [
-                int(mid) for mid in facts_df.get('memory_id', pd.Series(dtype='Int64')).dropna().unique().tolist()
-            ] if 'memory_id' in facts_df.columns else []
-            if memory_ids:
-                engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-                with engine.connect() as conn:
-                    rows = conn.execute(
-                        text("SELECT id, status FROM memory_lifecycle WHERE id IN (" + ",".join(str(i) for i in memory_ids) + ")")
-                    ).fetchall()
-                    for r in rows:
-                        memory_status_by_id[r[0]] = r[1]
-        except Exception:
-            pass
+        _, facts_df, _ = load_kg_data(store_paths)
 
         facts = []
         for i, row in facts_df.iloc[offset:offset+limit].iterrows():
@@ -1207,7 +1210,6 @@ def get_kg_facts():
                 "generation": row.get('generation'),
                 "origin": row.get('origin'),
                 "memory_id": mid_int,
-                "memory_status": memory_status_by_id.get(mid_int) if mid_int is not None else None,
             })
 
         return jsonify({
@@ -1223,12 +1225,12 @@ def get_kg_facts():
 
 @app.route('/api/kg/concepts')
 def get_kg_concepts():
-    """Get concepts, optionally filtered by generation"""
+    """Get concepts from YAML stores."""
     try:
-        generation = request.args.get('generation', type=int)
+        store_paths = request.args.getlist('storePaths')
         limit = request.args.get('limit', 100, type=int)
 
-        concepts_df, _, _ = load_kg_data(generation)
+        concepts_df, _, _ = load_kg_data(store_paths)
 
         concepts = []
         for _, row in concepts_df.head(limit).iterrows():
@@ -1248,79 +1250,95 @@ def get_kg_concepts():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# ── KG Node/Edge CRUD ───────────────────────────────────────────────
 
 @app.route('/api/kg/node', methods=['POST'])
 def add_kg_node():
-    """Add a new concept or fact at the current generation (no generation bump)."""
+    """Add a new concept or fact to the selected YAML stores."""
     try:
         data = request.get_json()
         node_id = data.get('id')
         node_type = data.get('type', 'concept')
         properties = data.get('properties', {})
+        store_paths = data.get('storePaths', [])
 
         if not node_id:
             return jsonify({"error": "Missing node id"}), 400
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-
-        # Get current max generation so we slot into the existing gen
-        with engine.connect() as conn:
-            row = conn.execute(text("SELECT MAX(generation) as gen FROM kg_facts")).fetchone()
-            current_gen = (row.gen if row and row.gen is not None else 0)
-
-        with engine.begin() as conn:
+        added = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
             if node_type == 'fact':
-                conn.execute(
-                    text("INSERT OR IGNORE INTO kg_facts (statement, source_text, type, generation, origin) VALUES (:id, :id, 'manual', :gen, 'manual_add')"),
-                    {"id": node_id, "gen": current_gen}
-                )
+                exists = any((m.get('final_memory') or m.get('initial_memory')) == node_id for m in d.get('memories', []))
+                if not exists:
+                    d['memories'].append({
+                        'id': _make_id(), 'initial_memory': node_id, 'final_memory': node_id,
+                        'source_type': 'manual', 'status': 'auto-extracted',
+                        'created_at': _utcnow(),
+                    })
+                    added += 1
             else:
-                desc = properties.get('description', '')
-                conn.execute(
-                    text("INSERT OR IGNORE INTO kg_concepts (name, description, generation, origin) VALUES (:id, :desc, :gen, 'manual_add')"),
-                    {"id": node_id, "desc": desc, "gen": current_gen}
-                )
+                exists = any(c.get('name') == node_id for c in d.get('concepts', []))
+                if not exists:
+                    d['concepts'].append({
+                        'id': _make_id(), 'name': node_id,
+                        'description': properties.get('description', ''),
+                        'created_at': _utcnow(),
+                    })
+                    added += 1
+            store.save(d)
 
-        return jsonify({"success": True, "id": node_id, "generation": current_gen})
+        return jsonify({"success": True, "id": node_id, "added_to": added})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/kg/node/<path:node_id>', methods=['PUT'])
 def update_kg_node(node_id):
-    """Update a concept or fact in the knowledge graph."""
+    """Update a concept description across selected YAML stores."""
     try:
         data = request.get_json()
         properties = data.get('properties', {})
+        store_paths = data.get('storePaths', [])
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        with engine.connect() as conn:
-            result = conn.execute(
-                text("UPDATE kg_concepts SET description = :desc WHERE name = :name"),
-                {"desc": properties.get('description', ''), "name": node_id}
-            )
-            if result.rowcount == 0:
-                conn.execute(
-                    text("UPDATE kg_facts SET source_text = :src WHERE statement = :stmt"),
-                    {"src": properties.get('source_text', ''), "stmt": node_id}
-                )
-            conn.commit()
-        return jsonify({"success": True})
+        updated = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            for c in d.get('concepts', []):
+                if c.get('name') == node_id:
+                    c['description'] = properties.get('description', c.get('description', ''))
+                    updated += 1
+            store.save(d)
+        return jsonify({"success": True, "updated": updated})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/kg/node/<path:node_id>', methods=['DELETE'])
 def delete_kg_node(node_id):
-    """Delete a concept or fact and all its connections (unscoped — matches the global KG view)."""
+    """Delete a concept/fact and its links from selected YAML stores."""
     try:
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        with engine.begin() as conn:
-            r1 = conn.execute(text("DELETE FROM kg_concepts WHERE name = :id"), {"id": node_id})
-            r2 = conn.execute(text("DELETE FROM kg_facts WHERE statement = :id"), {"id": node_id})
-            conn.execute(text("DELETE FROM kg_links WHERE source = :id OR target = :id"), {"id": node_id})
-        removed = r1.rowcount + r2.rowcount
+        data = request.get_json() or {}
+        store_paths = data.get('storePaths', [])
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
+
+        removed = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            pre_concepts = len(d.get('concepts', []))
+            pre_memories = len(d.get('memories', []))
+            d['concepts'] = [c for c in d.get('concepts', []) if c.get('name') != node_id]
+            d['memories'] = [m for m in d.get('memories', []) if (m.get('final_memory') or m.get('initial_memory')) != node_id]
+            d['links'] = [l for l in d.get('links', []) if l.get('from') != node_id and l.get('to') != node_id]
+            store.save(d)
+            removed += (pre_concepts - len(d['concepts'])) + (pre_memories - len(d['memories']))
         return jsonify({"success": True, "removed": removed})
     except Exception as e:
         traceback.print_exc()
@@ -1328,89 +1346,90 @@ def delete_kg_node(node_id):
 
 @app.route('/api/kg/edge', methods=['POST'])
 def add_kg_edge():
-    """Add a new edge/link between two nodes (no generation bump)."""
+    """Add a new edge/link to selected YAML stores."""
     try:
         data = request.get_json()
         source = data.get('source')
         target = data.get('target')
         edge_type = data.get('type', 'related_to')
-        weight = data.get('weight', 1)
+        store_paths = data.get('storePaths', [])
 
         if not source or not target:
             return jsonify({"error": "Missing source or target"}), 400
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        with engine.begin() as conn:
-            conn.execute(
-                text("INSERT OR IGNORE INTO kg_links (source, target, type, weight) VALUES (:src, :tgt, :typ, :w)"),
-                {"src": source, "tgt": target, "typ": edge_type, "w": weight}
-            )
-        return jsonify({"success": True})
+        added = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            exists = any(l.get('from') == source and l.get('to') == target for l in d.get('links', []))
+            if not exists:
+                d['links'].append({
+                    'id': _make_id(), 'from': source, 'to': target,
+                    'relation': edge_type, 'type': 'manual',
+                    'created_at': _utcnow(),
+                })
+                added += 1
+            store.save(d)
+        return jsonify({"success": True, "added_to": added})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/kg/edge/<path:source_id>/<path:target_id>', methods=['DELETE'])
 def delete_kg_edge(source_id, target_id):
-    """Delete an edge/link between two nodes."""
+    """Delete an edge from selected YAML stores."""
     try:
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-        with engine.begin() as conn:
-            conn.execute(
-                text("DELETE FROM kg_links WHERE source = :src AND target = :tgt"),
-                {"src": source_id, "tgt": target_id}
-            )
-        return jsonify({"success": True})
+        data = request.get_json() or {}
+        store_paths = data.get('storePaths', [])
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
+
+        removed = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            pre = len(d.get('links', []))
+            d['links'] = [l for l in d.get('links', []) if not (l.get('from') == source_id and l.get('to') == target_id)]
+            if len(d['links']) < pre:
+                removed += 1
+            store.save(d)
+        return jsonify({"success": True, "removed": removed})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/kg/trigger', methods=['POST'])
 def trigger_kg_process():
-    """Trigger a KG process (sleep or dream) to evolve the knowledge graph."""
+    """Trigger a KG process (sleep or dream) on selected YAML stores."""
     try:
         data = request.get_json() or {}
         process_type = data.get('process_type', 'sleep')
+        store_paths = data.get('storePaths', [])
+        model = data.get('model') or None
+        provider = data.get('provider') or None
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        db_path = app.config.get('DB_PATH')
-        engine = create_engine('sqlite:///' + db_path)
-
-        # Load current KG from DB
-
-
-        # Get model/provider from app config
-        model = app.config.get('DEFAULT_MODEL', None)
-        provider = app.config.get('DEFAULT_PROVIDER', None)
-
-        if process_type == 'sleep':
-            from npcpy.memory.knowledge_graph import kg_sleep_process
-            new_kg, changes = kg_sleep_process(
-                existing_kg, model=model, provider=provider
-            )
-        elif process_type == 'dream':
-            from npcpy.memory.knowledge_graph import kg_dream_process
-            new_kg, changes = kg_dream_process(
-                existing_kg, model=model, provider=provider
-            )
-        elif process_type == 'evolve':
-            from npcpy.memory.knowledge_graph import kg_evolve_incremental
-            content_text = data.get('content', '')
-            new_kg, changes = kg_evolve_incremental(
-                existing_kg, new_content_text=content_text or None, model=model, provider=provider,
-                get_concepts=True, link_concepts_facts=True
-            )
-        else:
-            return jsonify({"error": f"Unknown process type: {process_type}. Use 'sleep', 'dream', or 'evolve'."}), 400
-
-        # Save evolved KG back to DB
-
-
+        total_changes = {"concepts_added": 0, "links_added": 0}
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            if process_type == 'sleep':
+                result = store.sleep(model=model, provider=provider)
+            elif process_type == 'dream':
+                result = store.dream(model=model, provider=provider)
+            elif process_type == 'evolve':
+                result = store.assimilate(model=model, provider=provider)
+            else:
+                return jsonify({"error": f"Unknown process type: {process_type}. Use 'sleep', 'dream', or 'evolve'."}), 400
+            total_changes["concepts_added"] += result.get("concepts_added", 0)
+            total_changes["links_added"] += result.get("links_added", 0)
 
         return jsonify({
             "success": True,
             "process_type": process_type,
-            "generation": new_kg.get('generation', 0),
-            "changes": changes if isinstance(changes, dict) else {}
+            "changes": total_changes
         })
     except Exception as e:
         traceback.print_exc()
@@ -1419,57 +1438,115 @@ def trigger_kg_process():
 
 @app.route('/api/kg/ingest', methods=['POST'])
 def ingest_to_kg():
-    """Ingest text content into the knowledge graph. Accepts raw text or CSV rows."""
+    """Ingest text content into selected YAML stores."""
     try:
         data = request.get_json() or {}
         content_text = data.get('content', '')
         context = data.get('context', '')
-        get_concepts = data.get('get_concepts', True)
-        link_concepts_facts = data.get('link_concepts_facts', True)
+        store_paths = data.get('storePaths', [])
+        model = data.get('model') or None
+        provider = data.get('provider') or None
 
         if not content_text or not content_text.strip():
             return jsonify({"error": "content is required"}), 400
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        db_path = app.config.get('DB_PATH')
-        engine = create_engine('sqlite:///' + db_path)
-
-        model = app.config.get('DEFAULT_MODEL', None)
-        provider = app.config.get('DEFAULT_PROVIDER', None)
-
-        from npcpy.memory.knowledge_graph import kg_evolve_incremental, kg_initial
-
-
-
-        if not existing_kg or not existing_kg.get('facts'):
-            # First-time: build KG from scratch
-            from npcpy.memory.knowledge_graph import kg_initial
-            new_kg = kg_initial(
-                content=content_text,
-                model=model, provider=provider,
-                context=context
-            )
-        else:
-            new_kg, _ = kg_evolve_incremental(
-                existing_kg=existing_kg,
-                new_content_text=content_text,
-                model=model, provider=provider,
-                context=context,
-                get_concepts=get_concepts,
-                link_concepts_facts=link_concepts_facts
-            )
-
-
-
+        total_facts = 0
+        total_concepts = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            result = store.create(model=model, provider=provider, context=context, content_text=content_text)
+            total_facts += result.get('facts', 0)
+            total_concepts += result.get('concepts', 0)
 
         return jsonify({
             "success": True,
-            "generation": new_kg.get('generation', 0),
-            "facts": len(new_kg.get('facts', [])),
-            "concepts": len(new_kg.get('concepts', []))
+            "facts": total_facts,
+            "concepts": total_concepts
         })
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kg/pipeline/run', methods=['POST'])
+def run_kg_pipeline():
+    """Run a KG pipeline step (create/assimilate/sleep/dream) on .knowledge.yaml stores.
+    Streams NDJSON log lines."""
+    from npcpy.memory.knowledge_store import KnowledgeStore
+
+    data = request.get_json() or {}
+    step = data.get('step')
+    store_paths = data.get('storePaths', [])
+    model = data.get('model') or None
+    provider = data.get('provider') or None
+    context = data.get('context', '')
+    content_text = data.get('contentText') or None
+    operations = data.get('operations') or None
+    num_seeds = data.get('numSeeds')
+    if num_seeds is not None:
+        try:
+            num_seeds = int(num_seeds)
+        except (ValueError, TypeError):
+            num_seeds = 3
+
+    if not step or not store_paths:
+        return jsonify({"error": "step and storePaths are required"}), 400
+
+    def generate():
+        job_id = data.get('jobId', f"kg_{int(time.time()*1000)}")
+        for store_dir in store_paths:
+            store = KnowledgeStore(store_dir)
+            yield json.dumps({
+                "jobId": job_id,
+                "kind": "start",
+                "message": f"Starting {step} on {store_dir}",
+                "timestamp": int(time.time() * 1000),
+            }) + "\n"
+
+            try:
+                if step == 'create':
+                    result = store.create(model=model, provider=provider, npc=None, context=context, content_text=content_text)
+                elif step == 'assimilate':
+                    result = store.assimilate(model=model, provider=provider, npc=None, context=context)
+                elif step == 'sleep':
+                    result = store.sleep(model=model, provider=provider, npc=None, context=context, operations=operations)
+                elif step == 'dream':
+                    result = store.dream(model=model, provider=provider, npc=None, context=context, num_seeds=num_seeds)
+                else:
+                    yield json.dumps({
+                        "jobId": job_id,
+                        "kind": "error",
+                        "message": f"Unknown step: {step}",
+                        "timestamp": int(time.time() * 1000),
+                    }) + "\n"
+                    continue
+
+                yield json.dumps({
+                    "jobId": job_id,
+                    "kind": "finish",
+                    "message": f"Finished {step} on {store_dir}: {result.get('concepts_added', 0)} concepts, {result.get('links_added', 0)} links",
+                    "data": result,
+                    "timestamp": int(time.time() * 1000),
+                }) + "\n"
+            except Exception as e:
+                traceback.print_exc()
+                yield json.dumps({
+                    "jobId": job_id,
+                    "kind": "error",
+                    "message": str(e),
+                    "timestamp": int(time.time() * 1000),
+                }) + "\n"
+
+        yield json.dumps({
+            "jobId": job_id,
+            "kind": "done",
+            "message": "All stores processed",
+            "timestamp": int(time.time() * 1000),
+        }) + "\n"
+
+    return Response(generate(), mimetype='application/x-ndjson')
 
 
 @app.route('/api/kg/query', methods=['POST'])
@@ -1500,7 +1577,6 @@ def query_kg():
         model = app.config.get('DEFAULT_MODEL', None)
         provider = app.config.get('DEFAULT_PROVIDER', None)
 
-        # Sememolution: route to a population for ranked multi-candidate answer
         if mode == 'sememolution' and population_id:
             from npcpy.memory.kg_population import load_population, save_population
             mgr = load_population(engine, population_id)
@@ -1509,7 +1585,6 @@ def query_kg():
             if model: mgr.model = model
             if provider: mgr.provider = provider
             rankings = mgr.query_and_rank(question)
-            # Persist fitness updates
             try: save_population(engine, population_id, population_id, mgr)
             except Exception: pass
             return jsonify({
@@ -1534,13 +1609,22 @@ def query_kg():
 
 
 
-        if not existing_kg or not existing_kg.get('facts'):
+        store_paths = data.get('storePaths', [])
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
+
+        concepts_df, facts_df, _ = load_kg_data(store_paths)
+
+        facts = []
+        for _, row in facts_df.iterrows():
+            facts.append({"statement": row.get('statement', '')})
+        concepts = []
+        for _, row in concepts_df.iterrows():
+            concepts.append({"name": row.get('name', '')})
+
+        if not facts:
             return jsonify({"error": "Knowledge graph is empty. Ingest some data first."}), 400
 
-        facts = existing_kg.get('facts', [])
-        concepts = existing_kg.get('concepts', [])
-
-        # Traversal: reuse Poisson-sampled search logic via an ephemeral individual
         if mode == 'traversal':
             from npcpy.memory.kg_population import KGGenome, KGIndividual, SememolutionPopulation
             genome = KGGenome(
@@ -1548,17 +1632,22 @@ def query_kg():
                 lambda_breadth=lambda_breadth,
                 similarity_threshold=similarity_threshold,
             )
+            existing_kg = {
+                'facts': facts,
+                'concepts': concepts,
+                'concept_links': [],
+                'fact_to_concept_links': {},
+                'fact_to_fact_links': [],
+            }
             ind = KGIndividual(individual_id='ephemeral', genome=genome, kg_data=existing_kg)
-            # SememolutionPopulation.search_individual is stateless w.r.t. the population; instantiate a trivial one to reuse it
             if not model:
                 return jsonify({"error": "No model specified for knowledge graph search."}), 400
-            mgr = SememolutionPopulation(engine=engine, model=model, provider=provider or "ollama", population_size=1, sample_size=1)
+            mgr = SememolutionPopulation(model=model, provider=provider or "ollama", population_size=1, sample_size=1)
             relevant_facts = mgr.search_individual(ind, question)[:top_k]
             relevant_concepts = [c.get('name', '') for c in concepts[:20]]
             if not relevant_facts:
                 relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
         else:
-            # keyword mode (default)
             q_words = set(question.lower().split())
             scored_facts = []
             for f in facts:
@@ -1606,56 +1695,33 @@ Answer:"""
 
 @app.route('/api/kg/rollback', methods=['POST'])
 def rollback_kg():
-    """Rollback the KG to a specific generation by deleting newer data."""
+    """Rollback selected YAML stores by clearing concepts and links (keeps memories)."""
     try:
         data = request.get_json() or {}
-        target_generation = data.get('generation')
+        store_paths = data.get('storePaths', [])
 
-        if target_generation is None:
-            return jsonify({"error": "generation is required"}), 400
+        if not store_paths:
+            return jsonify({"error": "storePaths are required"}), 400
 
-        target_generation = int(target_generation)
-        engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
-
-        with engine.begin() as conn:
-            # Delete facts, concepts, and links added after target generation
-            conn.execute(
-                text("DELETE FROM kg_facts WHERE generation > :gen"),
-                {"gen": target_generation}
-            )
-            conn.execute(
-                text("DELETE FROM kg_concepts WHERE generation > :gen"),
-                {"gen": target_generation}
-            )
-            # Links don't have generation column, so clean up orphans
-            conn.execute(text("""
-                DELETE FROM kg_links WHERE source NOT IN (
-                    SELECT name FROM kg_concepts WHERE generation <= :gen
-                    UNION SELECT statement FROM kg_facts WHERE generation <= :gen
-                ) OR target NOT IN (
-                    SELECT name FROM kg_concepts WHERE generation <= :gen
-                    UNION SELECT statement FROM kg_facts WHERE generation <= :gen
-                )
-            """), {"gen": target_generation})
-            # Update metadata generation
-            conn.execute(text("""
-                INSERT OR REPLACE INTO kg_metadata (team_name, npc_name, directory_path, key, value)
-                VALUES ('', '', '', 'generation', :gen)
-            """), {"gen": str(target_generation)})
+        cleared = 0
+        for sp in store_paths:
+            store = KnowledgeStore(sp)
+            d = store.load()
+            d['concepts'] = []
+            d['links'] = []
+            d['last_evolved_at'] = None
+            store.save(d)
+            cleared += 1
 
         return jsonify({
             "success": True,
-            "generation": target_generation
+            "cleared": cleared
         })
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
-# ── Sememolution: KG population management ─────────────────────────────
-# Endpoints for managing populations of KGIndividuals: create, list, get,
-# delete, evolve generation, update genome, query-with-ranking. All state
-# persists in kg_populations / kg_individuals.
 
 @app.route('/api/kg/populations', methods=['GET'])
 def list_kg_populations():
@@ -1707,8 +1773,6 @@ def create_kg_population():
         mgr.initialize()
 
         if seed_from_kg:
-            # Prime each individual with a copy of the current global KG, so searches have something to traverse.
-
             import copy as _copy
             for ind in mgr.ga.population:
                 ind.kg_data = _copy.deepcopy(existing)
@@ -1825,15 +1889,27 @@ def evolve_kg_population(population_id):
 
 @app.route("/api/knowledge/load", methods=["GET"])
 def knowledge_load():
-    """Load the .knowledge.yaml for the current directory."""
+    """Load the .knowledge.yaml for the current directory or a list of directories."""
     try:
-        current_path = request.args.get("currentPath", os.getcwd())
         from npcpy.memory.knowledge_store import KnowledgeStore
+        dirs_param = request.args.get("dirs")
+        if dirs_param:
+            dirs = [d.strip() for d in dirs_param.split(",") if d.strip()]
+            all_memories = []
+            all_knowledge = []
+            for d in dirs:
+                store = KnowledgeStore(d)
+                data = store.load()
+                all_memories.extend(data.get("memories", []))
+                all_knowledge.extend(data.get("knowledge", []))
+            return jsonify({
+                "memories": all_memories,
+                "knowledge": all_knowledge,
+            })
+        current_path = request.args.get("currentPath", os.getcwd())
         store = KnowledgeStore(current_path)
         data = store.load()
         return jsonify({
-            "directory": data.get("directory"),
-            "version": data.get("version"),
             "memories": data.get("memories", []),
             "knowledge": data.get("knowledge", []),
         })
@@ -1930,16 +2006,14 @@ def knowledge_context():
 
 @app.route("/api/knowledge/all_memories", methods=["GET"])
 def knowledge_all_memories():
-    """Return aggregated memories from all indexed .knowledge.yaml files."""
+    """Return aggregated memories from all registered knowledge stores."""
     try:
         limit = request.args.get("limit")
         limit = int(limit) if limit else None
-        from npcpy.memory.knowledge_index import get_known_directories
         from npcpy.memory.knowledge_store import KnowledgeStore
-        dirs = get_known_directories(app.config.get('DB_PATH'))
+        dirs = _get_registered_stores()
         all_memories = []
-        for row in dirs:
-            d = row["directory"]
+        for d in dirs:
             fp = os.path.join(d, ".knowledge.yaml")
             if not os.path.exists(fp):
                 continue
@@ -1958,24 +2032,22 @@ def knowledge_all_memories():
 
 @app.route("/api/knowledge/all_search", methods=["GET"])
 def knowledge_all_search():
-    """Search across all indexed .knowledge.yaml files."""
+    """Search across all registered knowledge stores."""
     try:
         q = request.args.get("q", "").lower()
         limit = int(request.args.get("limit", 20))
-        from npcpy.memory.knowledge_index import get_known_directories
         from npcpy.memory.knowledge_store import KnowledgeStore
-        dirs = get_known_directories(app.config.get('DB_PATH'))
+        dirs = _get_registered_stores()
         results = []
-        for row in dirs:
-            d = row["directory"]
+        for d in dirs:
             fp = os.path.join(d, ".knowledge.yaml")
             if not os.path.exists(fp):
                 continue
             store = KnowledgeStore(d)
             data = store.load()
             for mem in data.get("memories", []):
-                text = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
-                if q in text:
+                txt = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
+                if q in txt:
                     mem["_directory"] = d
                     results.append(mem)
             if len(results) >= limit:
@@ -2169,21 +2241,12 @@ def execute_jinx():
                 break
 
     if not jinx:
-        global_jinxes_base = os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')
-        for j in load_jinxes_from_directory(global_jinxes_base):
-            if j.jinx_name == jinx_name:
-                jinx = j
-                print(f"Found jinx in global jinxes", file=sys.stderr)
-                break
-    
-    if not jinx:
         print(f"ERROR: Jinx '{jinx_name}' not found", file=sys.stderr)
         searched_paths = []
         if npc_object:
             searched_paths.append(f"NPC {npc_name} jinxes_dict")
         if current_path:
             searched_paths.append(f"Project jinxes at {os.path.join(current_path, 'npc_team', 'jinxes')}")
-        searched_paths.append(f"Global jinxes at {os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')}")
         print(f"Searched in: {', '.join(searched_paths)}", file=sys.stderr)
         return jsonify({"error": f"Jinx '{jinx_name}' not found"}), 404
     
@@ -2271,60 +2334,85 @@ def execute_jinx():
 @app.route("/api/models", methods=["GET"])
 def get_models():
     """
-    Endpoint to retrieve available models based on the current project path.
-    Checks for local configurations (.env) and Ollama.
-    Includes comprehensive error handling to prevent 500 errors.
+    Return models configured via the `providers` field in team/NPC config.
+    If `providers` is set, dynamically scan APIs (based on env vars) for
+    the listed providers.  If not set, fall back to the explicit
+    model/provider fields.
     """
-    global available_models
-    current_path = request.args.get("currentPath")
-    if not current_path:
-        current_path = os.path.dirname(app.config.get('user_npc_directory')) or os.path.expanduser('~/npc_team')  
-        print("Warning: No currentPath provided for /api/models, using default.")
-
+    current_path = request.args.get("currentPath") or os.path.expanduser('~')
+    registered_teams = _parse_registered_teams()
+    seen = set()
     formatted_models = []
-    error_msg = None
-    
-    try:
-        # Wrap the model fetching in try-except to isolate failures
-        try:
-            available_models = get_locally_available_models(current_path)
-        except Exception as model_err:
-            print(f"Warning: get_locally_available_models failed: {model_err}")
-            available_models = {}
-            error_msg = f"Partial model load error: {str(model_err)}"
+    # Cache scanned results per directory so we don't re-hit APIs
+    _scan_cache: dict = {}
 
-        # Process available models safely
-        for m, p in available_models.items():
+    def _add_model(m, p):
+        if not m or (m, p) in seen:
+            return
+        seen.add((m, p))
+        formatted_models.append({
+            "value": m,
+            "provider": p,
+            "display_name": f"{m} | {p}",
+        })
+
+    def _resolve_providers(providers_list, scan_path):
+        if not providers_list:
+            return
+        if scan_path not in _scan_cache:
             try:
-                text_only = ""
-                
-                display_model = m
-                if m.endswith(('.gguf', '.ggml')):
-                    display_model = os.path.basename(m)
-                elif p == 'lora':
-                    display_model = os.path.basename(m.rstrip('/'))
-
-                display_name = f"{display_model} | {p} {text_only}".strip()
-
-                formatted_models.append(
-                    {
-                        "value": m,  
-                        "provider": p,
-                        "display_name": display_name,
-                    }
+                _scan_cache[scan_path] = get_locally_available_models(
+                    scan_path, airplane_mode=False
                 )
-            except Exception as item_err:
-                print(f"Warning: Failed to format model {m}: {item_err}")
-                continue
-                
-        print(f"Successfully loaded {len(formatted_models)} models")
-        return jsonify({"models": formatted_models, "error": error_msg})
+            except Exception as e:
+                print(f"[models] Failed to scan local models for {scan_path}: {e}")
+                _scan_cache[scan_path] = {}
+        available = _scan_cache[scan_path]
+        for entry in providers_list:
+            if isinstance(entry, str):
+                provider_name = entry
+                for model_name, model_provider in available.items():
+                    if model_provider == provider_name:
+                        _add_model(model_name, provider_name)
+            elif isinstance(entry, dict):
+                for provider_name, model_list in entry.items():
+                    if isinstance(model_list, list):
+                        for model_name in model_list:
+                            _add_model(model_name, provider_name)
 
-    except Exception as e:
-        print(f"Critical error in get_models: {str(e)}")
-        traceback.print_exc()
-        # Always return a valid JSON response even on error
-        return jsonify({"models": [], "error": str(e)}), 200
+    def _collect_team_models(team, scan_path):
+        team_providers = getattr(team, 'providers', None)
+        if isinstance(team_providers, list) and team_providers:
+            _resolve_providers(team_providers, scan_path)
+        for npc in team.npcs.values():
+            npc_providers = getattr(npc, '_extra_fields', {}).get('providers')
+            if isinstance(npc_providers, list) and npc_providers:
+                _resolve_providers(npc_providers, scan_path)
+        if team.model and team.provider:
+            _add_model(team.model, team.provider)
+        for npc in team.npcs.values():
+            if npc.model and npc.provider:
+                _add_model(npc.model, npc.provider)
+
+    project_team_path = os.path.join(current_path, 'npc_team')
+    if os.path.isdir(project_team_path):
+        try:
+            team = Team(team_path=project_team_path)
+            _collect_team_models(team, current_path)
+        except Exception as e:
+            print(f"[models] Failed to load project team: {e}")
+
+    for team_path in registered_teams:
+        if not os.path.isdir(team_path):
+            continue
+        try:
+            team = Team(team_path=team_path)
+            _collect_team_models(team, team_path)
+        except Exception as e:
+            print(f"[models] Failed to load registered team {team_path}: {e}")
+
+    print(f"[models] Returning {len(formatted_models)} team-configured models")
+    return jsonify({"models": formatted_models, "error": None})
 
 @app.route('/api/<command>', methods=['POST'])
 def api_command(command):
@@ -2618,12 +2706,22 @@ def extract_and_store_memories(
         except Exception:
             pass
 
+    from npcpy.llm_funcs import resolve_model_provider
+    resolved_model, resolved_provider, _, _ = resolve_model_provider(
+        npc=npc_object,
+        team=npc_object.team if npc_object else None,
+        model=model,
+        provider=provider,
+    )
+
+    from npcpy.llm_funcs import CONVERSATION_RULES
     facts = get_facts(
         conversation_text,
-        model=npc_object.model if npc_object else model,
-        provider=npc_object.provider if npc_object else provider,
+        model=resolved_model,
+        provider=resolved_provider,
         npc=npc_object,
-        context=memory_context
+        context=memory_context,
+        rules=CONVERSATION_RULES,
     )
     
     memories_for_approval = []
@@ -2641,8 +2739,10 @@ def extract_and_store_memories(
                 directory_path=current_path or "/",
                 initial_memory=fact.get('statement', str(fact)),
                 status="pending_approval",
-                model=npc_object.model if npc_object else model,
-                provider=npc_object.provider if npc_object else provider,
+                model=resolved_model,
+                provider=resolved_provider,
+                source_type="conversation",
+                source_id=conversation_id,
             )
             memories_for_approval.append({
                 "memory_id": mem_id,
@@ -2653,19 +2753,6 @@ def extract_and_store_memories(
             })
             
     
-    if kg_facts_to_save or kg_concepts_to_save:
-        temp_kg_data = {
-            "facts": kg_facts_to_save,
-            "concepts": kg_concepts_to_save,
-            "generation": current_kg_generation,
-            "fact_to_concept_links": fact_to_concept_links_temp,
-            "concept_links": [],
-            "fact_to_fact_links": []
-        }
-        
-        db_engine = get_db_connection(app.config.get('DB_PATH'))
-        
-
     return memories_for_approval
 @app.route('/api/finetuned_models', methods=['GET'])
 def get_finetuned_models():
@@ -3611,7 +3698,17 @@ def get_npc_executions():
     npc_name = request.args.get("npcName")
     try:
         engine = get_db_connection()
-        with engine.connect() as conn:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS npc_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    npc TEXT,
+                    tool_name TEXT,
+                    parameters TEXT,
+                    result TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
             if npc_name:
                 result = conn.execute(
                     text("SELECT * FROM npc_executions WHERE npc = :npc ORDER BY timestamp DESC LIMIT 1000"),
@@ -3671,29 +3768,36 @@ def save_npc():
     try:
         data = request.json
         npc_data = data.get("npc")
-        is_global = data.get("isGlobal")
-        current_path = data.get("currentPath")
-        team = data.get("team")  # 'npcsh' | 'project'
+        source_path = data.get("sourcePath")
 
         if not npc_data or "name" not in npc_data:
             return jsonify({"error": "Invalid NPC data"}), 400
 
-        if is_global:
-            npc_directory = app.config.get('user_npc_directory')
-            if not npc_directory:
-                return jsonify({"error": "user_npc_directory not configured"}), 500
-        else:
-            npc_directory = os.path.join(current_path, "npc_team")
+        npc_directory = os.path.dirname(source_path) if source_path else None
+        if not npc_directory:
+            return jsonify({"error": "sourcePath required"}), 400
 
-        known_keys = {"name", "primary_directive", "model", "provider", "api_url", "use_global_jinxes", "jinxes"}
+        existing_npc_path = os.path.join(npc_directory, f"{npc_data['name']}.npc")
+        existing_model = npc_data.get("model", "")
+        existing_provider = npc_data.get("provider", "")
+        if os.path.exists(existing_npc_path):
+            try:
+                existing_data = load_yaml_file(existing_npc_path)
+                if existing_model in (None, "", "null") and existing_data.get("model"):
+                    existing_model = existing_data["model"]
+                if existing_provider in (None, "", "null") and existing_data.get("provider"):
+                    existing_provider = existing_data["provider"]
+            except Exception:
+                pass
+
+        known_keys = {"name", "primary_directive", "model", "provider", "api_url", "jinxes"}
         extra = {k: v for k, v in npc_data.items() if k not in known_keys}
         npc = NPC(
             name=npc_data["name"],
             primary_directive=npc_data.get("primary_directive", ""),
-            model=npc_data.get("model", ""),
-            provider=npc_data.get("provider", ""),
+            model=existing_model,
+            provider=existing_provider,
             api_url=npc_data.get("api_url", ""),
-            use_global_jinxes=npc_data.get("use_global_jinxes", True),
             jinxes=npc_data.get("jinxes"),
             **extra,
         )
@@ -3704,16 +3808,6 @@ def save_npc():
     except Exception as e:
         print(f"Error saving NPC: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
-@app.route("/api/jinxes/global")
-def get_jinxes_global():
-    user_npc_dir = app.config.get('user_npc_directory')
-    if not user_npc_dir:
-        return jsonify({"jinxes": [], "error": "user_npc_directory not configured"}), 500
-    global_jinx_directory = os.path.join(user_npc_dir, "jinxes")
-    if not os.path.exists(global_jinx_directory):
-        return jsonify({"jinxes": [], "error": None})
-    return jsonify({"jinxes": _serialize_jinxes_from_dir(global_jinx_directory), "error": None})
 
 @app.route("/api/jinxes/project", methods=["GET"])
 def get_jinxes_project():
@@ -3859,26 +3953,6 @@ def list_npcsql_models():
 
 ## ── Cron / Scheduling ─────────────────────────────────────────────
 
-@app.route("/api/cron/jobs", methods=["GET"])
-def list_cron_jobs():
-    return jsonify(list_jobs())
-
-@app.route("/api/cron/schedule", methods=["POST"])
-def schedule_cron_job():
-    data = request.json
-    ok, msg = schedule_job(data["schedule"], data["command"], data["jobName"])
-    return jsonify({"success": ok, "message": msg})
-
-@app.route("/api/cron/unschedule", methods=["POST"])
-def unschedule_cron_job():
-    data = request.json
-    ok, msg = unschedule_job(data["jobName"])
-    return jsonify({"success": ok, "message": msg})
-
-@app.route("/api/cron/status/<job_name>", methods=["GET"])
-def cron_job_status(job_name):
-    return jsonify(job_status(job_name))
-
 @app.route("/api/cron/crontab", methods=["GET"])
 def get_crontab():
     system = platform.system()
@@ -3912,7 +3986,7 @@ def get_crontab():
             r = subprocess.run(["systemctl", "list-timers", "--all", "--no-pager"], capture_output=True, text=True)
             if r.returncode == 0:
                 result["timers"] = r.stdout
-            # Systemd services (user + system npcsh-related)
+            # Systemd services
             r = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"], capture_output=True, text=True)
             if r.returncode == 0:
                 result["services"] = r.stdout
@@ -3921,7 +3995,7 @@ def get_crontab():
 @app.route("/api/cron/daemons", methods=["GET"])
 def list_system_daemons():
     system = platform.system()
-    result = {"services": "", "npcsh_services": [], "platform": system.lower()}
+    result = {"services": "", "platform": system.lower()}
     if system == "Linux":
         r = subprocess.run(["systemctl", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"], capture_output=True, text=True)
         result["services"] = r.stdout if r.returncode == 0 else ""
@@ -3929,20 +4003,9 @@ def list_system_daemons():
         r2 = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"], capture_output=True, text=True)
         if r2.returncode == 0:
             result["user_services"] = r2.stdout
-        # npcsh-specific triggers
-        triggers_dir = get_triggers_dir()
-        if os.path.isdir(triggers_dir):
-            for f in os.listdir(triggers_dir):
-                result["npcsh_services"].append(f)
     elif system == "Darwin":
         r = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
         result["services"] = r.stdout if r.returncode == 0 else ""
-        # npcsh agents
-        agents_dir = os.path.expanduser("~/Library/LaunchAgents")
-        if os.path.isdir(agents_dir):
-            for f in os.listdir(agents_dir):
-                if "npcsh" in f:
-                    result["npcsh_services"].append(f)
     elif system == "Windows":
         r = subprocess.run(["tasklist", "/fo", "CSV", "/nh"], capture_output=True, text=True)
         result["services"] = r.stdout if r.returncode == 0 else ""
@@ -4030,6 +4093,22 @@ def get_npc_team_project():
 
     return jsonify({"npcs": npc_data, "error": None})
 
+@app.route("/api/npc_team_from_path", methods=["GET"])
+def get_npc_team_from_path():
+    team_path = request.args.get("path")
+    if not team_path or not os.path.isdir(team_path):
+        return jsonify({"npcs": [], "error": "invalid path"})
+    try:
+        team = Team(team_path=team_path, db_conn=get_db_connection())
+        npc_data = []
+        for npc in team.npcs.values():
+            d = npc.to_dict()
+            d["team"] = os.path.basename(team_path)
+            npc_data.append(d)
+        return jsonify({"npcs": npc_data, "error": None})
+    except Exception as e:
+        print(f"Error loading team from {team_path}: {e}")
+        return jsonify({"npcs": [], "error": str(e)})
 
 @app.route("/api/npc-team/import", methods=["POST"])
 def import_npc_team():
@@ -4215,7 +4294,15 @@ def read_ctx_file(file_path):
 
                 
                 if 'databases' in data and isinstance(data['databases'], list):
-                    data['databases'] = [{"value": item} for item in data['databases']]
+                    normalized = []
+                    for item in data['databases']:
+                        if isinstance(item, dict):
+                            # Already a dict (e.g. {name, path} or legacy {value})
+                            normalized.append(item)
+                        else:
+                            # Plain string → wrap as {path: str}
+                            normalized.append({"path": str(item)})
+                    data['databases'] = normalized
                 
                 
                 if 'mcp_servers' in data and isinstance(data['mcp_servers'], list):
@@ -4248,7 +4335,18 @@ def write_ctx_file(file_path, data):
 
     
     if 'databases' in data_to_save and isinstance(data_to_save['databases'], list):
-        data_to_save['databases'] = [item.get("value", "") for item in data_to_save['databases'] if isinstance(item, dict)]
+        normalized = []
+        for item in data_to_save['databases']:
+            if isinstance(item, dict):
+                # Preserve {name, path} dicts as-is
+                # Legacy {value: ...} with no other keys → write back as plain string
+                if set(item.keys()) == {"value"}:
+                    normalized.append(item["value"])
+                else:
+                    normalized.append(item)
+            elif isinstance(item, str):
+                normalized.append(item)
+        data_to_save['databases'] = normalized
     
     
     if 'mcp_servers' in data_to_save and isinstance(data_to_save['mcp_servers'], list):
@@ -4351,67 +4449,6 @@ def init_project_team():
         return jsonify({"message": "Project team initialized.", "path": result, "error": None})
     except Exception as e:
         print(f"Error initializing project team: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/npcsh/check", methods=["GET"])
-def check_npcsh_folder():
-    """Check if npcsh has been initialized by looking for actual npc_team content."""
-    try:
-        user_npc_dir = app.config.get('user_npc_directory')
-        initialized = False
-        if user_npc_dir and os.path.isdir(user_npc_dir):
-            initialized = any(
-                f.endswith('.npc') for f in os.listdir(user_npc_dir)
-            ) if os.path.exists(user_npc_dir) else False
-        return jsonify({
-            "initialized": initialized,
-            "path": user_npc_dir,
-            "error": None
-        })
-    except Exception as e:
-        print(f"Error checking npcsh: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/npcsh/package-contents", methods=["GET"])
-def get_package_contents():
-    """Get NPCs and jinxes available in the npcsh package for installation."""
-    package_npc_team_dir = app.config.get('PACKAGE_NPC_TEAM_DIR')
-    npcs = []
-    jinxes = []
-
-    if package_npc_team_dir and os.path.exists(package_npc_team_dir):
-        try:
-            team = Team(team_path=package_npc_team_dir, db_conn=get_db_connection())
-            npcs = [npc.to_dict() for npc in team.npcs.values()]
-        except Exception as e:
-            print(f"Error loading package NPCs: {e}")
-
-        jinxes_dir = os.path.join(package_npc_team_dir, "jinxes")
-        if os.path.exists(jinxes_dir):
-            jinxes = _serialize_jinxes_from_dir(jinxes_dir)
-
-    return jsonify({
-        "npcs": npcs,
-        "jinxes": jinxes,
-        "package_dir": package_npc_team_dir,
-        "error": None
-    })
-
-@app.route("/api/npcsh/init", methods=["POST"])
-def init_npcsh_folder():
-    """Initialize npcsh with config and default npc_team."""
-    try:
-        db_path = app.config.get('DB_PATH')
-        db_dir = os.path.dirname(db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        return jsonify({
-            "message": "npcsh initialized",
-            "path": db_dir or db_path,
-            "error": None
-        })
-    except Exception as e:
-        print(f"Error initializing npcsh: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ============== NPC Team Sync (git-based) ==============
@@ -5257,9 +5294,12 @@ def get_mcp_tools():
 def _parse_registered_teams():
     """Parse registered_teams from request query params (comma-separated paths)."""
     raw = request.args.get('registered_teams', '')
-    if not raw:
-        return []
-    return [p.strip() for p in raw.split(',') if p.strip()]
+    if raw:
+        return [p.strip() for p in raw.split(',') if p.strip()]
+    teams_dict = getattr(app, 'registered_teams', None)
+    if teams_dict:
+        return [p for p in teams_dict.values() if isinstance(p, str) and p.strip()]
+    return []
 
 @app.route("/api/npc_tools", methods=["GET"])
 def get_npc_tools():
@@ -5288,19 +5328,19 @@ def get_npc_tools():
         if npc_name_param and team_obj and npc_name_param in team_obj.npcs:
             npc_obj = team_obj.npcs[npc_name_param]
         elif npc_name_param:
-            # Try to find NPC file
             search_dirs = []
             if current_path_arg:
-                search_dirs.append(os.path.join(os.path.abspath(current_path_arg), "npc_team", "npcs"))
+                search_dirs.append(os.path.join(os.path.abspath(current_path_arg), "npc_team"))
             for team_path in registered_teams:
-                search_dirs.append(os.path.join(team_path, "npcs"))
+                search_dirs.append(team_path)
             for d in search_dirs:
                 npc_file = os.path.join(d, f"{npc_name_param}.npc")
                 if os.path.exists(npc_file):
                     try:
-                        npc_obj = NPC(npc_file=npc_file, team=team_obj)
+                        team_obj = Team(team_path=d, db_conn=get_db_connection())
+                        npc_obj = team_obj.npcs.get(npc_name_param)
                     except Exception as e:
-                        print(f"[npc_tools] Failed to load NPC {npc_file}: {e}")
+                        print(f"[npc_tools] Failed to load team/NPC from {d}: {e}")
                     break
 
         npc_tools = []
@@ -5655,14 +5695,22 @@ def stream():
     model = data.get("model", None)
     provider = data.get("provider", None)
     print(f"🔍 Stream request - model: {model}, provider from request: {provider}")
-    if provider is None:
-        provider = available_models.get(model)
-        print(f"🔍 Provider looked up from available_models: {provider}")
+
+    # Defensive provider resolution: validate/correct against model catalog
+    if model:
+        resolved_provider = available_models.get(model) or lookup_provider(model)
+        if resolved_provider and resolved_provider != provider:
+            print(f"🔍 Correcting provider from {provider} to {resolved_provider} for model {model}")
+            provider = resolved_provider
+        elif provider is None:
+            provider = resolved_provider
+            print(f"🔍 Provider looked up from available_models/lookup_provider: {provider}")
 
     npc_name = data.get("npc", None)
     npc_source = data.get("npcSource", "global")
     current_path = data.get("currentPath")
     registered_teams = data.get("registered_teams", [])
+    print(f"[STREAM] registered_teams received: {registered_teams}")
     is_resend = data.get("isResend", False)
     parent_message_id = data.get("parentMessageId", None)
     frontend_user_message_id = data.get("userMessageId", None)
@@ -5732,23 +5780,29 @@ def stream():
             npc_object.team = team_object
         if not npc_object and registered_teams:
             db_conn = get_db_connection()
+            print(f"[STREAM] Searching for {npc_name} in {len(registered_teams)} registered teams")
             for team_path in registered_teams:
                 if not team_path or not os.path.isdir(team_path):
+                    print(f"[STREAM] Skipping invalid team path: {team_path}")
                     continue
                 try:
                     team_obj = Team(team_path=team_path, db_conn=db_conn)
+                    print(f"[STREAM] Loaded team {team_obj.name} from {team_path} with {len(team_obj.jinxes_dict)} jinxes, npcs: {list(team_obj.npcs.keys())}")
                     if npc_name in team_obj.npcs:
                         npc_object = team_obj.npcs[npc_name]
                         team_object = team_obj
-                        print(f"Found NPC {npc_name} in registered team {team_path}")
+                        print(f"[STREAM] Found NPC {npc_name} in registered team {team_path}")
+                        print(f"[STREAM] NPC {npc_name} jinxes_spec: {getattr(npc_object, 'jinxes_spec', None)}")
+                        print(f"[STREAM] NPC {npc_name} jinxes_dict keys: {list(npc_object.jinxes_dict.keys())}")
                         break
                     elif hasattr(team_obj, 'forenpc') and team_obj.forenpc and team_obj.forenpc.name == npc_name:
                         npc_object = team_obj.forenpc
                         team_object = team_obj
-                        print(f"Found NPC {npc_name} as forenpc in registered team {team_path}")
+                        print(f"[STREAM] Found NPC {npc_name} as forenpc in registered team {team_path}")
                         break
                 except Exception as e:
-                    print(f"Error loading registered team {team_path}: {e}")
+                    print(f"[STREAM] Error loading registered team {team_path}: {e}")
+                    traceback.print_exc()
                     continue
 
         if not npc_object:
@@ -5855,7 +5909,12 @@ def stream():
                 print(f"Error processing attachment {attachment.get('name', 'N/A')}: {e}")
                 traceback.print_exc()
     print(f"[DEBUG] After processing - images: {images}, attachment_paths_for_llm: {attachment_paths_for_llm}")
-    messages = fetch_messages_for_conversation(conversation_id)
+    explicit_messages = data.get("messages")
+    if explicit_messages:
+        messages = explicit_messages
+        print(f"[DEBUG] Using explicit messages from frontend ({len(messages)} messages)")
+    else:
+        messages = fetch_messages_for_conversation(conversation_id)
 
     # clean_messages_for_llm imported from npcpy.streaming
     messages = clean_messages_for_llm(messages)
@@ -5936,23 +5995,27 @@ def stream():
                 mcp_clients_cache=app.mcp_clients_cache
             )
 
-        # If frontend sent an ad-hoc MCP server, add its tools too
-        extra_mcp_path = data.get("mcpServerPath")
-        if extra_mcp_path:
-            extra_mcp_path = resolve_mcp_server_path(current_path, extra_mcp_path, False)
-        # Note: removed auto-fallback to team/global MCP server.
-        # MCP servers should only be used when explicitly requested by the frontend.
+        # If frontend sent ad-hoc MCP server(s), add their tools too.
+        # Supports both legacy single mcpServerPath and new mcpServerPaths array.
+        extra_paths = []
+        if "mcpServerPaths" in data and isinstance(data["mcpServerPaths"], list):
+            extra_paths = [p for p in data["mcpServerPaths"] if p]
+        elif data.get("mcpServerPath"):
+            extra_paths = [data.get("mcpServerPath")]
 
-        if extra_mcp_path:
-            client = app.mcp_clients_cache.get(extra_mcp_path)
+        for extra_mcp_path in extra_paths:
+            resolved_path = resolve_mcp_server_path(current_path, extra_mcp_path, False)
+            if not resolved_path:
+                continue
+            client = app.mcp_clients_cache.get(resolved_path)
             if client and not client.is_connected():
                 client.disconnect_sync()
-                app.mcp_clients_cache.pop(extra_mcp_path, None)
+                app.mcp_clients_cache.pop(resolved_path, None)
                 client = None
             if not client:
                 client = MCPClientNPC()
-                if client.connect_sync(extra_mcp_path):
-                    app.mcp_clients_cache[extra_mcp_path] = client
+                if client.connect_sync(resolved_path):
+                    app.mcp_clients_cache[resolved_path] = client
                 else:
                     client = None
             if client:
@@ -6762,6 +6825,116 @@ def get_memories_by_scope():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/knowledge/extract", methods=["POST"])
+def extract_facts_preview():
+    """Extract facts from arbitrary conversation text without storing. Returns facts for review."""
+    try:
+        data = request.json or {}
+        conversation_text = data.get("conversation_text", "")
+        conversation_id = data.get("conversation_id", "")
+        model = data.get("model", "")
+        provider = data.get("provider", "")
+        npc_name = data.get("npc", "")
+        team_name = data.get("team", "")
+        current_path = data.get("currentPath", "")
+
+        if not conversation_text:
+            return jsonify({"facts": [], "error": "No conversation_text provided"}), 400
+
+        npc_object = None
+        if npc_name and current_path:
+            try:
+                from npcpy.npc_compiler import load_npcs
+                npcs = load_npcs(current_path)
+                npc_object = npcs.get(npc_name)
+            except Exception:
+                pass
+
+        from npcpy.llm_funcs import get_facts, resolve_model_provider
+        resolved_model, resolved_provider, _, _ = resolve_model_provider(
+            npc=npc_object,
+            team=npc_object.team if npc_object else None,
+            model=model,
+            provider=provider,
+        )
+
+        memory_context = ""
+        if current_path:
+            try:
+                from npcpy.memory.knowledge_store import get_store_for_path
+                store = get_store_for_path(current_path)
+                memory_context = store.build_context(max_memories=10)
+            except Exception:
+                pass
+
+        from npcpy.llm_funcs import CONVERSATION_RULES
+        facts = get_facts(
+            conversation_text,
+            model=resolved_model,
+            provider=resolved_provider,
+            npc=npc_object,
+            context=memory_context,
+            rules=CONVERSATION_RULES,
+        )
+
+        return jsonify({
+            "facts": facts or [],
+            "count": len(facts) if facts else 0,
+            "model": resolved_model,
+            "provider": resolved_provider,
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/extract-and-store", methods=["POST"])
+def extract_and_store_facts():
+    """Extract facts from conversation text and store as pending memories."""
+    try:
+        data = request.json or {}
+        conversation_text = data.get("conversation_text", "")
+        conversation_id = data.get("conversation_id", "")
+        model = data.get("model", "")
+        provider = data.get("provider", "")
+        npc_name = data.get("npc", "")
+        team_name = data.get("team", "")
+        current_path = data.get("currentPath", "")
+
+        if not conversation_text:
+            return jsonify({"facts": [], "error": "No conversation_text provided"}), 400
+
+        npc_object = None
+        if npc_name and current_path:
+            try:
+                from npcpy.npc_compiler import load_npcs
+                npcs = load_npcs(current_path)
+                npc_object = npcs.get(npc_name)
+            except Exception:
+                pass
+
+        memories = extract_and_store_memories(
+            conversation_text=conversation_text,
+            conversation_id=conversation_id,
+            npc_name=npc_name or "default",
+            team_name=team_name or "default",
+            current_path=current_path,
+            model=model,
+            provider=provider,
+            npc_object=npc_object,
+        )
+
+        return jsonify({
+            "memories": memories or [],
+            "count": len(memories) if memories else 0,
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/interrupt", methods=["POST"])
 def interrupt_stream():
     data = request.json
@@ -6901,6 +7074,192 @@ def search_conversations():
     except Exception as e:
         print(f"Error searching conversations: {str(e)}")
         return jsonify({"conversations": [], "error": str(e)}), 500
+
+
+@app.route("/api/unified_search", methods=["GET"])
+def unified_search():
+    """Search across conversations, memories, backend KG, and daemon KG."""
+    try:
+        q = request.args.get("q", "").strip()
+        limit = int(request.args.get("limit", 20))
+        directory_path = request.args.get("directory_path", os.getcwd())
+        if not q:
+            return jsonify({"results": [], "error": None})
+
+        engine = get_db_connection()
+        results = []
+
+        # 1. Conversations via FTS5 (fallback to LIKE if FTS5 table missing)
+        try:
+            with engine.connect() as conn:
+                fts_query = text("""
+                    SELECT DISTINCT ch.conversation_id,
+                           MIN(ch.timestamp) as start_time,
+                           MAX(ch.timestamp) as last_message_timestamp,
+                           GROUP_CONCAT(DISTINCT CASE WHEN ch.npc IS NOT NULL AND ch.npc != '' THEN ch.npc END) as npcs,
+                           ch.content
+                    FROM conversation_history_fts fts
+                    JOIN conversation_history ch ON ch.rowid = fts.rowid
+                    WHERE fts.content MATCH :q
+                    GROUP BY ch.conversation_id
+                    ORDER BY rank
+                    LIMIT :limit
+                """)
+                fts_result = conn.execute(fts_query, {"q": q, "limit": limit})
+                for row in fts_result.fetchall():
+                    preview = row[4] or ""
+                    preview = preview[:200]
+                    results.append({
+                        "type": "conversation",
+                        "id": row[0],
+                        "timestamp": row[1],
+                        "last_message_timestamp": row[2],
+                        "npc": (row[3] or "").split(",")[0] if row[3] else "",
+                        "preview": preview,
+                        "title": preview[:50] if preview else row[0][:20],
+                        "score": 1.0,
+                    })
+        except Exception as fts_err:
+            # Fallback to LIKE if FTS5 not available
+            try:
+                with engine.connect() as conn:
+                    like_query = text("""
+                        SELECT DISTINCT ch.conversation_id,
+                               MIN(ch.timestamp) as start_time,
+                               MAX(ch.timestamp) as last_message_timestamp,
+                               GROUP_CONCAT(DISTINCT CASE WHEN ch.npc IS NOT NULL AND ch.npc != '' THEN ch.npc END) as npcs,
+                               ch.content
+                        FROM conversation_history ch
+                        WHERE ch.content LIKE :pattern
+                        GROUP BY ch.conversation_id
+                        ORDER BY MAX(ch.timestamp) DESC
+                        LIMIT :limit
+                    """)
+                    like_result = conn.execute(like_query, {"pattern": f"%{q}%", "limit": limit})
+                    for row in like_result.fetchall():
+                        preview = row[4] or ""
+                        preview = preview[:200]
+                        results.append({
+                            "type": "conversation",
+                            "id": row[0],
+                            "timestamp": row[1],
+                            "last_message_timestamp": row[2],
+                            "npc": (row[3] or "").split(",")[0] if row[3] else "",
+                            "preview": preview,
+                            "title": preview[:50] if preview else row[0][:20],
+                            "score": 0.8,
+                        })
+            except Exception:
+                pass
+
+        # 2. Memories from .knowledge.yaml
+        try:
+            from npcpy.memory.knowledge_store import KnowledgeStore
+            store = KnowledgeStore(directory_path)
+            mem_results = store.search_memories(q, limit=limit)
+            for mem in mem_results:
+                results.append({
+                    "type": "memory",
+                    "id": mem.get("id"),
+                    "content": mem.get("final_memory") or mem.get("initial_memory", ""),
+                    "status": mem.get("status"),
+                    "npc": mem.get("npc"),
+                    "directory": directory_path,
+                    "score": 0.9,
+                })
+        except Exception:
+            pass
+
+        # 3. Backend KG facts and concepts
+        try:
+            with engine.connect() as conn:
+                # kg_facts
+                fact_query = text("""
+                    SELECT statement, source_text, type, generation, origin
+                    FROM kg_facts
+                    WHERE statement LIKE :pattern OR source_text LIKE :pattern
+                    LIMIT :limit
+                """)
+                fact_result = conn.execute(fact_query, {"pattern": f"%{q}%", "limit": limit})
+                for row in fact_result.fetchall():
+                    results.append({
+                        "type": "kg_fact",
+                        "statement": row[0],
+                        "source_text": row[1],
+                        "kg_type": row[2],
+                        "generation": row[3],
+                        "origin": row[4],
+                        "score": 0.85,
+                    })
+                # kg_concepts
+                concept_query = text("""
+                    SELECT name, description, generation, origin
+                    FROM kg_concepts
+                    WHERE name LIKE :pattern OR description LIKE :pattern
+                    LIMIT :limit
+                """)
+                concept_result = conn.execute(concept_query, {"pattern": f"%{q}%", "limit": limit})
+                for row in concept_result.fetchall():
+                    results.append({
+                        "type": "kg_concept",
+                        "name": row[0],
+                        "description": row[1],
+                        "generation": row[2],
+                        "origin": row[3],
+                        "score": 0.85,
+                    })
+        except Exception:
+            pass
+
+        # 4. Daemon KG entities and triples
+        try:
+            with engine.connect() as conn:
+                # kg_entities
+                ent_query = text("""
+                    SELECT name, entity_type, source, metadata
+                    FROM kg_entities
+                    WHERE name LIKE :pattern
+                    LIMIT :limit
+                """)
+                ent_result = conn.execute(ent_query, {"pattern": f"%{q}%", "limit": limit})
+                for row in ent_result.fetchall():
+                    results.append({
+                        "type": "kg_entity",
+                        "name": row[0],
+                        "entity_type": row[1],
+                        "source": row[2],
+                        "metadata": row[3],
+                        "score": 0.82,
+                    })
+                # kg_triples joined with entity names
+                triple_query = text("""
+                    SELECT eh.name AS head_name, r.name AS relation_name, et.name AS tail_name, t.weight
+                    FROM kg_triples t
+                    JOIN kg_entities eh ON t.head_entity_id = eh.id
+                    JOIN kg_relations r ON t.relation_id = r.id
+                    JOIN kg_entities et ON t.tail_entity_id = et.id
+                    WHERE eh.name LIKE :pattern OR et.name LIKE :pattern OR r.name LIKE :pattern
+                    LIMIT :limit
+                """)
+                triple_result = conn.execute(triple_query, {"pattern": f"%{q}%", "limit": limit})
+                for row in triple_result.fetchall():
+                    results.append({
+                        "type": "kg_triple",
+                        "head": row[0],
+                        "relation": row[1],
+                        "tail": row[2],
+                        "weight": row[3],
+                        "score": 0.82,
+                    })
+        except Exception:
+            pass
+
+        # Sort by score desc, then take top limit
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return jsonify({"results": results[:limit], "error": None})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"results": [], "error": str(e)}), 500
 
 
 @app.route("/api/conversation/<conversation_id>/messages", methods=["GET"])
@@ -7419,7 +7778,6 @@ def scan_gguf_models():
         os.path.join(models_dir, 'gguf'),
         models_dir,
         os.path.expanduser('~/models'),
-        os.path.join(get_cache_dir(), 'huggingface/hub'),
         os.path.expanduser('~/.cache/huggingface/hub'),
     ]
 
@@ -7806,7 +8164,7 @@ def track_activity():
 def start_flask_server(
     port=5337,
     cors_origins=None,
-    static_files=None, 
+    static_files=None,
     debug=False,
     teams=None,
     npcs=None,
@@ -7814,33 +8172,26 @@ def start_flask_server(
     user_npc_directory = None
 ):
     try:
-        
         if teams:
             app.registered_teams = teams
             print(f"Registered {len(teams)} teams: {list(teams.keys())}")
         else:
             app.registered_teams = {}
-            
         if npcs:
             app.registered_npcs = npcs
             print(f"Registered {len(npcs)} NPCs: {list(npcs.keys())}")
         else:
             app.registered_npcs = {}
-        
         app.config['DB_PATH'] = db_path
         app.config['user_npc_directory'] = user_npc_directory
         if cors_origins:
-
             CORS(
                 app,
                 origins=cors_origins,
                 allow_headers=["Content-Type", "Authorization"],
                 methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                 supports_credentials=True,
-                
             )
-
-        
         print(f"Starting Flask server on http://0.0.0.0:{port}")
         app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
     except OSError as e:

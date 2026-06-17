@@ -2,6 +2,7 @@
 import time
 import platform
 import subprocess
+import tempfile
 from typing import Dict, Any
 import os
 import io
@@ -47,137 +48,77 @@ def _windows_snip_to_file(file_path: str) -> bool:
         print("Required packages not found. Please install: pip install pywin32 Pillow")
         return False
 
-def capture_screenshot( full=False) -> Dict[str, str]:
-    """
-    Function Description:
-        This function captures a screenshot of the current screen and saves it to a file.
-    Args:
-        npc: The NPC object representing the current NPC.
-        full: Boolean to determine if full screen capture is needed. Default to true.
-        path: Optional path to save the screenshot. Must not use placeholders. Relative paths preferred if the user specifies they want a specific path, otherwise default to None.
-    Returns:
-        A dictionary containing the filename, file path, and model kwargs.
-    """
-    
-
-    directory = os.path.expanduser("~/.npcsh/screenshots")
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"screenshot_{timestamp}.png"
-
-    file_path = os.path.join(directory, filename)
-    os.makedirs(directory, exist_ok=True)
-
-    
-
+def capture_screenshot(path: str = None, full=False) -> Dict[str, Any]:
+    """Capture a screenshot and return image data. If path is given, also save to disk."""
     system = platform.system()
-
-    model_kwargs = {}
-
-    if full:
-        
-        if system.lower() == "darwin":
-            
-            subprocess.run(["screencapture", file_path], capture_output=True)
-            
-        elif system == "Linux":
-            _took = False
-            for _cmd, _args in [
-                ("grim", [file_path]),
-                ("scrot", [file_path]),
-                ("import", ["-window", "root", file_path]),
-                ("gnome-screenshot", ["-f", file_path]),
-            ]:
-                if subprocess.run(["which", _cmd], capture_output=True).returncode == 0:
-                    subprocess.run([_cmd] + _args, capture_output=True, timeout=10)
-                    if os.path.exists(file_path):
-                        _took = True
-                        break
-            if not _took:
-                print("No supported screenshot tool found. Install scrot, grim, or imagemagick.")
-
-        elif system == "Windows":
-            
-            try:
-                import win32gui
-                import win32ui
-                import win32con
-                from PIL import Image
-
-                
-                width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
-                height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
-
-                
-                hdesktop = win32gui.GetDesktopWindow()
-                desktop_dc = win32gui.GetWindowDC(hdesktop)
-                img_dc = win32ui.CreateDCFromHandle(desktop_dc)
-                mem_dc = img_dc.CreateCompatibleDC()
-
-                
-                screenshot = win32ui.CreateBitmap()
-                screenshot.CreateCompatibleBitmap(img_dc, width, height)
-                mem_dc.SelectObject(screenshot)
-                mem_dc.BitBlt((0, 0), (width, height), img_dc, (0, 0), win32con.SRCCOPY)
-
-                
-                screenshot.SaveBitmapFile(mem_dc, file_path)
-
-                
-                mem_dc.DeleteDC()
-                win32gui.DeleteObject(screenshot.GetHandle())
-
-            except ImportError:
-                print(
-                    "Required packages not found. Please install: pip install pywin32"
-                )
-                return None
+    img = None
+    if system.lower() == "darwin":
+        tmp = os.path.join(tempfile.gettempdir(), f"sc_{time.time()}.png")
+        args = ["screencapture", tmp]
+        if not full:
+            args.insert(1, "-i")
+        subprocess.run(args, capture_output=True)
+        if os.path.exists(tmp):
+            img = Image.open(tmp)
+            if not path:
+                os.remove(tmp)
+    elif system == "Linux":
+        tmp = os.path.join(tempfile.gettempdir(), f"sc_{time.time()}.png")
+        took = False
+        for cmd, args in [
+            ("grim", [tmp] if full else ["-g", "$(slurp)", tmp]),
+            ("scrot", [tmp] if full else ["-s", tmp]),
+            ("import", ["-window", "root", tmp] if full else [tmp]),
+            ("gnome-screenshot", ["-f", tmp] if full else ["-a", "-f", tmp]),
+        ]:
+            if subprocess.run(["which", cmd], capture_output=True).returncode == 0:
+                subprocess.run([cmd] + args, capture_output=True, timeout=10, shell=(cmd == "grim" and not full))
+                if os.path.exists(tmp):
+                    took = True
+                    break
+        if took:
+            img = Image.open(tmp)
+            if not path:
+                os.remove(tmp)
         else:
-            print(f"Unsupported operating system: {system}")
+            print("No supported screenshot tool found. Install scrot, grim, or imagemagick.")
+            return None
+    elif system == "Windows":
+        try:
+            import win32gui, win32ui, win32con
+            hdesktop = win32gui.GetDesktopWindow()
+            desktop_dc = win32gui.GetWindowDC(hdesktop)
+            img_dc = win32ui.CreateDCFromHandle(desktop_dc)
+            mem_dc = img_dc.CreateCompatibleDC()
+            width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+            height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
+            screenshot = win32ui.CreateBitmap()
+            screenshot.CreateCompatibleBitmap(img_dc, width, height)
+            mem_dc.SelectObject(screenshot)
+            mem_dc.BitBlt((0, 0), (width, height), img_dc, (0, 0), win32con.SRCCOPY)
+            bmpinfo = screenshot.GetInfo()
+            bmpstr = screenshot.GetBitmapBits(True)
+            img = Image.frombuffer('RGB', (bmpinfo['bmWidth'], bmpinfo['bmHeight']), bmpstr, 'raw', 'BGRX', 0, 1)
+            mem_dc.DeleteDC()
+            win32gui.DeleteObject(screenshot.GetHandle())
+        except ImportError:
+            print("Required packages not found. Please install: pip install pywin32 Pillow")
             return None
     else:
-        if system == "Darwin":
-            subprocess.run(["screencapture", "-i", file_path])
-        elif system == "Linux":
-            if (
-                subprocess.run(
-                    ["which", "gnome-screenshot"], capture_output=True
-                ).returncode
-                == 0
-            ):
-                subprocess.Popen(["gnome-screenshot", "-a", "-f", file_path])
-                while not os.path.exists(file_path):
-                    time.sleep(0.5)
-            elif (
-                subprocess.run(["which", "scrot"], capture_output=True).returncode == 0
-            ):
-                subprocess.Popen(["scrot", "-s", file_path])
-                while not os.path.exists(file_path):
-                    time.sleep(0.5)
-            else:
-                print(
-                    "No supported screenshot jinx found. Please install gnome-screenshot or scrot."
-                )
-                return None
-        elif system == "Windows":
-            success = _windows_snip_to_file(file_path)
-            if not success:
-                print("Screenshot capture failed or timed out.")
-                return None
-        else:
-            print(f"Unsupported operating system: {system}")
-            return None
+        print(f"Unsupported operating system: {system}")
+        return None
 
-    
-    if os.path.exists(file_path):
-        print(f"Screenshot saved to: {file_path}")
-        return {
-            "filename": filename,
-            "file_path": file_path,
-            "model_kwargs": model_kwargs,
-        }
-    else:
+    if img is None:
         print("Screenshot capture failed or was cancelled.")
         return None
+
+    if path:
+        os.makedirs(os.path.dirname(os.path.expanduser(path)), exist_ok=True)
+        img.save(path, "PNG")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return {"image": img, "bytes": buf.getvalue(), "path": path}
 
 def compress_image(image_bytes, max_size=(800, 600)):
     

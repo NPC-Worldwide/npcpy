@@ -165,14 +165,20 @@ def resolve_model_provider(
             p = npc.provider
         if npc.model is not None:
             m = npc.model
+        elif team is not None and team.model is not None:
+            m = team.model
+        if p is None and team is not None and team.provider is not None:
+            p = team.provider
     elif team is not None:
         if team.model is not None:
             m = team.model
         if team.provider is not None:
             p = team.provider
     else:
-        p = "ollama"
-        m = None
+        # No fallback.  Caller must supply model/provider or configure an
+        # npc/team that carries one.  Returning (None, None) surfaces the
+        # problem immediately instead of silently hardcoding "ollama".
+        pass
     # Always resolve api_url and api_key from npc/team if not explicitly provided
     if a_url is None and npc is not None and getattr(npc, 'api_url', None) is not None:
         a_url = npc.api_url
@@ -1428,117 +1434,162 @@ def abstract(groups,
 
     return response["response"].get("groups", [])
 
-def get_facts(content_text, 
-              model= None,
-              provider = None,
+CONVERSATION_RULES = """
+ABSOLUTE RULES — violations return EMPTY array:
+1. NEVER attribute statements to speakers. No "the user", "the assistant",
+   "I asked", "they said". Strip all speaker/agent attribution completely.
+2. NEVER describe interaction mechanics: opening panes, clicking buttons,
+   invoking functions, loading pages, API calls.
+3. NEVER extract greetings, pleasantries, apologies, or meta-chat.
+4. NEVER output generic truisms that lack specific context (e.g. "testing is important").
+5. If the text is purely commands, greetings, or operational chatter, return EMPTY.
+
+EXTRACT ONLY facts containing specific technical substance:
+- Concrete implementation decisions with rationale (WHAT was changed, WHY, in WHAT system)
+- Quantified observations with metrics or thresholds
+- Causal relationships and their conditions
+- Architectural constraints or requirements
+- Error patterns and their specific resolutions
+- Domain-specific methodologies with their applicability conditions
+"""
+
+FILE_RULES = """
+ABSOLUTE RULES — violations return EMPTY array:
+1. NEVER output generic truisms ("code should be tested", "imports are necessary").
+2. NEVER describe trivial syntax ("this file uses Python functions").
+3. NEVER restate the filename as a fact.
+4. If the file is purely boilerplate, auto-generated, or contains no
+   substantive logic, return EMPTY.
+
+EXTRACT facts containing specific technical substance:
+- Purpose and responsibilities of modules/classes/functions (WHAT it does)
+- Dependencies and integrations with other systems (WHAT it connects to)
+- Configuration values and their semantic meaning (WHAT each setting controls)
+- Algorithms, data structures, or protocols implemented (HOW it works)
+- Design constraints, performance characteristics, or limitations (WHY it works this way)
+- API surfaces: endpoints, arguments, return types, error conditions
+- Security or correctness considerations
+"""
+
+
+def get_facts(content_text,
+              model=None,
+              provider=None,
               npc=None,
-              context : str=None, 
+              context: str = None,
               attempt_number=1,
               n_attempts=3,
-
+              rules=None,
               **kwargs):
-    """Extract facts from content text"""
-    
-    prompt = f"""
-    Extract facts from this text. A fact is a specific statement that can be sourced from the text.
+    """Extract facts from content text.
 
-    Example: if text says "the moon is the earth's only currently known satellite", extract:
-    - "The moon is a satellite of earth" 
-    - "The moon is the only current satellite of earth"
-    - "There may have been other satellites of earth" (inferred from "only currently known")
+    ``rules`` is injected directly into the prompt after the base
+    instructions. Callers pass ``CONVERSATION_RULES`` or
+    ``FILE_RULES`` (or any custom rules string).
+    """
 
-        A fact is a piece of information that makes a statement about the world.
-        A fact is typically a sentence that is true or false.
-        Facts may be simple or complex. They can also be conflicting with each other, usually
-        because there is some hidden context that is not mentioned in the text.
-        In any case, it is simply your job to extract a list of facts that could pertain to
-        an individual's personality.
-        
-        For example, if a message says:
-            "since I am a doctor I am often trying to think up new ways to help people.
-            Can you help me set up a new kind of software to help with that?"
-        You might extract the following facts:
-            - The individual is a doctor
-            - They are helpful
+    rules = rules or FILE_RULES
 
-        Another example:
-            "I am a software engineer who loves to play video games. I am also a huge fan of the
-            Star Wars franchise and I am a member of the 501st Legion."
-        You might extract the following facts:
-            - The individual is a software engineer
-            - The individual loves to play video games
-            - The individual is a huge fan of the Star Wars franchise
-            - The individual is a member of the 501st Legion
+    # Merge NPC context with any additional passed context
+    full_context = ""
+    if npc and hasattr(npc, "context") and npc.context:
+        full_context = str(npc.context)
+    if context:
+        if full_context:
+            full_context += "\n\n" + str(context)
+        else:
+            full_context = str(context)
 
-        Another example:
-            "The quantum tunneling effect allows particles to pass through barriers
-            that classical physics says they shouldn't be able to cross. This has
-            huge implications for semiconductor design."
-        You might extract these facts:
-            - Quantum tunneling enables particles to pass through barriers that are
-              impassable according to classical physics
-            - The behavior of quantum tunneling has significant implications for
-              how semiconductors must be designed
+    instruction = f"""
+    Extract substantive, self-contained domain facts from the following content.
 
-        Another example:
-            "People used to think the Earth was flat. Now we know it's spherical,
-            though technically it's an oblate spheroid due to its rotation."
-        You might extract these facts:
-            - People historically believed the Earth was flat
-            - It is now known that the Earth is an oblate spheroid
-            - The Earth's oblate spheroid shape is caused by its rotation
+    A valid fact is a rich statement that captures non-obvious technical knowledge,
+    including the context needed to understand what system or domain it pertains to.
+    Facts should preserve nuance: uncertainty, conditions, trade-offs, and causal
+    relationships. They should NOT be shallow one-liners like "X is Y".
 
-        Another example:
-            "My research on black holes suggests they emit radiation, but my professor
-            says this conflicts with Einstein's work. After reading more papers, I
-            learned this is actually Hawking radiation and doesn't conflict at all."
-        You might extract the following facts:
-            - Black holes emit radiation
-            - The professor believes this radiation conflicts with Einstein's work
-            - The radiation from black holes is called Hawking radiation
-            - Hawking radiation does not conflict with Einstein's work
+    {rules}
 
-        Another example:
-            "During the pandemic, many developers switched to remote work. I found
-            that I'm actually more productive at home, though my company initially
-            thought productivity would drop. Now they're keeping remote work permanent."
-        You might extract the following facts:
-            - The pandemic caused many developers to switch to remote work
-            - The individual discovered higher productivity when working from home
-            - The company predicted productivity would decrease with remote work
-            - The company decided to make remote work a permanent option
+    YOUR TASK — extract up to 5 facts from:
+    "{content_text}"
 
-        Thus, it is your mission to reliably extract lists of facts.
-
-    Here is the text:
-    Text: "{content_text}"
-
-    Facts should never be more than one or two sentences, and they should not be overly complex or literal. They must be explicitly
-    derived or inferred from the source text. Do not simply repeat the source text verbatim when stating the fact. 
-    
-    No two facts should share substantially similar claims. They should be conceptually distinct and pertain to distinct ideas, avoiding lengthy convoluted or compound facts .
+    If no facts meet the criteria, return an EMPTY facts array.
     Respond with JSON:
-    """ + '{"facts": [{"statement": "fact statement that builds on input text to state a specific claim that can be falsified through reference to the source material", "source_text": "text snippets related to the source text", "type": "explicit or inferred"}]}'
-    
-    response = get_llm_response(prompt, 
-                                model=model,
-                                provider=provider, 
-                                npc=npc,
-                                format="json", 
-                                context=context,
-                                **kwargs)
+    """
 
-    if len(response.get("response", {}).get("facts", [])) == 0 and attempt_number < n_attempts:
-        print(f"  Attempt {attempt_number} to extract facts yielded no results. Retrying...")
-        return get_facts(content_text, 
-                         model=model, 
-                         provider=provider, 
-                         npc=npc,
-                         context=context,
-                         attempt_number=attempt_number+1,
-                         n_attempts=n_attempts,
-                         **kwargs)
+    examples = """
+
+    EXAMPLES:
+
+    Input: "We were seeing OOMs during training on the 40GB A100s when batch size hit 64.
+    Turns out the gradient checkpointing wasn't being applied to the cross-attention layers.
+    Once we wrapped those in checkpoint() too, we could push to batch size 96 without issues."
+
+    Output:
+    {
+      "facts": [
+        {
+          "statement": "In the transformer model being trained, gradient checkpointing was initially missing from cross-attention layers, causing out-of-memory errors on 40GB A100 GPUs at batch size 64",
+          "source_text": "the gradient checkpointing wasn't being applied to the cross-attention layers",
+          "type": "explicit"
+        },
+        {
+          "statement": "Applying gradient checkpointing to cross-attention layers increased feasible batch size from 64 to 96 on the same 40GB A100 hardware without OOM errors",
+          "source_text": "Once we wrapped those in checkpoint() too, we could push to batch size 96 without issues",
+          "type": "inferred"
+        }
+      ]
+    }
+
+    Input: "Can you open the knowledge graph editor? I want to see if the nodes show up."
+
+    Output:
+    {
+      "facts": []
+    }
+
+    Input: "Hello! How are you today? I hope the weather is nice."
+
+    Output:
+    {
+      "facts": []
+    }
+    """
+
+    json_fmt = '{"facts": [{"statement": "rich self-contained domain claim with full contextual specificity", "source_text": "relevant excerpt", "type": "explicit or inferred"}]}'
+
+    prompt = instruction + examples + json_fmt
+
+    response = get_llm_response(prompt,
+                                model=model,
+                                provider=provider,
+                                npc=npc,
+                                format="json",
+                                context=full_context,
+                                **kwargs)
+    try:
     
+        if len(response.get("response", {}).get("facts", [])) == 0 and attempt_number < n_attempts:
+            print(f"  Attempt {attempt_number} to extract facts yielded no results. Retrying...")
+            return get_facts(content_text,
+                             model=model,
+                             provider=provider,
+                             npc=npc,
+                             context=full_context,
+                             attempt_number=attempt_number+1,
+                             n_attempts=n_attempts,
+                             rules=rules,
+                             **kwargs)
+    except AttributeError:
+        return get_facts(content_text,
+                 model=model,
+                 provider=provider,
+                 npc=npc,
+                 context=full_context,
+                 attempt_number=attempt_number+1,
+                 n_attempts=n_attempts,
+                 rules=rules,
+                 **kwargs)
     return response["response"].get("facts", [])
 
         

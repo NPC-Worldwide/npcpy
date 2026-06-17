@@ -190,33 +190,12 @@ class TestPlatformPaths:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_get_cache_dir_returns_string(self):
-        """get_cache_dir should return a string path."""
-        from npcpy.npc_sysenv import get_cache_dir
-        result = get_cache_dir()
-        assert isinstance(result, str)
-        assert len(result) > 0
-
     def test_get_models_dir_returns_string(self):
         """get_models_dir should return a string path."""
         from npcpy.npc_sysenv import get_models_dir
         result = get_models_dir()
         assert isinstance(result, str)
         assert 'models' in result.lower() or 'npcsh' in result.lower()
-
-    def test_get_npcshrc_path_returns_string(self):
-        """get_npcshrc_path should return a string path."""
-        from npcpy.npc_sysenv import get_npcshrc_path
-        result = get_npcshrc_path()
-        assert isinstance(result, str)
-        assert 'npcshrc' in result or '.npcshrc' in result
-
-    def test_get_history_db_path_returns_string(self):
-        """get_history_db_path should return a string path."""
-        from npcpy.npc_sysenv import get_history_db_path
-        result = get_history_db_path()
-        assert isinstance(result, str)
-        assert result.endswith('.db')
 
 
 class TestMLXDiscovery:

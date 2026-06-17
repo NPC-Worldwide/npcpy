@@ -18,109 +18,26 @@ ON_WINDOWS = platform.system() == "Windows"
 ON_MACOS = platform.system() == "Darwin"
 
 def get_data_dir() -> str:
-    """
-    Get the data directory for npcsh.
-
-    If INCOGNIDE_HOME is set, use that directly.
-    Otherwise:
-        - Linux: $XDG_DATA_HOME/npcsh or ~/.local/share/npcsh
-        - macOS: ~/Library/Application Support/npcsh
-        - Windows: %LOCALAPPDATA%/npcsh or ~/AppData/Local/npcsh
-
-    Falls back to ~/.npcsh for backwards compatibility if the new location
-    doesn't exist but the old one does.
-    """
-    npcsh_home = os.environ.get('INCOGNIDE_HOME')
-    if npcsh_home:
-        return os.path.expanduser(npcsh_home)
-
+    """Get the data directory."""
     if ON_WINDOWS:
         base = os.environ.get('LOCALAPPDATA', os.path.expanduser('~/AppData/Local'))
-        new_path = os.path.join(base, 'npcsh')
+        return os.path.join(base, 'npcsh')
     elif ON_MACOS:
-        new_path = os.path.expanduser('~/Library/Application Support/npcsh')
+        return os.path.expanduser('~/Library/Application Support/npcsh')
     else:
         xdg_data = os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))
-        new_path = os.path.join(xdg_data, 'npcsh')
-
-    old_path = os.path.expanduser('~/.npcsh')
-    if os.path.exists(old_path) and not os.path.exists(new_path):
-        return old_path
-
-    return new_path
+        return os.path.join(xdg_data, 'npcsh')
 
 def get_config_dir() -> str:
-    """
-    Get the platform-specific config directory for npcsh.
-
-    Returns:
-        - Linux: $XDG_CONFIG_HOME/npcsh or ~/.config/npcsh
-        - macOS: ~/Library/Application Support/npcsh (same as data on macOS)
-        - Windows: %APPDATA%/npcsh or ~/AppData/Roaming/npcsh
-
-    Falls back to ~/.npcsh for backwards compatibility if the new location
-    doesn't exist but the old one does.
-    """
+    """Get the platform-specific config directory."""
     if ON_WINDOWS:
         base = os.environ.get('APPDATA', os.path.expanduser('~/AppData/Roaming'))
-        new_path = os.path.join(base, 'npcsh')
+        return os.path.join(base, 'npcsh')
     elif ON_MACOS:
-        new_path = os.path.expanduser('~/Library/Application Support/npcsh')
+        return os.path.expanduser('~/Library/Application Support/npcsh')
     else:
         xdg_config = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
-        new_path = os.path.join(xdg_config, 'npcsh')
-
-    old_path = os.path.expanduser('~/.npcsh')
-    if os.path.exists(old_path) and not os.path.exists(new_path):
-        return old_path
-
-    return new_path
-
-def get_cache_dir() -> str:
-    """
-    Get the platform-specific cache directory for npcsh.
-
-    Returns:
-        - Linux: $XDG_CACHE_HOME/npcsh or ~/.cache/npcsh
-        - macOS: ~/Library/Caches/npcsh
-        - Windows: %LOCALAPPDATA%/npcsh/cache
-    """
-    if ON_WINDOWS:
-        base = os.environ.get('LOCALAPPDATA', os.path.expanduser('~/AppData/Local'))
-        return os.path.join(base, 'npcsh', 'cache')
-    elif ON_MACOS:
-        return os.path.expanduser('~/Library/Caches/npcsh')
-    else:
-        xdg_cache = os.environ.get('XDG_CACHE_HOME', os.path.expanduser('~/.cache'))
-        return os.path.join(xdg_cache, 'npcsh')
-
-def get_npcshrc_path() -> str:
-    """
-    Get the path to the npcshrc config file.
-
-    Returns the platform-appropriate config file path.
-    Falls back to ~/.npcshrc for backwards compatibility.
-    """
-    old_path = os.path.expanduser('~/.npcshrc')
-    if os.path.exists(old_path):
-        return old_path
-
-    config_dir = get_config_dir()
-    return os.path.join(config_dir, 'npcshrc')
-
-def get_history_db_path() -> str:
-    """
-    Get the path to the history database.
-
-    Returns the platform-appropriate database path.
-    Falls back to ~/npcsh_history.db for backwards compatibility.
-    """
-    old_path = os.path.expanduser('~/npcsh_history.db')
-    if os.path.exists(old_path):
-        return old_path
-
-    data_dir = get_data_dir()
-    return os.path.join(data_dir, 'history.db')
+        return os.path.join(xdg_config, 'npcsh')
 
 def get_models_dir() -> str:
     """Get the directory for storing models."""
@@ -149,75 +66,6 @@ def get_attachments_dir() -> str:
 def get_logs_dir() -> str:
     """Get the directory for logs."""
     return os.path.join(get_data_dir(), 'npc_team', 'logs')
-
-def _migrate_dirs_to_npc_team() -> None:
-    """One-time migration: move top-level resource dirs into npc_team/.
-
-    Runs only when the marker file is absent and old dirs exist.
-    """
-    data_dir = get_data_dir()
-    marker = os.path.join(data_dir, '.dirs_migrated_to_npc_team')
-    if os.path.isfile(marker):
-        return
-
-    old_dirs = ["images", "models", "attachments", "mcp_servers",
-                "jobs", "triggers", "videos", "logs"]
-    # Only bother if at least one old top-level dir has content
-    needs_migration = any(
-        os.path.isdir(os.path.join(data_dir, d)) and os.listdir(os.path.join(data_dir, d))
-        for d in old_dirs
-        if os.path.isdir(os.path.join(data_dir, d))
-    )
-    if not needs_migration:
-        # No old dirs with content — just write marker and return
-        try:
-            os.makedirs(data_dir, exist_ok=True)
-            with open(marker, 'w') as f:
-                f.write('No migration needed\n')
-        except OSError:
-            pass
-        return
-
-    try:
-        from migrations.migrate_dirs_to_npc_team import run_migration
-        run_migration(data_dir, dry_run=False)
-    except ImportError:
-        # Inline fallback if the migration module isn't on sys.path
-        import shutil
-        npc_team_dir = os.path.join(data_dir, 'npc_team')
-        os.makedirs(npc_team_dir, exist_ok=True)
-        for dirname in old_dirs:
-            old = os.path.join(data_dir, dirname)
-            new = os.path.join(npc_team_dir, dirname)
-            if not os.path.isdir(old) or not os.listdir(old):
-                if os.path.isdir(old) and not os.listdir(old):
-                    try:
-                        os.rmdir(old)
-                    except OSError:
-                        pass
-                continue
-            os.makedirs(new, exist_ok=True)
-            for item in os.listdir(old):
-                src = os.path.join(old, item)
-                dst = os.path.join(new, item)
-                if not os.path.exists(dst):
-                    shutil.move(src, dst)
-            if not os.listdir(old):
-                try:
-                    os.rmdir(old)
-                except OSError:
-                    pass
-        with open(marker, 'w') as f:
-            f.write('Migration applied: top-level dirs moved into npc_team/\n')
-
-def ensure_npcsh_dirs() -> None:
-    """Ensure all npcsh directories exist, migrating old layouts if needed."""
-    _migrate_dirs_to_npc_team()
-    for dir_path in [get_data_dir(), get_config_dir(), get_cache_dir(),
-                     get_models_dir(), get_images_dir(), get_jobs_dir(),
-                     get_triggers_dir(), get_videos_dir(), get_attachments_dir(),
-                     get_logs_dir()]:
-        os.makedirs(dir_path, exist_ok=True)
 
 try:
     if not ON_WINDOWS:
@@ -273,7 +121,7 @@ def check_internet_connection(timeout=5):
     except OSError:
         return False
 
-def get_locally_available_models(project_directory, airplane_mode=False):
+def get_locally_available_models(project_directory, airplane_mode=False, gguf_dir=None):
     available_models = {}
     env_path = os.path.join(project_directory, ".env")
     env_vars = {}
@@ -293,104 +141,12 @@ def get_locally_available_models(project_directory, airplane_mode=False):
     else:
         logging.info("Internet connection detected. Proceeding based on 'airplane_mode' parameter.")
     
-    custom_providers = load_custom_providers()
-    
-    for provider_name, config in custom_providers.items():
-        api_key_var = config.get('api_key_var')
-        if not api_key_var:
-            api_key_var = f"{provider_name.upper()}_API_KEY"
-        
-        if api_key_var in env_vars or os.environ.get(api_key_var):
-            try:
-                import requests
-                
-                def fetch_custom_models():
-                    base_url = config.get('base_url', '')
-                    headers = config.get('headers', {})
-                    
-                    api_key = env_vars.get(api_key_var) or \
-                              os.environ.get(api_key_var)
-                    if api_key:
-                        headers['Authorization'] = f'Bearer {api_key}'
-                    
-                    models_endpoint = f"{base_url.rstrip('/')}/models"
-                    response = requests.get(
-                        models_endpoint, 
-                        headers=headers,
-                        timeout=3.5
-                    )
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        
-                        if isinstance(data, dict) and 'data' in data:
-                            return [
-                                m['id'] for m in data['data'] 
-                                if 'id' in m
-                            ]
-                        elif isinstance(data, list):
-                            return [
-                                m['id'] for m in data 
-                                if isinstance(m, dict) and 'id' in m
-                            ]
-                    return []
-                
-                models = fetch_custom_models()
-                for model in models:
-                    available_models[model] = 'openai-like'
-                    
-                logging.info(f"Loaded {len(models)} models from custom provider '{provider_name}'")
-                
-            except Exception as e:
-                logging.warning(f"Failed to load models from custom provider '{provider_name}': {e}")
-    
-    
     airplane_mode = False
     if not airplane_mode:
         timeout_seconds = 3.5
         
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-          
-            if 'NPCSH_API_URL' in env_vars or os.environ.get('NPCSH_API_URL'):
-              try:
-                  import requests
-                  
-                  def fetch_custom_models():
-                      base_url = env_vars.get('NPCSH_API_URL') or os.environ.get('NPCSH_API_URL')                      
-                      models_endpoint = f"{base_url.rstrip('/')}/models"
-                      response = requests.get(
-                          models_endpoint, 
-
-                          timeout=3.5
-                      )
-                      
-                      if response.status_code == 200:
-                          data = response.json()
-                          
-                          if isinstance(data, dict) and 'data' in data:
-                              return [
-                                  m['id'] for m in data['data'] 
-                                  if 'id' in m
-                              ]
-                          elif isinstance(data, list):
-                              return [
-                                  m['id'] for m in data 
-                                  if isinstance(m, dict) and 'id' in m
-                              ]
-                      return []
-                  
-                  models = fetch_custom_models()
-                  for model in models:
-                      available_models[model] = 'openai-like'
-                      
-
-                
-                  
-              except Exception as e:
-                  logging.warning(f"Failed to load models from custom provider 'openai-like': {e}")
-  
-            
             if "ANTHROPIC_API_KEY" in env_vars or os.environ.get("ANTHROPIC_API_KEY"):
                 try:
                     import anthropic
@@ -497,12 +253,11 @@ def get_locally_available_models(project_directory, airplane_mode=False):
         os.path.join(models_dir, 'gguf'),
         models_dir,
         os.path.expanduser('~/models'),
-        os.path.join(get_cache_dir(), 'huggingface/hub'),
         os.path.expanduser('~/.cache/huggingface/hub'),
     ]
-    env_gguf_dir = os.environ.get('NPCSH_GGUF_DIR')
-    if env_gguf_dir:
-        gguf_dirs.insert(0, os.path.expanduser(env_gguf_dir))
+    resolved_gguf = gguf_dir or os.environ.get('GGUF_DIR')
+    if resolved_gguf:
+        gguf_dirs.insert(0, os.path.expanduser(resolved_gguf))
 
     seen_paths = set()
     for scan_dir in gguf_dirs:
@@ -816,51 +571,6 @@ def guess_mime_type(filename):
         ".md": "text/markdown",
     }
     return mime_types.get(extension, "application/octet-stream")
-
-def ensure_dirs_exist(*dirs):
-    """Ensure all specified directories exist"""
-    for dir_path in dirs:
-        os.makedirs(os.path.expanduser(dir_path), exist_ok=True)
-
-def init_db_tables(db_path="~/npcsh_history.db"):
-    """Initialize necessary database tables"""
-    db_path = os.path.expanduser(db_path)
-    with sqlite3.connect(db_path) as conn:
-        
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS npc_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entity_id TEXT,  
-                entry_type TEXT,
-                content TEXT,
-                metadata TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS pipeline_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                pipeline_name TEXT,
-                step_name TEXT,
-                output TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS compiled_npcs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE,
-                source_path TEXT,
-                compiled_content TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        conn.commit()
 
 def get_model_and_provider(command: str, available_models: list) -> tuple:
     """
@@ -1288,49 +998,13 @@ def lookup_provider(model: str) -> str:
     Returns:
         The provider name or None if not found
     """
-    if model and os.path.isdir(os.path.expanduser(model)):
+    if not model:
+        return None
+    if os.path.isdir(os.path.expanduser(model)):
         adapter_config = os.path.join(os.path.expanduser(model), 'adapter_config.json')
         if os.path.exists(adapter_config):
             return "lora"
 
-    custom_providers = load_custom_providers()
-    
-    for provider_name, config in custom_providers.items():
-        if model.startswith(f"{provider_name}-"):
-            return provider_name
-        
-        try:
-            import requests
-            api_key_var = config.get('api_key_var') or \
-                         f"{provider_name.upper()}_API_KEY"
-            api_key = os.environ.get(api_key_var)
-            
-            if api_key:
-                base_url = config.get('base_url', '')
-                headers = config.get('headers', {})
-                headers['Authorization'] = f'Bearer {api_key}'
-                
-                models_endpoint = f"{base_url.rstrip('/')}/models"
-                response = requests.get(
-                    models_endpoint, 
-                    headers=headers, 
-                    timeout=1.0
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    models = []
-                    
-                    if isinstance(data, dict) and 'data' in data:
-                        models = [m['id'] for m in data['data']]
-                    elif isinstance(data, list):
-                        models = [m['id'] for m in data]
-                    
-                    if model in models:
-                        return provider_name
-        except Exception:
-            pass
-    
     if model == "deepseek-chat" or model == "deepseek-reasoner":
         return "deepseek"
 
@@ -1354,41 +1028,9 @@ def lookup_provider(model: str) -> str:
         return "gemini"
     if "diffusion" in model:
         return "diffusers"
-        
+
     return None
 
-def load_custom_providers():
-    """
-    Load custom provider configurations from npcshrc config file.
-
-    Returns:
-        dict: Custom provider configurations keyed by provider name
-    """
-    custom_providers = {}
-    npcshrc_path = get_npcshrc_path()
-    
-    if os.path.exists(npcshrc_path):
-        with open(npcshrc_path, "r") as f:
-            for line in f:
-                line = line.split("#")[0].strip()
-                if "CUSTOM_PROVIDER_" in line and "=" in line:
-                    key, value = line.split("=", 1)
-                    key = key.strip().replace("export ", "")
-                    value = value.strip().strip("\"'")
-                    
-                    try:
-                        config = json.loads(value)
-                        provider_name = key.replace(
-                            "CUSTOM_PROVIDER_", ""
-                        ).lower()
-                        custom_providers[provider_name] = config
-                    except json.JSONDecodeError as e:
-                        logging.warning(
-                            f"Failed to parse custom provider {key}: {e}"
-                        )
-                        continue
-    
-    return custom_providers
 load_env_from_execution_dir()
 deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", None)
 gemini_api_key = os.getenv("GEMINI_API_KEY", None)
@@ -1401,17 +1043,12 @@ openai_api_key = os.getenv("OPENAI_API_KEY", None)
 
 def resolve_team_dir(team_path=None):
     """Resolve the team directory from a team_path identifier.
-    None or 'incognide' -> <data_dir>/incognide/npc_team/
-    'npcsh' -> <data_dir>/npc_team/
+    None -> <data_dir>/npc_team/
     Otherwise treat as absolute path.
     """
-    base = get_data_dir()
-    if not team_path or team_path == "incognide":
-        return os.path.join(base, "incognide", "npc_team")
-    elif team_path == "npcsh":
-        return os.path.join(base, "npc_team")
-    else:
-        return team_path
+    if not team_path:
+        return os.path.join(get_data_dir(), "npc_team")
+    return team_path
 
 
 def _git(args, cwd, timeout=15):

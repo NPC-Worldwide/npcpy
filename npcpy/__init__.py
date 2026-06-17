@@ -41,8 +41,6 @@ from .memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_search
 from .npc_sysenv import (
     get_data_dir,
     get_config_dir,
-    get_npcshrc_path,
-    get_history_db_path,
     get_locally_available_models,
     render_markdown,
 )

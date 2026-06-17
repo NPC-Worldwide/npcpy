@@ -5,10 +5,6 @@ import tempfile
 import shutil
 import pytest
 
-# Skip all tests in this module if npcsh is not installed
-pytest.importorskip("npcsh", reason="npcsh package required for serve tests")
-
-
 @pytest.fixture(scope="module")
 def client():
     """Create test client for Flask app."""

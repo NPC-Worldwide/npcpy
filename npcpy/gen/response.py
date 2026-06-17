@@ -254,7 +254,7 @@ def get_model_context_window(model: str, provider: str = None) -> int:
         except Exception:
             pass
         # ollama default
-        return int(os.environ.get("NPCSH_OLLAMA_NUM_CTX", 32768))
+        return int(os.environ.get("OLLAMA_NUM_CTX", 32768))
 
     return 0
 
@@ -392,7 +392,7 @@ def get_ollama_response(
 
     # Set num_ctx from environment or kwargs (default 32768).
     # Ollama defaults to 4096 which is too small for multi-turn tool use.
-    num_ctx = int(os.environ.get("NPCSH_OLLAMA_NUM_CTX", 0)) or kwargs.pop("num_ctx", 32768)
+    num_ctx = int(os.environ.get("OLLAMA_NUM_CTX", 0)) or kwargs.pop("num_ctx", 32768)
     options["num_ctx"] = num_ctx
 
     image_paths = []
