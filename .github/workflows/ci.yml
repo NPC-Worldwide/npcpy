@@ -86,6 +86,7 @@ jobs:
       - name: Run additional module tests
         run: |
           pytest tests/test_genetic_evolver.py tests/test_diff.py tests/test_memory_processor.py tests/test_browser.py -v --tb=short --timeout=60
+          pytest tests/test_ft_embeddings.py -v --tb=short --timeout=120 -k "not test_train_from_scratch"
 
   # =============================================================================
   # Flask Server Tests - Test API endpoints

@@ -24,35 +24,46 @@ Quick-start:
     download_from_hub("npc-worldwide/enpisi-coder", "adapters/npcsh-sft", path_in_repo="adapters/npcsh-sft")
 """
 
-from .sft import (
-    SFTConfig,
-    run_sft,
-    load_sft_model,
-    predict_sft,
-    format_training_examples,
-)
+# Lazy imports so that importing npcpy.ft.ge or npcpy.ft.diff does not pull
+# in heavy dependencies (datasets, transformers, peft, mlx, etc.) unless the
+# caller actually uses the SFT/RL/export submodules.
 
-from .rl import (
-    RLConfig,
-    train_with_dpo,
-    train_with_grpo,
-    train_with_ppo,
-)
-
-# Optional: unsloth-backed SFT
-try:
-    from .usft import UnslothSFTConfig, run_unsloth_sft
-except Exception:
-    UnslothSFTConfig = None
-    run_unsloth_sft = None
-
-from .export import (
-    merge_and_save,
-    export_adapter,
-    convert_to_mlx,
-    upload_to_hub,
-    download_from_hub,
-)
+def __getattr__(name):
+    if name in (
+        "SFTConfig",
+        "run_sft",
+        "load_sft_model",
+        "predict_sft",
+        "format_training_examples",
+    ):
+        from .sft import (
+            SFTConfig,
+            run_sft,
+            load_sft_model,
+            predict_sft,
+            format_training_examples,
+        )
+        return locals()[name]
+    if name in ("RLConfig", "train_with_dpo", "train_with_grpo", "train_with_ppo"):
+        from .rl import RLConfig, train_with_dpo, train_with_grpo, train_with_ppo
+        return locals()[name]
+    if name in ("UnslothSFTConfig", "run_unsloth_sft"):
+        try:
+            from .usft import UnslothSFTConfig, run_unsloth_sft
+        except Exception:
+            UnslothSFTConfig = None
+            run_unsloth_sft = None
+        return locals()[name]
+    if name in ("merge_and_save", "export_adapter", "convert_to_mlx", "upload_to_hub", "download_from_hub"):
+        from .export import (
+            merge_and_save,
+            export_adapter,
+            convert_to_mlx,
+            upload_to_hub,
+            download_from_hub,
+        )
+        return locals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "SFTConfig",
