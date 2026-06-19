@@ -7,7 +7,7 @@ npcpy includes a complete fine-tuning toolkit under `npcpy.ft` that covers super
 Supervised fine-tuning trains a language model on input-output pairs. npcpy wraps HuggingFace Transformers, TRL, and PEFT into three functions: `run_sft` to train, `load_sft_model` to reload, and `predict_sft` to generate.
 
 ```python
-from npcpy.ft.sft import run_sft, load_sft_model, predict_sft, SFTConfig
+from npcpy.ft import run_sft, load_sft_model, predict_sft, SFTConfig
 
 # Prepare paired training data
 X_train = [
@@ -43,12 +43,14 @@ print(response)
 
 `run_sft` formats the data into chat-style turns (Gemma format by default, Llama format also supported via `format_style="llama"`), applies a LoRA adapter, and trains with the TRL `SFTTrainer`. The function returns the path where the adapter was saved.
 
+On Apple Silicon the MLX backend is used automatically. MLX training runs one true epoch at a time: the dataset is shuffled and iterated once per configured `num_train_epochs`, so training stops after the requested number of epochs instead of looping indefinitely.
+
 ### Apple Silicon (MLX)
 
 On Apple Silicon Macs, SFT automatically uses MLX when available. MLX training is significantly faster than PyTorch on M-series chips. The module maps common HuggingFace model names to their `mlx-community` equivalents.
 
 ```python
-from npcpy.ft.sft import run_sft, SFTConfig
+from npcpy.ft import run_sft, SFTConfig
 
 # MLX is auto-detected — no config changes needed
 config = SFTConfig(
@@ -59,7 +61,7 @@ config = SFTConfig(
 model_path = run_sft(X_train, y_train, config=config)
 ```
 
-Supported MLX model mappings include Gemma, Qwen, and Llama families. If a model has no MLX mapping, it falls back to HuggingFace Transformers.
+Supported MLX model mappings include Gemma, Qwen3, Qwen3.5, and Llama families. If a model has no MLX mapping, it falls back to HuggingFace Transformers.
 
 ### SFTConfig Options
 
