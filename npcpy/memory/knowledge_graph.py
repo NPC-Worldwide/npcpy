@@ -25,9 +25,6 @@ from npcpy.llm_funcs import (
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Embedding helpers
-# ---------------------------------------------------------------------------
 
 def _get_similar_by_embedding(query, candidates, model='nomic-embed-text',
                               provider='ollama', top_k=20):
@@ -62,9 +59,6 @@ def _get_similar_by_embedding(query, candidates, model='nomic-embed-text',
         return list(candidates)
 
 
-# ---------------------------------------------------------------------------
-# Chroma helpers (no Kuzu dependency)
-# ---------------------------------------------------------------------------
 
 def find_similar_facts_chroma(
     collection,
@@ -120,9 +114,6 @@ def store_fact_with_embedding(
         return None
 
 
-# ---------------------------------------------------------------------------
-# Core KG lifecycle: initial, evolve, sleep, dream
-# ---------------------------------------------------------------------------
 
 def kg_initial(content,
                model=None,
@@ -235,7 +226,6 @@ def kg_initial(content,
         if not other_fact_statements:
             continue
         try:
-            # Pre-filter by embedding similarity to avoid passing too many to LLM
             candidates = _get_similar_by_embedding(
                 fact['statement'], other_fact_statements, e_model, e_provider, top_k=20)
             if candidates:
@@ -363,7 +353,6 @@ def kg_evolve_incremental(existing_kg,
         e_provider = embedding_provider or 'ollama'
 
         for new_fact in all_new_facts:
-            # Pre-filter existing facts by embedding similarity
             candidates = _get_similar_by_embedding(
                 new_fact['statement'], existing_fact_statements,
                 e_model, e_provider, top_k=20)
@@ -406,7 +395,6 @@ def kg_sleep_process(existing_kg,
     concept_links = set(tuple(sorted(link)) for link in existing_kg.get('concept_links', []))
     fact_to_fact_links = set(tuple(sorted(link)) for link in existing_kg.get('fact_to_fact_links', []))
 
-    # Phase 1: Check for unstructured facts
     logger.info("Phase 1: Checking for unstructured facts...")
     facts_with_concepts = set(fact_links.keys())
     orphaned_fact_statements = list(set(facts_map.keys()) - facts_with_concepts)
@@ -442,7 +430,6 @@ def kg_sleep_process(existing_kg,
     else:
         logger.info("Knowledge graph is sufficiently structured. Proceeding to refinement.")
 
-    # Phase 2: Refinement operations
     if operations_config is None:
         possible_ops = ['prune', 'deepen']
         ops_to_run = random.sample(possible_ops, k=random.randint(1, 2))
@@ -534,9 +521,6 @@ def kg_dream_process(existing_kg,
     return dream_kg, {}
 
 
-# ---------------------------------------------------------------------------
-# Export helpers
-# ---------------------------------------------------------------------------
 
 def save_kg_with_pandas(kg, path_prefix="kg_state"):
     generation = kg.get("generation", 0)
@@ -568,9 +552,6 @@ def save_changelog_to_json(changelog, from_gen, to_gen, path_prefix="changelog")
     logger.info(f"Saved changelog for Gen {from_gen}->{to_gen}.")
 
 
-# ---------------------------------------------------------------------------
-# SQLAlchemy-backed CRUD operations
-# ---------------------------------------------------------------------------
 
 def kg_add_fact(
    engine,
@@ -668,7 +649,6 @@ def kg_remove_fact(
        removed_count = result.rowcount
 
    if removed_count > 0:
-       # Also remove any links referencing this fact
        with engine.begin() as conn:
            conn.execute(sa_text("""
                DELETE FROM kg_links
@@ -796,7 +776,6 @@ def kg_remove_concept(
        removed_count = result.rowcount
 
    if removed_count > 0:
-       # Also remove any links referencing this concept
        with engine.begin() as conn:
            conn.execute(sa_text("""
                DELETE FROM kg_links
@@ -926,9 +905,6 @@ def kg_evolve_knowledge(
    return "Knowledge graph evolved with new content"
 
 
-# ---------------------------------------------------------------------------
-# Search functions (SQLAlchemy-backed)
-# ---------------------------------------------------------------------------
 
 def kg_link_search(
     engine,
@@ -1169,10 +1145,6 @@ def kg_hybrid_search(
     return final[:max_results]
 
 
-# ---------------------------------------------------------------------------
-# Backfill & explore
-# ---------------------------------------------------------------------------
-
 def kg_backfill_from_memories(
     engine,
     model: str = None,
@@ -1216,8 +1188,6 @@ def kg_backfill_from_memories(
             scope = (row.npc or 'default', row.team or 'global_team', row.directory_path or os.getcwd())
             memories_by_scope[scope].append({
                 'statement': statement,
-                # Memory IS the fact — keep source_text populated so any existing consumer that
-                # only reads source_text still gets the memory text.
                 'source_text': statement,
                 'memory_id': row.id,
                 'type': 'explicit',

@@ -1,5 +1,3 @@
-# Copyright © 2024 Apple Inc.
-
 import json
 from functools import partial
 from pathlib import Path
@@ -100,7 +98,6 @@ class MultiHeadAttention(nn.Module):
             self.v_proj(values),
         )
 
-        # Prepare the queries, keys and values for the attention computation
         queries = queries.reshape(B, L_q, self.n_heads, -1).transpose(0, 2, 1, 3)
         keys = keys.reshape(B, L_k, self.n_heads, -1).transpose(0, 2, 1, 3)
         values = values.reshape(B, L_k, self.n_heads, -1).transpose(0, 2, 1, 3)
@@ -160,15 +157,12 @@ def top_k_sampling(
     Returns:
         token selected based on the top-k criterion.
     """
-    # referenced implementation from https://github.com/huggingface/transformers/blob/main/src/transformers/generation/logits_process.py#L449-L460
     probs = mx.softmax(logits * (1 / temperature), axis=axis)
 
-    # sort probs in ascending order
     sorted_indices = mx.argsort(probs, axis=axis)
     sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=axis)
     prob_threshold = mx.take(sorted_probs, mx.array(-top_k), axis=axis)
 
-    # select the top K tokens in probability
     top_probs = mx.where(
         sorted_probs > prob_threshold,
         sorted_probs,
@@ -268,12 +262,10 @@ class MusicGen(nn.Module):
         Returns:
             An mx.array of audio samples of shape ``(num_samples,)``.
         """
-        # Assuming no audio prompt we start with all bos token for the codebooks
         audio_shape = (1, max_steps + 1, self.num_codebooks)
         audio_seq = mx.full(audio_shape, self.bos_token_id)
 
         text_tokens = self.text_conditioner(text)
-        # Compute conditional and unconditional logits in one batch
         text_tokens = mx.concatenate([text_tokens, mx.zeros_like(text_tokens)], axis=0)
 
         head_dim = self.hidden_size // self.num_attention_heads
@@ -286,13 +278,11 @@ class MusicGen(nn.Module):
             cond_logits, uncond_logits = audio_logits[:1], audio_logits[1:2]
             audio_logits = uncond_logits + (cond_logits - uncond_logits) * guidance_coef
             audio_tokens = top_k_sampling(audio_logits, top_k, temp, axis=-2)
-            # "delay" pattern
             audio_tokens[..., offset + 1 :] = self.bos_token_id
             audio_tokens[..., : -max_steps + offset] = self.bos_token_id
             audio_seq[:, offset + 1 : offset + 2] = audio_tokens
             mx.eval(audio_seq)
 
-        # Undo delay
         for i in range(self.num_codebooks):
             audio_seq[:, : -self.num_codebooks, i] = audio_seq[
                 :, i : -self.num_codebooks + i, i

@@ -215,7 +215,6 @@ class KnowledgeStore:
                 with open(file_path, "r", encoding="utf-8") as f:
                     obj = json.load(f)
                 return json.dumps(obj, indent=2, ensure_ascii=False)
-            # Plain text / code fallback
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read()
         except Exception:
@@ -225,24 +224,20 @@ class KnowledgeStore:
     def _is_noise_file(fpath: str, text: str) -> bool:
         """Heuristic: is this file just noise/boilerplate not worth a memory?"""
         name = os.path.basename(fpath).lower()
-        # Lockfiles / manifests with no semantic value
         if name in {
             "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
             "poetry.lock", "pipfile.lock", "cargo.lock", "gemfile.lock",
             "composer.lock", "go.sum", "requirements.lock",
         }:
             return True
-        # Minified JS detection: average line length > 200 chars
         lines = text.splitlines()
         if len(lines) > 5:
             avg_len = sum(len(l) for l in lines) / len(lines)
             if avg_len > 200:
                 return True
-        # Too small after stripping — probably config or stub
         stripped = text.strip()
         if len(stripped) < 60:
             return True
-        # Binary-looking content ratio (non-printable chars)
         printable = sum(1 for c in text if 32 <= ord(c) < 127 or c in "\n\r\t")
         if len(text) > 0 and printable / len(text) < 0.85:
             return True
@@ -310,8 +305,6 @@ class KnowledgeStore:
                 "third_party", "third-party", "3rdparty",
             }
 
-        # Each subfolder that contains files gets its own .knowledge.yaml.
-        # We load and save the store for EVERY FILE so a crash never loses progress.
         new_memories = 0
         files_scanned = 0
         files_skipped = 0
@@ -321,7 +314,6 @@ class KnowledgeStore:
 
         max_bytes = max_file_size_mb * 1024 * 1024
         for root, dirs, files in os.walk(self.directory):
-            # Prune excluded dirs in-place (also skip hidden dirs and site-packages anywhere)
             dirs[:] = [
                 d for d in dirs
                 if d not in exclude_dirs
@@ -331,7 +323,6 @@ class KnowledgeStore:
             ]
 
             for fname in files:
-                # Skip hidden files, lock files, and the store itself
                 if fname.startswith(".") or fname == self.filename:
                     continue
                 ext = os.path.splitext(fname)[1].lower()
@@ -341,11 +332,9 @@ class KnowledgeStore:
                 fpath = os.path.join(root, fname)
                 rel_path = os.path.relpath(fpath, self.directory)
 
-                # Skip symlinks to avoid escaping the tree or looping
                 if os.path.islink(fpath):
                     continue
 
-                # Skip oversized files
                 try:
                     fsize = os.path.getsize(fpath)
                 except OSError:
@@ -362,16 +351,13 @@ class KnowledgeStore:
                 mtime = stat.st_mtime
                 fhash = self._file_hash(fpath)
 
-                # Load the store for the directory that contains this file
                 sub_store = KnowledgeStore(root)
                 sub_data = sub_store.load()
                 sub_tracker = sub_data.setdefault("scanned_files", {})
 
-                # Path inside the sub-store (usually just the filename)
                 store_rel_path = os.path.relpath(fpath, root)
 
                 prev = sub_tracker.get(store_rel_path, {})
-                # Skip if unchanged
                 if prev.get("hash") == fhash:
                     files_skipped += 1
                     print(f"  SKIP  {rel_path}")
@@ -412,7 +398,6 @@ class KnowledgeStore:
                 files_scanned += 1
                 print(f"  EXTRACT {rel_path}  ({size} bytes, {len(text)} chars)")
 
-                # Extract facts via LLM — same chunking as kg_initial
                 extracted_facts = []
                 CHUNK = 100000
                 if len(text) > CHUNK:
@@ -550,7 +535,6 @@ class KnowledgeStore:
         data = self.load()
         memories = data.get("memories", [])
 
-        # 1. Build facts from memories (preserving memory IDs)
         facts = []
         stmt_to_mem_ids = {}
         for mem in memories:
@@ -566,11 +550,9 @@ class KnowledgeStore:
                 })
                 stmt_to_mem_ids.setdefault(stmt, []).append(mid)
 
-        # Allow caller to inject an already-aggregated corpus
         if all_facts is not None:
             facts = list(all_facts)
 
-        # 2. Build existing KG from current YAML state
         existing_concepts = all_concepts if all_concepts is not None else [
             {"name": c["name"], "description": c.get("description", ""), "generation": 0}
             for c in data.get("concepts", [])
@@ -587,7 +569,6 @@ class KnowledgeStore:
         if not facts:
             return {"status": "skipped", "reason": "no_facts", "concepts_added": 0, "links_added": 0}
 
-        # 3. Evolve in windows so we never blow the model context
         batch_size = 40
         new_kg = existing_kg
         for i in range(0, len(facts), batch_size):
@@ -606,7 +587,6 @@ class KnowledgeStore:
                 link_facts_facts=True,
             )
 
-        # 4. Build concepts with stable IDs (reuse if name already exists)
         name_to_cid = {c["name"]: c["id"] for c in data.get("concepts", [])}
         yaml_concepts = data.get("concepts", []) if not full_rebuild else []
         for c in new_kg.get("concepts", []):
@@ -614,7 +594,6 @@ class KnowledgeStore:
             if cname not in name_to_cid:
                 name_to_cid[cname] = _make_id()
             cid = name_to_cid[cname]
-            # Collect memory IDs linked to this concept
             mem_ids = set()
             for stmt, concept_names in new_kg.get("fact_to_concept_links", {}).items():
                 if cname in concept_names:
@@ -637,13 +616,11 @@ class KnowledgeStore:
                     "created_at": _utcnow(),
                 })
 
-        # 5. Build links: concept->memory, memory->memory, concept->concept
         seen_links = set()
         yaml_links = data.get("links", []) if not full_rebuild else []
         for link in yaml_links:
             seen_links.add((link.get("from"), link.get("to"), link.get("relation"), link.get("type")))
 
-        # concept -> memory (fact_to_concept)
         for stmt, concept_names in new_kg.get("fact_to_concept_links", {}).items():
             for mid in stmt_to_mem_ids.get(stmt, []):
                 if not mid:
@@ -664,7 +641,6 @@ class KnowledgeStore:
                             "created_at": _utcnow(),
                         })
 
-        # memory -> memory (fact_to_fact)
         for s1, s2 in new_kg.get("fact_to_fact_links", []):
             for m1 in stmt_to_mem_ids.get(s1, []):
                 if not m1:

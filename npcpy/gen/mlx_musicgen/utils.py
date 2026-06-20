@@ -1,5 +1,3 @@
-# Copyright © 2024 Apple Inc.
-
 import mlx.core as mx
 import numpy as np
 
@@ -28,9 +26,6 @@ def load_audio(file: str, sampling_rate: int, channels: int):
     """
     from subprocess import CalledProcessError, run
 
-    # This launches a subprocess to decode audio while down-mixing
-    # and resampling as necessary.  Requires the ffmpeg CLI in PATH.
-    # fmt: off
     cmd = [
         "ffmpeg",
         "-nostdin",
@@ -42,7 +37,6 @@ def load_audio(file: str, sampling_rate: int, channels: int):
         "-ar", str(sampling_rate),
         "-"
     ]
-    # fmt: on
     try:
         out = run(cmd, capture_output=True, check=True).stdout
     except CalledProcessError as e:

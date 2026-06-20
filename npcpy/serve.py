@@ -932,7 +932,6 @@ def fetch_messages_for_conversation(conversation_id):
             
 @app.route('/api/kg/generations')
 def list_generations():
-    # YAML stores have a single implicit generation 0
     return jsonify({"generations": [0]})
 
 @app.route('/api/kg/graph')
@@ -1762,7 +1761,6 @@ def create_kg_population():
             engine=engine, model=model, provider=provider,
             population_size=pop_size, sample_size=sample_size,
         )
-        # Override GAConfig fields if caller provided them
         for k_src, k_dst in (('mutation_rate', 'mutation_rate'),
                              ('crossover_rate', 'crossover_rate'),
                              ('tournament_size', 'tournament_size'),
@@ -1885,7 +1883,6 @@ def evolve_kg_population(population_id):
         return jsonify({"error": str(e)}), 500
 
 
-# ── Local .knowledge.yaml endpoints ────────────────────────────────────
 
 @app.route("/api/knowledge/load", methods=["GET"])
 def knowledge_load():
@@ -2343,7 +2340,6 @@ def get_models():
     registered_teams = _parse_registered_teams()
     seen = set()
     formatted_models = []
-    # Cache scanned results per directory so we don't re-hit APIs
     _scan_cache: dict = {}
 
     def _add_model(m, p):
@@ -2484,10 +2480,10 @@ def delete_jinx():
     """Delete a jinx file from the filesystem."""
     try:
         data = request.json or {}
-        jinx_path = data.get("jinxPath", "")  # relative path without .jinx extension
+        jinx_path = data.get("jinxPath", "")
         scope = data.get("scope", "global")
         current_path = data.get("currentPath", "")
-        source_path = data.get("sourcePath", "")  # absolute path if provided
+        source_path = data.get("sourcePath", "")
 
         if source_path and os.path.exists(source_path):
             file_path = source_path
@@ -2508,7 +2504,6 @@ def delete_jinx():
 
         os.unlink(file_path)
 
-        # Clean up empty parent directories
         parent = os.path.dirname(file_path)
         while parent and parent != jinxes_dir if not source_path else False:
             try:
@@ -2540,23 +2535,20 @@ def ingest_jinx_from_url():
         data = request.json
         url = data.get("url", "").strip()
         name = data.get("name", "").strip()
-        scope = data.get("scope", "project")  # "global" or "project"
+        scope = data.get("scope", "project")
         current_path = data.get("currentPath", "")
-        skill_type = data.get("type", "auto")  # "jinx", "skill", "auto"
+        skill_type = data.get("type", "auto")
 
         if not url:
             return jsonify({"error": "URL is required"}), 400
 
-        # Resolve GitHub URLs to raw content
         if "github.com" in url and "/blob/" in url:
             url = url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
 
-        # Fetch the content
         resp = req_lib.get(url, timeout=30)
         resp.raise_for_status()
         content = resp.text
 
-        # Determine the target directory
         if scope == "global":
             jinxes_dir = os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')
         else:
@@ -2567,7 +2559,6 @@ def ingest_jinx_from_url():
 
         os.makedirs(jinxes_dir, exist_ok=True)
 
-        # Auto-detect type from URL and content
         url_lower = url.lower()
         if skill_type == "auto":
             if url_lower.endswith(".jinx") or url_lower.endswith(".yaml") or url_lower.endswith(".yml"):
@@ -2579,21 +2570,17 @@ def ingest_jinx_from_url():
             elif content.strip().startswith("---") and ("name:" in content[:500] or "description:" in content[:500]):
                 skill_type = "skill"
             else:
-                skill_type = "skill"  # Default: wrap as skill
+                skill_type = "skill"
 
-        # Auto-generate name from URL if not provided
         if not name:
-            # Extract from URL path
             path_parts = url.rstrip("/").split("/")
             raw_name = path_parts[-1] if path_parts else "imported_skill"
-            # Remove extensions
             for ext in [".jinx", ".yaml", ".yml", ".md"]:
                 if raw_name.lower().endswith(ext):
                     raw_name = raw_name[: -len(ext)]
             name = raw_name.replace(" ", "_").replace("-", "_").lower()
 
         if skill_type == "jinx":
-            # Save as .jinx file directly
             file_path = os.path.join(jinxes_dir, f"{name}.jinx")
             with open(file_path, "w") as f:
                 f.write(content)
@@ -2607,19 +2594,15 @@ def ingest_jinx_from_url():
             })
 
         else:
-            # Save as skill (SKILL.md in subdirectory)
             skill_dir = os.path.join(jinxes_dir, "skills", name)
             os.makedirs(skill_dir, exist_ok=True)
             skill_path = os.path.join(skill_dir, "SKILL.md")
 
-            # If content already has frontmatter, save as-is
             if content.strip().startswith("---"):
                 with open(skill_path, "w") as f:
                     f.write(content)
             else:
-                # Wrap raw content as a skill with frontmatter
                 frontmatter = f"---\nname: {name}\ndescription: Skill ingested from {url}\n---\n"
-                # Try to split content into sections by ## headers
                 with open(skill_path, "w") as f:
                     f.write(frontmatter + "\n" + content)
 
@@ -3951,7 +3934,6 @@ def list_npcsql_models():
         traceback.print_exc()
         return jsonify({"models": [], "error": str(e)}), 500
 
-## ── Cron / Scheduling ─────────────────────────────────────────────
 
 @app.route("/api/cron/crontab", methods=["GET"])
 def get_crontab():
@@ -3961,16 +3943,13 @@ def get_crontab():
         r = subprocess.run(["schtasks", "/query", "/fo", "CSV", "/nh"], capture_output=True, text=True)
         result["user_crontab"] = r.stdout if r.returncode == 0 else ""
     else:
-        # User crontab
         r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
         result["user_crontab"] = r.stdout if r.returncode == 0 else ""
-        # System crontab
         try:
             with open("/etc/crontab", "r") as f:
                 result["system_crontab"] = f.read()
         except Exception:
             pass
-        # /etc/cron.d/
         cron_d_dir = "/etc/cron.d"
         if os.path.isdir(cron_d_dir):
             for fname in sorted(os.listdir(cron_d_dir)):
@@ -3981,12 +3960,10 @@ def get_crontab():
                             result["cron_d"].append({"name": fname, "content": f.read()})
                     except Exception:
                         result["cron_d"].append({"name": fname, "content": "(unreadable)"})
-        # Systemd timers
         if system == "Linux":
             r = subprocess.run(["systemctl", "list-timers", "--all", "--no-pager"], capture_output=True, text=True)
             if r.returncode == 0:
                 result["timers"] = r.stdout
-            # Systemd services
             r = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"], capture_output=True, text=True)
             if r.returncode == 0:
                 result["services"] = r.stdout
@@ -3999,7 +3976,6 @@ def list_system_daemons():
     if system == "Linux":
         r = subprocess.run(["systemctl", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"], capture_output=True, text=True)
         result["services"] = r.stdout if r.returncode == 0 else ""
-        # Also user services
         r2 = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"], capture_output=True, text=True)
         if r2.returncode == 0:
             result["user_services"] = r2.stdout
@@ -4018,21 +3994,17 @@ def get_service_info(unit):
     if system != "Linux":
         return jsonify({"error": "Only supported on Linux"})
     result = {"unit": unit, "unit_file": "", "journal": ""}
-    # Unit file contents
     r = subprocess.run(["systemctl", "cat", unit], capture_output=True, text=True)
     if r.returncode == 0:
         result["unit_file"] = r.stdout
     else:
-        # Try user unit
         r2 = subprocess.run(["systemctl", "--user", "cat", unit], capture_output=True, text=True)
         if r2.returncode == 0:
             result["unit_file"] = r2.stdout
-    # Recent journal logs
     r = subprocess.run(["journalctl", "-u", unit, "-n", "100", "--no-pager", "--output=short-iso"], capture_output=True, text=True)
     if r.returncode == 0:
         result["journal"] = r.stdout
     else:
-        # Try user unit
         r2 = subprocess.run(["journalctl", "--user-unit", unit, "-n", "100", "--no-pager", "--output=short-iso"], capture_output=True, text=True)
         if r2.returncode == 0:
             result["journal"] = r2.stdout
@@ -4128,7 +4100,6 @@ def import_npc_team():
     if not repo_url:
         return jsonify({"error": "repoUrl is required"}), 400
 
-    # Determine target directory
     if scope == "global":
         target = app.config.get('user_npc_directory')
         if not target:
@@ -4140,7 +4111,6 @@ def import_npc_team():
 
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Clone repo
             clone_cmd = ["git", "clone", "--depth", "1"]
             if branch:
                 clone_cmd += ["-b", branch]
@@ -4152,10 +4122,8 @@ def import_npc_team():
             if result.returncode != 0:
                 return jsonify({"error": f"Git clone failed: {result.stderr.strip()}"}), 400
 
-            # Find npc_team/ directory
             npc_team_src = os.path.join(tmp_dir, "npc_team")
             if not os.path.isdir(npc_team_src):
-                # Search one level deep
                 for item in os.listdir(tmp_dir):
                     candidate = os.path.join(tmp_dir, item, "npc_team")
                     if os.path.isdir(candidate):
@@ -4165,10 +4133,8 @@ def import_npc_team():
             if not os.path.isdir(npc_team_src):
                 return jsonify({"error": "No npc_team/ directory found in repository"}), 404
 
-            # Copy contents (merge into target)
             imported = {"jinxes": 0, "npcs": 0, "contexts": 0, "other": 0}
             for root, dirs, files in os.walk(npc_team_src):
-                # Skip .git directories
                 dirs[:] = [d for d in dirs if d != '.git']
                 rel = os.path.relpath(root, npc_team_src)
                 dest_dir = os.path.join(target, rel) if rel != '.' else target
@@ -4297,10 +4263,8 @@ def read_ctx_file(file_path):
                     normalized = []
                     for item in data['databases']:
                         if isinstance(item, dict):
-                            # Already a dict (e.g. {name, path} or legacy {value})
                             normalized.append(item)
                         else:
-                            # Plain string → wrap as {path: str}
                             normalized.append({"path": str(item)})
                     data['databases'] = normalized
                 
@@ -4338,8 +4302,6 @@ def write_ctx_file(file_path, data):
         normalized = []
         for item in data_to_save['databases']:
             if isinstance(item, dict):
-                # Preserve {name, path} dicts as-is
-                # Legacy {value: ...} with no other keys → write back as plain string
                 if set(item.keys()) == {"value"}:
                     normalized.append(item["value"])
                 else:
@@ -4353,7 +4315,6 @@ def write_ctx_file(file_path, data):
         normalized = []
         for item in data_to_save['mcp_servers']:
             if isinstance(item, dict):
-                # If entry has extra fields (env, name, id), preserve as dict
                 has_extras = any(k in item for k in ('env', 'name', 'id'))
                 if has_extras:
                     normalized.append({k: v for k, v in item.items() if v})
@@ -4451,8 +4412,6 @@ def init_project_team():
         print(f"Error initializing project team: {e}")
         return jsonify({"error": str(e)}), 500
 
-# ============== NPC Team Sync (git-based) ==============
-# Logic lives in npc_sysenv.py; these are thin Flask wrappers.
 
 @app.route("/api/npc-team/status", methods=["GET"])
 def npc_team_sync_status_endpoint():
@@ -4919,16 +4878,11 @@ def inpaint_openai(image, mask, prompt, model):
         size_str = valid_sizes[target_size]
 
     resized_image = image.resize(target_size, Image.Resampling.LANCZOS)
-    # Our incoming mask is a classic "white = edit here" L-mode PNG.
-    # OpenAI's images.edit expects an RGBA PNG whose TRANSPARENT pixels are
-    # the edit region — opaque pixels are preserved. Convert accordingly.
     mask_l = mask.convert('L').resize(target_size, Image.Resampling.NEAREST)
     edit_rgba = Image.new('RGBA', target_size, (255, 255, 255, 255))
-    # Where mask is white (edit), set alpha=0 so OpenAI edits there.
     alpha = mask_l.point(lambda v: 0 if v > 128 else 255)
     edit_rgba.putalpha(alpha)
 
-    # Image sent to OpenAI should be RGBA too (transparent hole over edit area).
     rgba_image = resized_image.convert('RGBA')
     rgba_image.putalpha(alpha)
 
@@ -4962,8 +4916,6 @@ def inpaint_openai(image, mask, prompt, model):
     result_image = Image.open(io.BytesIO(img_data))
     result_image = result_image.resize(original_size, Image.Resampling.LANCZOS)
 
-    # Hard-enforce "only masked pixels change" locally, matching the Gemini
-    # path, since providers occasionally regenerate more than requested.
     full_mask_l = mask.convert('L').resize(original_size, Image.Resampling.NEAREST)
     base = image.convert('RGBA')
     over = result_image.convert('RGBA')
@@ -4993,10 +4945,6 @@ def inpaint_gemini(image, mask, prompt, model):
     import numpy as np
     from PIL import Image as PILImage
 
-    # Gemini image models don't honor masks; they re-imagine the whole frame.
-    # We prompt-engineer a region hint and then enforce the mask locally by
-    # compositing the Gemini output ONLY into the masked pixels — so the
-    # unmasked area is byte-identical to the input.
     mask_l = mask.convert('L').resize(image.size, PILImage.NEAREST)
     mask_np = np.array(mask_l)
     ys, xs = np.where(mask_np > 128)
@@ -5041,16 +4989,12 @@ def inpaint_gemini(image, mask, prompt, model):
         return None
 
     gen = results[0]
-    # Resize the generation to match the original exactly.
     if gen.size != image.size:
         gen = gen.resize(image.size, PILImage.LANCZOS)
 
-    # Composite: unmasked pixels come from the original, masked pixels from
-    # the generation. This hard-enforces the "only masked area changed"
-    # contract regardless of how much Gemini re-imagined.
     base = image.convert('RGBA')
     over = gen.convert('RGBA')
-    alpha = mask_l  # L-mode mask: white = replace, black = keep
+    alpha = mask_l
     composed = PILImage.composite(over, base, alpha)
     return composed.convert(image.mode if image.mode in ('RGB', 'RGBA') else 'RGB')
 
@@ -5153,9 +5097,6 @@ def generate_images():
                 img_str = base64.b64encode(img_data).decode("utf-8")
                 generated_images_base64.append(f"data:image/png;base64,{img_str}")
             else:
-                # Newer OpenAI SDKs (and possibly others) return wrapper objects
-                # with `.b64_json` or `.url` instead of a raw PIL.Image. Unwrap
-                # them to a PIL.Image so the rest of the save path works.
                 converted = None
                 try:
                     b64 = getattr(pil_image, "b64_json", None)
@@ -5224,7 +5165,6 @@ def get_mcp_tools():
         explicit_path=raw_server_path,
         force_global=False
     )
-    # Command strings should not be resolved as file paths
     if _is_command_string(resolved_path):
         server_path = resolved_path.strip()
     else:
@@ -5262,7 +5202,6 @@ def get_mcp_tools():
                 tagged["_source"] = f"mcp:{server_label}"
                 mcp_tools.append(tagged)
             tools = mcp_tools
-            # Jinx tools come from the NPC's config via resolve_tools(), not directory scans
             if selected_names:
                 tools = [t for t in tools if t.get("function", {}).get("name") in selected_names]
             try:
@@ -5315,7 +5254,6 @@ def get_npc_tools():
     try:
         from npcpy.npc_compiler import NPC, Team, build_jinx_tool_catalog
 
-        # Load team if path provided
         team_obj = None
         if team_path_param and os.path.isdir(team_path_param):
             try:
@@ -5323,7 +5261,6 @@ def get_npc_tools():
             except Exception as e:
                 print(f"[npc_tools] Failed to load team from {team_path_param}: {e}")
 
-        # Load NPC
         npc_obj = None
         if npc_name_param and team_obj and npc_name_param in team_obj.npcs:
             npc_obj = team_obj.npcs[npc_name_param]
@@ -5367,7 +5304,6 @@ def get_npc_tools():
                 print(f"[npc_tools] Error resolving tools: {e}")
                 traceback.print_exc()
 
-        # Team servers (available pool, not auto-enabled)
         team_servers = []
         if team_obj and hasattr(team_obj, "mcp_servers"):
             for srv in (team_obj.mcp_servers or []):

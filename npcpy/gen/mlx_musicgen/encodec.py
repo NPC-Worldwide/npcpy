@@ -1,5 +1,3 @@
-# Copyright © 2024 Apple Inc.
-
 import functools
 import json
 import math
@@ -119,7 +117,6 @@ class EncodecConv1d(nn.Module):
 
         self.stride = stride
 
-        # Effective kernel size with dilations.
         self.kernel_size = (kernel_size - 1) * dilation + 1
 
         self.padding_total = kernel_size - stride
@@ -155,12 +152,10 @@ class EncodecConv1d(nn.Module):
         extra_padding = self._get_extra_padding_for_conv1d(hidden_states)
 
         if self.causal:
-            # Left padding for causal
             hidden_states = self._pad1d(
                 hidden_states, (self.padding_total, extra_padding), mode=self.pad_mode
             )
         else:
-            # Asymmetric padding required for odd strides
             padding_right = self.padding_total // 2
             padding_left = self.padding_total - padding_right
             hidden_states = self._pad1d(
@@ -497,7 +492,6 @@ class EncodecModel(nn.Module):
 
         scale = None
         if self.config.normalize:
-            # if the padding is non zero
             input_values = input_values * padding_mask[..., None]
             mono = mx.sum(input_values, axis=2, keepdims=True) / input_values.shape[2]
             scale = mono.square().mean(axis=1, keepdims=True).sqrt() + 1e-8
@@ -668,7 +662,6 @@ class EncodecModel(nn.Module):
                 decoded_frames, self.chunk_stride or 1
             )
 
-        # truncate based on padding mask
         if padding_mask is not None and padding_mask.shape[1] < audio_values.shape[1]:
             audio_values = audio_values[:, : padding_mask.shape[1]]
         return audio_values
