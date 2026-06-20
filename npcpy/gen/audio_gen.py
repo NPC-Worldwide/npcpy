@@ -821,14 +821,11 @@ def music_musicgen_local(
     import numpy as np
     import scipy.io.wavfile as wavfile
     import torch
-    # Use concrete classes to sidestep AutoProcessor's auto-discovery path.
     from transformers import MusicgenProcessor, MusicgenForConditionalGeneration
 
     processor = MusicgenProcessor.from_pretrained(model)
     mg = MusicgenForConditionalGeneration.from_pretrained(model)
 
-    # MusicGen is numerically unstable on MPS (produces NaN/inf probs during
-    # sampling) — stick to CUDA or CPU.
     if torch.cuda.is_available():
         device = "cuda"
     else:
@@ -838,7 +835,6 @@ def music_musicgen_local(
 
     inputs = processor(text=[prompt], padding=True, return_tensors="pt").to(device)
 
-    # MusicGen uses ~50 tokens/sec at 32 kHz
     max_new_tokens = int(duration * 50)
 
     with torch.no_grad():
@@ -846,7 +842,6 @@ def music_musicgen_local(
 
     sample_rate = mg.config.audio_encoder.sampling_rate
     arr = audio_values[0, 0].detach().cpu().numpy()
-    # normalize to int16
     arr = np.clip(arr, -1.0, 1.0)
     pcm = (arr * 32767).astype(np.int16)
 
@@ -869,7 +864,6 @@ def music_replicate(
     if not api_key:
         raise RuntimeError("REPLICATE_API_TOKEN env var required for Replicate music generation")
 
-    # Resolve model → latest version automatically if not given.
     if not version:
         owner_model = model
         r = requests.get(
@@ -922,7 +916,6 @@ def music_elevenlabs_sfx(
     if not api_key:
         raise RuntimeError("ELEVENLABS_API_KEY env var required for ElevenLabs sound generation")
 
-    # ElevenLabs caps sound-generation at 22 seconds.
     duration = max(0.5, min(22.0, float(duration)))
 
     r = requests.post(
@@ -975,7 +968,6 @@ def generate_music(
 
     errors: list[str] = []
     for prov in order:
-        # Skip cloud providers that have no credentials configured.
         if prov == "replicate" and not (api_key or os.environ.get("REPLICATE_API_TOKEN") or os.environ.get("REPLICATE_API_KEY")):
             errors.append(f"{prov}: no REPLICATE_API_TOKEN")
             continue

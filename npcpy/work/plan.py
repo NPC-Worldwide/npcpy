@@ -35,8 +35,6 @@ def _cron_tag(job_name, cron_tag_prefix='# job:'):
     return cron_tag_prefix + job_name
 
 
-# ── Core scheduling primitives ──────────────────────────────────────
-
 def compile_job_script(command, job_name):
     """Turn *command* into a self-contained executable bash script.
 
@@ -176,8 +174,6 @@ def job_status(job_name,
     return info
 
 
-# ── macOS (launchd) ─────────────────────────────────────────────────
-
 def _schedule_launchd(script_path, schedule, job_name, log_path,
                       launchd_prefix='com.job.'):
     ppath = _plist_path(job_name, launchd_prefix=launchd_prefix)
@@ -203,7 +199,6 @@ def _schedule_launchd(script_path, schedule, job_name, log_path,
                 plist += '    <key>' + key + '</key>\n    <integer>' + parts[idx] + '</integer>\n'
         plist += '  </dict>\n'
     else:
-        # Treat as interval in seconds
         try:
             plist += '  <key>StartInterval</key>\n  <integer>' + str(int(schedule)) + '</integer>\n'
         except ValueError:
@@ -230,8 +225,6 @@ def _unschedule_launchd(job_name, launchd_prefix='com.job.'):
     return False, 'Job "' + job_name + '" not found.'
 
 
-# ── Linux (crontab) ─────────────────────────────────────────────────
-
 def _schedule_crontab(script_path, schedule, job_name, log_path,
                       cron_tag_prefix='# job:'):
     r = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
@@ -255,8 +248,6 @@ def _unschedule_crontab(job_name, cron_tag_prefix='# job:'):
         return False, 'Failed: ' + p.stderr
     return False, 'No crontab found.'
 
-
-# ── Windows (Task Scheduler) ────────────────────────────────────────
 
 def _schedule_windows(script_path, schedule, job_name, log_path,
                       win_task_prefix='TASK_'):
@@ -283,8 +274,6 @@ def _unschedule_windows(job_name, win_task_prefix='TASK_'):
         return True, 'Removed "' + job_name + '"'
     return False, 'Failed: ' + r.stderr
 
-
-# ── LLM-driven /plan command ────────────────────────────────────────
 
 def execute_plan_command(
     command,
@@ -449,13 +438,10 @@ Get-CpuUsage",
 
     log_path = os.path.join(LOGS_DIR, f"{job_name}.log")
 
-    # Write the LLM-generated script directly (not via compile_job_script,
-    # since the LLM already produced the full script content)
     with open(script_path, "w") as f:
         f.write(schedule_info["script"])
     os.chmod(script_path, 0o755)
 
-    # Register with OS scheduler using the shared primitives
     if platform_system == "Linux":
         ok, msg = _schedule_crontab(script_path, sched, job_name, log_path)
     elif platform_system == "Darwin":

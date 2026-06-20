@@ -684,7 +684,6 @@ class KnowledgeStore:
                             "created_at": _utcnow(),
                         })
 
-        # concept -> concept
         for c1_name, c2_name in new_kg.get("concept_links", []):
             c1 = name_to_cid.get(c1_name)
             c2 = name_to_cid.get(c2_name)

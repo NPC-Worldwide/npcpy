@@ -43,9 +43,6 @@ except Exception:
 import numpy as np
 
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 
 @dataclass
 class EmbeddingConfig:
@@ -102,18 +99,12 @@ class HilbertConfig:
     intermediate_size: int = 1536
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _mean_pooling(hidden_states, attention_mask):
     mask = attention_mask.unsqueeze(-1).float()
     return (hidden_states * mask).sum(dim=1) / mask.sum(dim=1)
 
 
-# ---------------------------------------------------------------------------
-# Classical losses
-# ---------------------------------------------------------------------------
 
 def _infonce_loss(anchor_emb, positive_emb, temperature=0.07):
     anchor_emb = F.normalize(anchor_emb, p=2, dim=-1)
@@ -137,9 +128,6 @@ def _mnr_loss(anchor_emb, positive_emb, temperature=1.0):
     return F.cross_entropy(scores, labels)
 
 
-# ---------------------------------------------------------------------------
-# Hilbert-space helpers
-# ---------------------------------------------------------------------------
 
 class ComplexTensor:
     """ψ = |ψ| · e^(iθ)"""
@@ -208,9 +196,6 @@ def _normalize_hilbert(ct):
     return ComplexTensor(ct.magnitude / (n + 1e-8), ct.angle)
 
 
-# ---------------------------------------------------------------------------
-# Foundation model from scratch
-# ---------------------------------------------------------------------------
 
 def _create_foundation_model(config):
     """Create a small transformer from scratch for embedding training."""
@@ -234,16 +219,12 @@ def _load_base_model(config, tokenizer):
     if getattr(config, 'from_scratch', False):
         print(f"Training from scratch: vocab={config.vocab_size}, hidden={config.hidden_size}, layers={config.num_hidden_layers}")
         base = _create_foundation_model(config)
-        # Resize token embeddings to match tokenizer
         base.resize_token_embeddings(len(tokenizer))
     else:
         base = AutoModel.from_pretrained(config.base_model_name)
     return base
 
 
-# ---------------------------------------------------------------------------
-# Classical: run_embedding_sft
-# ---------------------------------------------------------------------------
 
 def run_embedding_sft_torch(
     anchors: List[str],
@@ -417,10 +398,6 @@ def run_embedding_sft(
     return run_embedding_sft_torch(anchors, positives, negatives, config)
 
 
-# ---------------------------------------------------------------------------
-# Quantum: run_hilbert_embedding_sft
-# ---------------------------------------------------------------------------
-
 def run_hilbert_embedding_sft_torch(
     anchors: List[str],
     positives: List[str],
@@ -444,7 +421,6 @@ def run_hilbert_embedding_sft_torch(
     hidden = base.config.hidden_size
     dim = config.embedding_dim
 
-    # Complex projector parameters
     proj_w_real = nn.Parameter(torch.randn(dim, hidden) * 0.02).to(device)
     proj_w_imag = nn.Parameter(torch.randn(dim, hidden) * 0.02).to(device)
     proj_b_real = nn.Parameter(torch.zeros(dim)).to(device)
@@ -565,7 +541,6 @@ def run_hilbert_embedding_sft_mlx(
         return mag / norm, ang
 
     def mlx_hilbert_infonce(a_mag, a_ang, p_mag, p_ang, temperature=0.07):
-        # Pairwise Hilbert similarities
         mag_prod = a_mag[:, None, :] * p_mag[None, :, :]
         phase_diff = a_ang[:, None, :] - p_ang[None, :, :]
         real_part = mx.sum(mag_prod * mx.cos(phase_diff), axis=-1)
@@ -618,10 +593,6 @@ def run_hilbert_embedding_sft(
         return run_hilbert_embedding_sft_mlx(anchors, positives, negatives, config)
     return run_hilbert_embedding_sft_torch(anchors, positives, negatives, config)
 
-
-# ---------------------------------------------------------------------------
-# Load / Encode / Evaluate
-# ---------------------------------------------------------------------------
 
 def load_embedding_model(model_path: str, device: str = "cpu"):
     tokenizer = AutoTokenizer.from_pretrained(model_path)

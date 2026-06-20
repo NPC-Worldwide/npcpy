@@ -265,7 +265,6 @@ def _train_dpo_mlx(
     }
     linear_to_lora_layers(model, _num_lora_layers(config.lora_r), lora_cfg)
 
-    # mlx-lm doesn't have native DPO, so SFT on chosen responses
     processed = []
     for p in pairs:
         text = f"{p['prompt']}\n{p['chosen']}"
@@ -467,7 +466,6 @@ def train_with_dpo(
         config = RLConfig()
 
     if config.device == "mlx":
-        # Extract pairs from traces first, then pass to MLX
         preference_dataset = create_preference_pairs(
             traces,
             min_reward_gap=config.min_reward_gap
@@ -536,7 +534,6 @@ def load_rl_model(
             model, tokenizer = mlx_load(mlx_model)
         return model, tokenizer
 
-    # torch path
     print(f"Loading base model: {base_model_id}")
 
     model_kwargs = {
@@ -654,7 +651,6 @@ def _batch_compute_log_probs(model, tokenizer, records, batch_size=16, max_len=1
         tokens = _tokenize_for_ppo(tokenizer, rec["instruction"], rec["response"], max_len=max_len)
         tokenized.append(tokens)
 
-    # Sort by length for efficient batching
     indexed = sorted(enumerate(tokenized), key=lambda x: len(x[1]))
     ref_log_probs = [0.0] * len(records)
 
@@ -746,7 +742,6 @@ def train_with_grpo(
         token_log_probs = token_log_probs.reshape(batch_size, seq_len)
         steps = mx.arange(1, seq_len + 1)
         mask = mx.logical_and(steps >= lengths[:, 0:1], steps <= lengths[:, 1:])
-        # Expand advantages to per-token weights
         adv_per_token = advantages[:, mx.newaxis] * mask
         weighted_ce = -token_log_probs * adv_per_token
         loss = weighted_ce.sum() / (mask.sum() + 1e-8)
@@ -828,7 +823,6 @@ def train_with_ppo(
     os.makedirs(config.adapter_path, exist_ok=True)
     mlx_name = _resolve_mlx_model(config.base_model_name)
 
-    # Compute reference log-probs with a fresh model, then free it
     print("Computing reference log-probs...")
     ref_model, tokenizer = mlx_load(mlx_name)
     ref_log_probs_list = _batch_compute_log_probs(ref_model, tokenizer, records, batch_size=1, max_len=1024)
@@ -836,7 +830,6 @@ def train_with_ppo(
     mx.clear_cache()
     print(f"Reference log-probs computed for {len(records)} traces")
 
-    # Load policy model with LoRA after ref model is freed
     policy_model, tokenizer = mlx_load(mlx_name)
     linear_to_lora_layers(
         policy_model,

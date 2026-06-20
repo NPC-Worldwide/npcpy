@@ -32,22 +32,18 @@ except ImportError:
 
 from typing import List, Dict, Any, Optional
 
-# Map common HF model names to mlx-community equivalents
 _MLX_MODEL_MAP = {
-    # Qwen3 family
     "Qwen/Qwen3-0.6B": "mlx-community/Qwen3-0.6B-4bit",
     "Qwen/Qwen3-1.7B": "mlx-community/Qwen3-1.7B-4bit",
     "Qwen/Qwen3-4B": "mlx-community/Qwen3-4B-4bit",
     "Qwen/Qwen3-8B": "mlx-community/Qwen3-8B-4bit",
     "Qwen/Qwen3-14B": "mlx-community/Qwen3-14B-4bit",
     "Qwen/Qwen3-32B": "mlx-community/Qwen3-32B-4bit",
-    # Qwen3.5 family
     "Qwen/Qwen3.5-0.8B": "mlx-community/Qwen3.5-0.8B-4bit",
     "Qwen/Qwen3.5-2B": "mlx-community/Qwen3.5-2B-4bit",
     "Qwen/Qwen3.5-4B": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
     "Qwen/Qwen3.5-9B": "mlx-community/Qwen3.5-9B-MLX-4bit",
     "Qwen/Qwen3.5-27B": "mlx-community/Qwen3.5-27B-4bit",
-    # Gemma family
     "google/gemma-3-270m-it": "mlx-community/gemma-3-270m-it-4bit",
     "google/gemma-3-1b-it": "mlx-community/gemma-3-1b-it-4bit",
     "google/gemma-3-4b-it": "mlx-community/gemma-3-4b-it-4bit",
@@ -55,11 +51,9 @@ _MLX_MODEL_MAP = {
     "google/gemma-3-27b-it": "mlx-community/gemma-3-27b-it-4bit",
     "google/gemma-4-12B-it": "mlx-community/gemma-4-12B-it-4bit",
     "google/gemma-4-31B-it": "mlx-community/gemma-4-31B-it-4bit",
-    # Llama family
     "meta-llama/Llama-3.1-8B-Instruct": "mlx-community/Llama-3.1-8B-Instruct-4bit",
     "meta-llama/Llama-3.2-1B-Instruct": "mlx-community/Llama-3.2-1B-Instruct-4bit",
     "meta-llama/Llama-3.2-3B-Instruct": "mlx-community/Llama-3.2-3B-Instruct-4bit",
-    # Mistral family
     "mistralai/Mistral-7B-Instruct-v0.3": "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
     "mistralai/Ministral-3-3B-Instruct-2512": "mlx-community/Ministral-3-3B-Instruct-2512-4bit",
     "mistralai/Ministral-8B-Instruct-2410": "mlx-community/Ministral-8B-Instruct-2410-4bit",
@@ -150,7 +144,6 @@ def _run_sft_mlx(
 
     formatted = format_training_examples(X, y, format_style)
 
-    # Use mlx-lm's native Dataset for proper tokenization and batching.
     train_dataset = MLXDataset(formatted, tokenizer, max_seq_length=config.max_length)
 
     batches_per_epoch = max(1, len(X) // config.per_device_train_batch_size)
@@ -166,9 +159,6 @@ def _run_sft_mlx(
         f"{config.num_train_epochs} epochs ({total_batches} total batches)"
     )
 
-    # Train one true epoch at a time so the data loader does not loop forever.
-    # mlx-lm's iterate_batches cycles indefinitely by default; with loop=False
-    # it makes exactly one pass over the dataset per mlx_train() call.
     for epoch in range(1, config.num_train_epochs + 1):
         print(f"\n=== Epoch {epoch}/{config.num_train_epochs} ===", flush=True)
 
@@ -193,7 +183,6 @@ def _run_sft_mlx(
             args=training_args,
         )
 
-    # save adapter config in the format mlx-lm's load_adapters expects
     num_layers = _num_lora_layers(config.lora_r)
     adapter_config = {
         "model": mlx_model_name,
@@ -336,7 +325,6 @@ def load_sft_model(model_path: str, device: str = "cpu", base_model: str = None)
 
     If an HF Hub repo is passed, the single adapter inside it is downloaded first.
     """
-    # If it looks like an HF Hub repo, resolve it
     if "/" in model_path and not os.path.isdir(model_path):
         try:
             from huggingface_hub import HfApi
@@ -365,7 +353,6 @@ def load_sft_model(model_path: str, device: str = "cpu", base_model: str = None)
             )
             model_path = local_path
         except Exception as e:
-            # If resolving fails, maybe it's just a local path with a slash
             if not os.path.exists(model_path):
                 raise
 
@@ -393,10 +380,8 @@ def load_sft_model(model_path: str, device: str = "cpu", base_model: str = None)
             model, tokenizer = mlx_load(model_path)
         return model, tokenizer
 
-    # torch path (cpu or cuda)
     device_map = "auto" if device == "cuda" else {"": "cpu"}
 
-    # Check if it's a PEFT adapter directory
     adapter_config_path = os.path.join(model_path, "adapter_config.json")
     if os.path.exists(adapter_config_path):
         with open(adapter_config_path) as f:
@@ -469,7 +454,6 @@ def predict_sft(
         )
         return response
 
-    # torch path
     dev = next(model.parameters()).device
 
     inputs = tokenizer(

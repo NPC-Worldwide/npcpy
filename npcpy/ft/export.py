@@ -25,7 +25,6 @@ def _infer_base_model(adapter_path: str) -> str:
         with open(cfg_file) as f:
             cfg = json.load(f)
         return cfg.get("model", cfg.get("base_model_name_or_path", ""))
-    # PEFT adapters
     cfg_file = Path(adapter_path) / "config.json"
     if cfg_file.exists():
         with open(cfg_file) as f:
@@ -69,10 +68,7 @@ def merge_and_save(
         )
 
     print(f"[merge] Loading base: {base_model}")
-    # MLX-community models are pre-quantized and incompatible with standard transformers
-    # loading + PEFT merging. Map back to the unquantized HF base model.
     from npcpy.ft.sft import _MLX_MODEL_MAP, _resolve_mlx_model
-    # reverse map: mlx-community name -> unquantized HF name
     _REVERSE_MLX_MAP = {v: k for k, v in _MLX_MODEL_MAP.items()}
     if base_model in _REVERSE_MLX_MAP:
         unquantized_base = _REVERSE_MLX_MAP[base_model]
@@ -132,7 +128,6 @@ def export_adapter(
 
     print(f"[export] Converting to GGUF ({quantization}) → {output_path}")
 
-    # Use llama.cpp's Python converter (bundled in many llama-cpp-python installs)
     try:
         from llama_cpp.convert import convert_hf_to_gguf
         convert_hf_to_gguf(
@@ -141,7 +136,6 @@ def export_adapter(
             outtype=quantization,
         )
     except ImportError:
-        # Fallback: call the llama.cpp CLI via Python module (still zero-subprocess)
         print("[export] llama_cpp.convert not found, trying llama.cpp CLI fallback...")
         _gguf_cli_fallback(merged, output_path, quantization)
 
@@ -151,7 +145,6 @@ def export_adapter(
 def _gguf_cli_fallback(merged_path: str, output_path: str, quantization: str):
     """Last-resort GGUF conversion using llama.cpp's convert_hf_to_gguf.py."""
     import sys
-    # Try to find the convert script inside llama-cpp-python package
     import llama_cpp
     pkg_dir = Path(llama_cpp.__file__).parent
     convert_script = pkg_dir / "convert_hf_to_gguf.py"
@@ -161,7 +154,6 @@ def _gguf_cli_fallback(merged_path: str, output_path: str, quantization: str):
             "Install: pip install llama-cpp-python\n"
             "Or build llama.cpp from source and run convert_hf_to_gguf.py manually."
         )
-    # Save current argv, run the converter module directly
     old_argv = sys.argv
     try:
         sys.argv = [
@@ -206,12 +198,10 @@ def convert_to_mlx(
         output_path = str(adapter_path.parent / f"{adapter_path.name}_mlx")
     Path(output_path).mkdir(parents=True, exist_ok=True)
 
-    # Merge first (we need the full base + lora weights)
     merged = merge_and_save(adapter_path, base_model, device="cpu")
 
     print(f"[mlx] Converting merged model → MLX format ({output_path})")
 
-    # Load merged model and extract state_dict
     from transformers import AutoModelForCausalLM
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -222,17 +212,14 @@ def convert_to_mlx(
     )
 
     if quantize:
-        # TODO: actual 4-bit quantization via mlx_lm
         print("[mlx] Note: quantize=True requires mlx_lm.quantize; using fp16 for now")
 
-    # Save as safetensors
     state_dict = model.state_dict()
     safetensors.torch.save_file(
         state_dict,
         Path(output_path) / "adapters.safetensors",
     )
 
-    # Write adapter_config.json in mlx-lm format
     base_model_name = base_model or _infer_base_model(adapter_path)
     config = {
         "model": base_model_name,
@@ -284,7 +271,6 @@ def upload_to_hub(
     model_path = Path(model_path)
 
     if model_path.is_file():
-        # Single file upload (GGUF)
         dest = Path(path_in_repo or ".") / model_path.name if path_in_repo else model_path.name
         print(f"[hub] Uploading {model_path.name} → {dest}")
         api.upload_file(
@@ -295,7 +281,6 @@ def upload_to_hub(
             commit_message=commit_message,
         )
     else:
-        # Folder upload (adapter or merged model)
         dest = path_in_repo or "."
         print(f"[hub] Uploading folder {model_path} → {dest}/")
         api.upload_folder(
@@ -363,7 +348,6 @@ def download_from_hub(
                 local_dir_use_symlinks=False,
                 token=token,
             )
-            # Move from tmpdir/path_in_repo/file → local_path/file
             rel = f[len(prefix):]
             dest = os.path.join(local_path, rel)
             Path(dest).parent.mkdir(parents=True, exist_ok=True)

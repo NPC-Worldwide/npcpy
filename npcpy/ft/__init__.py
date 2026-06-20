@@ -24,10 +24,6 @@ Quick-start:
     download_from_hub("npc-worldwide/enpisi-coder", "adapters/npcsh-sft", path_in_repo="adapters/npcsh-sft")
 """
 
-# Lazy imports so that importing npcpy.ft.ge or npcpy.ft.diff does not pull
-# in heavy dependencies (datasets, transformers, peft, mlx, etc.) unless the
-# caller actually uses the SFT/RL/export submodules.
-
 def __getattr__(name):
     if name in (
         "SFTConfig",

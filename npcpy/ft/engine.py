@@ -24,8 +24,6 @@ class Engine(ABC):
 
     name: str = "abstract"
 
-    # --- Array creation ---
-
     @abstractmethod
     def array(self, data, dtype=None):
         """Create an array from data."""
@@ -49,8 +47,6 @@ class Engine(ABC):
     @abstractmethod
     def arange(self, start, stop=None, step=1):
         """Range array."""
-
-    # --- Math ops ---
 
     @abstractmethod
     def dot(self, a, b):
@@ -104,8 +100,6 @@ class Engine(ABC):
     def exp(self, x):
         """Exponential."""
 
-    # --- Array manipulation ---
-
     @abstractmethod
     def concatenate(self, arrays, axis=0):
         """Concatenate arrays."""
@@ -121,8 +115,6 @@ class Engine(ABC):
     @abstractmethod
     def where(self, condition, x, y):
         """Element-wise conditional."""
-
-    # --- Conversion ---
 
     @abstractmethod
     def to_numpy(self, x) -> np.ndarray:
