@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from datasets import Dataset
 import json
 import numpy as np
 import os
@@ -24,6 +23,7 @@ try:
     import mlx.core as mx
     import mlx.optimizers as mlx_opt
     from mlx_lm import load as mlx_load, generate as mlx_generate
+    from mlx_lm.tuner.datasets import Dataset as MLXDataset
     from mlx_lm.tuner.trainer import TrainingArgs as MLXTrainingArgs, train as mlx_train
     from mlx_lm.tuner.utils import linear_to_lora_layers
     MLX_AVAILABLE = True
@@ -34,21 +34,35 @@ from typing import List, Dict, Any, Optional
 
 # Map common HF model names to mlx-community equivalents
 _MLX_MODEL_MAP = {
-    "google/gemma-3-270m-it": "mlx-community/gemma-3-270m-it-4bit",
-    "google/gemma-3-1b-it": "mlx-community/gemma-3-1b-it-4bit",
-    "google/gemma-3-4b-it": "mlx-community/gemma-3-4b-it-4bit",
-    "google/gemma-3-12b-it": "mlx-community/gemma-3-12b-it-4bit",
-    "google/gemma-3-27b-it": "mlx-community/gemma-3-27b-it-4bit",
+    # Qwen3 family
     "Qwen/Qwen3-0.6B": "mlx-community/Qwen3-0.6B-4bit",
     "Qwen/Qwen3-1.7B": "mlx-community/Qwen3-1.7B-4bit",
     "Qwen/Qwen3-4B": "mlx-community/Qwen3-4B-4bit",
     "Qwen/Qwen3-8B": "mlx-community/Qwen3-8B-4bit",
     "Qwen/Qwen3-14B": "mlx-community/Qwen3-14B-4bit",
     "Qwen/Qwen3-32B": "mlx-community/Qwen3-32B-4bit",
+    # Qwen3.5 family
+    "Qwen/Qwen3.5-0.8B": "mlx-community/Qwen3.5-0.8B-4bit",
+    "Qwen/Qwen3.5-2B": "mlx-community/Qwen3.5-2B-4bit",
+    "Qwen/Qwen3.5-4B": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+    "Qwen/Qwen3.5-9B": "mlx-community/Qwen3.5-9B-MLX-4bit",
+    "Qwen/Qwen3.5-27B": "mlx-community/Qwen3.5-27B-4bit",
+    # Gemma family
+    "google/gemma-3-270m-it": "mlx-community/gemma-3-270m-it-4bit",
+    "google/gemma-3-1b-it": "mlx-community/gemma-3-1b-it-4bit",
+    "google/gemma-3-4b-it": "mlx-community/gemma-3-4b-it-4bit",
+    "google/gemma-3-12b-it": "mlx-community/gemma-3-12b-it-4bit",
+    "google/gemma-3-27b-it": "mlx-community/gemma-3-27b-it-4bit",
+    "google/gemma-4-12B-it": "mlx-community/gemma-4-12B-it-4bit",
+    "google/gemma-4-31B-it": "mlx-community/gemma-4-31B-it-4bit",
+    # Llama family
     "meta-llama/Llama-3.1-8B-Instruct": "mlx-community/Llama-3.1-8B-Instruct-4bit",
     "meta-llama/Llama-3.2-1B-Instruct": "mlx-community/Llama-3.2-1B-Instruct-4bit",
     "meta-llama/Llama-3.2-3B-Instruct": "mlx-community/Llama-3.2-3B-Instruct-4bit",
+    # Mistral family
     "mistralai/Mistral-7B-Instruct-v0.3": "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
+    "mistralai/Ministral-3-3B-Instruct-2512": "mlx-community/Ministral-3-3B-Instruct-2512-4bit",
+    "mistralai/Ministral-8B-Instruct-2410": "mlx-community/Ministral-8B-Instruct-2410-4bit",
 }
 
 def _resolve_mlx_model(hf_name: str) -> str:
@@ -70,7 +84,7 @@ def _num_lora_layers(lora_r: int) -> int:
 @dataclass
 class SFTConfig:
     base_model_name: str = "google/gemma-3-270m-it"
-    output_model_path: str = "models/sft_model"
+    output_model_path: str = "adapters/sft_model"
     device: str = "cpu"  # "cpu", "cuda", "mlx"
     lora_r: int = 8
     lora_alpha: int = 16
@@ -136,59 +150,55 @@ def _run_sft_mlx(
 
     formatted = format_training_examples(X, y, format_style)
 
-    # Build processed dataset: each item is (token_ids, offset)
-    processed = []
-    for rec in formatted:
-        tokens = tokenizer.encode(rec["text"])
-        if tokens[-1] != tokenizer.eos_token_id:
-            tokens.append(tokenizer.eos_token_id)
-        processed.append((tokens, 0))
+    # Use mlx-lm's native Dataset for proper tokenization and batching.
+    train_dataset = MLXDataset(formatted, tokenizer, max_seq_length=config.max_length)
 
-    class _ProcessedDataset:
-        def __init__(self, data):
-            self._data = data
-        def __getitem__(self, idx):
-            return self._data[idx]
-        def __len__(self):
-            return len(self._data)
-
-    train_dataset = _ProcessedDataset(processed)
-
-    iters_per_epoch = max(1, len(X) // config.per_device_train_batch_size)
-    total_iters = iters_per_epoch * config.num_train_epochs
+    batches_per_epoch = max(1, len(X) // config.per_device_train_batch_size)
+    total_batches = batches_per_epoch * config.num_train_epochs
 
     adapter_file = os.path.join(config.output_model_path, "adapters.safetensors")
 
-    training_args = MLXTrainingArgs(
-        batch_size=config.per_device_train_batch_size,
-        iters=total_iters,
-        val_batches=0,
-        steps_per_report=config.logging_steps,
-        steps_per_eval=0,
-        steps_per_save=config.save_steps,
-        max_seq_length=config.max_length,
-        adapter_file=adapter_file,
-        grad_checkpoint=True,
-        grad_accumulation_steps=config.gradient_accumulation_steps,
-    )
-
     optimizer = mlx_opt.AdamW(learning_rate=config.learning_rate)
 
-    print(f"MLX SFT: {mlx_model_name}, LoRA r={config.lora_r}, {len(X)} examples, {total_iters} iters")
-
-    mlx_train(
-        model=model,
-        optimizer=optimizer,
-        train_dataset=train_dataset,
-        val_dataset=None,
-        args=training_args,
+    print(
+        f"MLX SFT: {mlx_model_name}, LoRA r={config.lora_r}, "
+        f"{len(X)} examples, {batches_per_epoch} batches/epoch, "
+        f"{config.num_train_epochs} epochs ({total_batches} total batches)"
     )
 
+    # Train one true epoch at a time so the data loader does not loop forever.
+    # mlx-lm's iterate_batches cycles indefinitely by default; with loop=False
+    # it makes exactly one pass over the dataset per mlx_train() call.
+    for epoch in range(1, config.num_train_epochs + 1):
+        print(f"\n=== Epoch {epoch}/{config.num_train_epochs} ===", flush=True)
+
+        training_args = MLXTrainingArgs(
+            batch_size=config.per_device_train_batch_size,
+            iters=batches_per_epoch,
+            val_batches=0,
+            steps_per_report=config.logging_steps,
+            steps_per_eval=0,
+            steps_per_save=config.save_steps,
+            max_seq_length=config.max_length,
+            adapter_file=adapter_file,
+            grad_checkpoint=False,
+            grad_accumulation_steps=config.gradient_accumulation_steps,
+        )
+
+        mlx_train(
+            model=model,
+            optimizer=optimizer,
+            train_dataset=train_dataset,
+            val_dataset=None,
+            args=training_args,
+        )
+
     # save adapter config in the format mlx-lm's load_adapters expects
+    num_layers = _num_lora_layers(config.lora_r)
     adapter_config = {
         "model": mlx_model_name,
         "fine_tune_type": "lora",
-        "num_layers": _num_lora_layers(config.lora_r),
+        "num_layers": num_layers,
         "lora_parameters": {
             "rank": config.lora_r,
             "alpha": config.lora_alpha,
@@ -199,7 +209,7 @@ def _run_sft_mlx(
     with open(os.path.join(config.output_model_path, "adapter_config.json"), "w") as f:
         json.dump(adapter_config, f, indent=2)
 
-    print(f"MLX adapter saved to {config.output_model_path}")
+    print(f"\nMLX adapter saved to {config.output_model_path}")
     return config.output_model_path
 
 def _run_sft_torch(
@@ -219,6 +229,7 @@ def _run_sft_torch(
     else:
         train_examples = formatted_examples
 
+    from datasets import Dataset
     dataset = Dataset.from_list(train_examples)
 
     model_kwargs = {
@@ -270,7 +281,6 @@ def _run_sft_torch(
         fp16=use_fp16,
         bf16=use_bf16,
         lr_scheduler_type=config.lr_scheduler_type,
-        group_by_length=True,
         save_steps=config.save_steps,
         weight_decay=config.weight_decay,
         no_cuda=(config.device == "cpu"),
@@ -318,6 +328,46 @@ def run_sft(
         return _run_sft_torch(X, y, config, validation_split, format_style)
 
 def load_sft_model(model_path: str, device: str = "cpu", base_model: str = None):
+    """Load an SFT model or adapter.
+
+    model_path can be:
+        - a local directory (e.g. "adapters/npcsh-sft-toolcalls-all")
+        - an HF Hub repo (e.g. "npc-worldwide/enpisi-coder")
+
+    If an HF Hub repo is passed, the single adapter inside it is downloaded first.
+    """
+    # If it looks like an HF Hub repo, resolve it
+    if "/" in model_path and not os.path.isdir(model_path):
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi()
+            files = api.list_repo_files(model_path, repo_type="model")
+            import re
+            adapters = set(
+                re.match(r'adapters/([^/]+)/', f).group(1)
+                for f in files if f.startswith("adapters/")
+            )
+            if not adapters:
+                raise ValueError(f"No adapters/ subfolder found in {model_path}")
+            if len(adapters) > 1:
+                raise ValueError(
+                    f"Multiple adapters found in {model_path}: {sorted(adapters)}. "
+                    "Please pass a local path or narrow the repo."
+                )
+            adapter_name = adapters.pop()
+            print(f"[load] Resolving HF repo {model_path} → adapter '{adapter_name}'")
+            from npcpy.ft.export import download_from_hub
+            local_path = os.path.expanduser(f"~/.npcsh/hf/{model_path.replace('/', '--')}")
+            download_from_hub(
+                repo_id=model_path,
+                local_path=local_path,
+                path_in_repo=f"adapters/{adapter_name}",
+            )
+            model_path = local_path
+        except Exception as e:
+            # If resolving fails, maybe it's just a local path with a slash
+            if not os.path.exists(model_path):
+                raise
 
     if device == "mlx":
         if not MLX_AVAILABLE:
@@ -346,17 +396,39 @@ def load_sft_model(model_path: str, device: str = "cpu", base_model: str = None)
     # torch path (cpu or cuda)
     device_map = "auto" if device == "cuda" else {"": "cpu"}
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.float32,
-        device_map=device_map,
-        attn_implementation="eager"
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=True
-    )
+    # Check if it's a PEFT adapter directory
+    adapter_config_path = os.path.join(model_path, "adapter_config.json")
+    if os.path.exists(adapter_config_path):
+        with open(adapter_config_path) as f:
+            adapter_cfg = json.load(f)
+        base_model = base_model or adapter_cfg.get("base_model_name_or_path", "")
+        if not base_model:
+            raise ValueError(
+                f"Adapter at {model_path} but no base_model_name_or_path found in adapter_config.json. "
+                "Pass base_model= explicitly."
+            )
+        print(f"[load] Loading PEFT adapter from {model_path} with base {base_model}")
+        from peft import PeftModel
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            torch_dtype=torch.float32,
+            device_map=device_map,
+            attn_implementation="eager",
+            trust_remote_code=True,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+        model = PeftModel.from_pretrained(model, model_path)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.float32,
+            device_map=device_map,
+            attn_implementation="eager"
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            trust_remote_code=True
+        )
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

@@ -897,7 +897,7 @@ print(f"Trained adapter saved to: {adapter_path}")
 
 ```python
 from npcpy.llm_funcs import get_llm_response
-from npcpy.ft.sft import SFTConfig, run_sft
+from npcpy.ft import SFTConfig, run_sft
 
 # Generate scientific writing dataset from style samples
 def generate_scientific_trace(question, reasoning_model, converter_model, style_chunks):
