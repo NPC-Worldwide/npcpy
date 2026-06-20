@@ -24,8 +24,6 @@ name: npcs
 description: List available NPCs and switch the active NPC. Use when the user asks to "list NPCs", "switch NPC", "show team", or "change agent".
 ---
 
-# NPC Team Management
-
 Use the MCP prompts to see available NPCs and switch:
 
 1. Use the `npc_team` MCP prompt to see all available NPCs
