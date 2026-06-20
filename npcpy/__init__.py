@@ -11,33 +11,24 @@ from . import memory
 from . import db
 from . import tools
 
-# Core types
 from .npc_compiler import NPC, Team, Jinx, Agent, ToolAgent, CodingAgent, CLIAgent
 
-# LLM
 from .llm_funcs import get_llm_response, check_llm_command, execute_llm_command, gen_image, gen_video
 
-# ML
 from .ml_funcs import fit_model, predict_model, score_model, ensemble_predict
 
-# Arrays / Ensembles
 from .npc_array import NPCArray, ResponseTensor, LazyResult, infer_matrix, ensemble_vote
 
-# Tools
 from .tools import auto_tools, create_tool_schema, create_tool_map, extract_function_info
 
-# Generation
 from .gen.response import get_litellm_response, get_ollama_response, calculate_cost
 from .gen.embeddings import get_embeddings
 from .gen.image_gen import generate_image
 
-# DB
 from .db import ensure_engine, normalize_path_for_db, deep_to_dict, CustomJSONEncoder
 
-# Memory
 from .memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_search_facts
 
-# System
 from .npc_sysenv import (
     get_data_dir,
     get_config_dir,

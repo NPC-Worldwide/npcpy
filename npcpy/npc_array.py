@@ -157,7 +157,7 @@ class NPCArray:
 
         Example:
             >>> arr = NPCArray.from_llms(['gpt-4', 'claude-3', 'llama3'])
-            >>> arr = NPCArray.from_llms('gpt-4')  # Single model, still array-like
+            >>> arr = NPCArray.from_llms('gpt-4')
         """
         if isinstance(models, str):
             models = [models]
@@ -300,7 +300,7 @@ class NPCArray:
             ...     model=['gpt-4', 'claude-3'],
             ...     temperature=[0.0, 0.5, 1.0]
             ... )
-            >>> arr.shape  # (6,) - 2 models * 3 temperatures
+            >>> arr.shape
         """
         keys = list(param_ranges.keys())
         values = [param_ranges[k] for k in keys]
@@ -340,7 +340,7 @@ class NPCArray:
                 - Any additional config parameters
 
         Example:
-            >>> # In a Jinx template, define a matrix of models:
+            >>>
             >>> matrix = [
             ...     {'model': 'gpt-4', 'provider': 'openai', 'temperature': 0.7},
             ...     {'model': 'claude-3-opus', 'provider': 'anthropic', 'temperature': 0.5},
@@ -348,7 +348,7 @@ class NPCArray:
             ... ]
             >>> arr = NPCArray.from_matrix(matrix)
 
-            >>> # Mixed model types:
+            >>>
             >>> matrix = [
             ...     {'model': 'gpt-4', 'type': 'llm', 'provider': 'openai'},
             ...     {'model': my_npc, 'type': 'npc'},
@@ -602,8 +602,8 @@ class LazyResult:
             fn: Function to apply to each response
 
         Example:
-            >>> result.map(lambda r: len(r))  # Get lengths
-            >>> result.map(json.loads)  # Parse JSON
+            >>> result.map(lambda r: len(r))
+            >>> result.map(json.loads)
         """
         new_node = GraphNode(
             op_type=OpType.MAP,
@@ -655,8 +655,8 @@ class LazyResult:
             **kwargs: Additional params for reduction
 
         Example:
-            >>> result.reduce('vote', axis=0)  # Vote across models
-            >>> result.reduce('mean', axis=1)  # Average across prompts
+            >>> result.reduce('vote', axis=0)
+            >>> result.reduce('mean', axis=1)
         """
         new_node = GraphNode(
             op_type=OpType.REDUCE,

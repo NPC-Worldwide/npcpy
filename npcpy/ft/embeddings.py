@@ -42,16 +42,11 @@ except Exception:
 
 import numpy as np
 
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 @dataclass
 class EmbeddingConfig:
     base_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     output_model_path: str = "models/embedding"
-    device: str = "cpu"  # "cpu", "cuda", "mlx"
+    device: str = "cpu"
     embedding_dim: int = 384
     num_train_epochs: int = 10
     batch_size: int = 16
@@ -59,25 +54,24 @@ class EmbeddingConfig:
     weight_decay: float = 0.01
     temperature: float = 0.07
     margin: float = 0.5
-    loss_type: str = "infonce"  # infonce | triplet | mnr
+    loss_type: str = "infonce"
     max_length: int = 256
     logging_steps: int = 50
     save_steps: int = 500
     warmup_ratio: float = 0.1
     gradient_accumulation_steps: int = 1
-    from_scratch: bool = False  # train foundation model from scratch
+    from_scratch: bool = False
     vocab_size: int = 30522
     hidden_size: int = 384
     num_hidden_layers: int = 6
     num_attention_heads: int = 6
     intermediate_size: int = 1536
 
-
 @dataclass
 class HilbertConfig:
     base_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     output_model_path: str = "models/hilbert_embedding"
-    device: str = "cpu"  # "cpu", "cuda", "mlx"
+    device: str = "cpu"
     embedding_dim: int = 384
     num_train_epochs: int = 10
     batch_size: int = 16
@@ -85,7 +79,7 @@ class HilbertConfig:
     weight_decay: float = 0.01
     temperature: float = 0.07
     margin: float = 0.5
-    loss_type: str = "hilbert_infonce"  # hilbert_infonce | phase_triplet | phase_contrastive
+    loss_type: str = "hilbert_infonce"
     max_length: int = 256
     logging_steps: int = 50
     save_steps: int = 500
@@ -94,26 +88,16 @@ class HilbertConfig:
     use_phase: bool = True
     phase_init_scale: float = 0.1
     lambda_phase: float = 0.5
-    from_scratch: bool = False  # train foundation model from scratch
+    from_scratch: bool = False
     vocab_size: int = 30522
     hidden_size: int = 384
     num_hidden_layers: int = 6
     num_attention_heads: int = 6
     intermediate_size: int = 1536
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _mean_pooling(hidden_states, attention_mask):
     mask = attention_mask.unsqueeze(-1).float()
     return (hidden_states * mask).sum(dim=1) / mask.sum(dim=1)
-
-
-# ---------------------------------------------------------------------------
-# Classical losses
-# ---------------------------------------------------------------------------
 
 def _infonce_loss(anchor_emb, positive_emb, temperature=0.07):
     anchor_emb = F.normalize(anchor_emb, p=2, dim=-1)
@@ -122,12 +106,10 @@ def _infonce_loss(anchor_emb, positive_emb, temperature=0.07):
     labels = torch.arange(len(anchor_emb), device=anchor_emb.device)
     return F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels)
 
-
 def _triplet_loss(anchor_emb, positive_emb, negative_emb, margin=0.5):
     d_pos = 1 - F.cosine_similarity(anchor_emb, positive_emb, dim=-1)
     d_neg = 1 - F.cosine_similarity(anchor_emb, negative_emb, dim=-1)
     return F.relu(d_pos - d_neg + margin).mean()
-
 
 def _mnr_loss(anchor_emb, positive_emb, temperature=1.0):
     anchor_emb = F.normalize(anchor_emb, p=2, dim=-1)
@@ -136,17 +118,11 @@ def _mnr_loss(anchor_emb, positive_emb, temperature=1.0):
     labels = torch.arange(len(anchor_emb), device=anchor_emb.device)
     return F.cross_entropy(scores, labels)
 
-
-# ---------------------------------------------------------------------------
-# Hilbert-space helpers
-# ---------------------------------------------------------------------------
-
 class ComplexTensor:
     """ψ = |ψ| · e^(iθ)"""
     def __init__(self, magnitude, angle):
         self.magnitude = magnitude
         self.angle = angle
-
 
 def _complex_linear(x, w_real, w_imag, b_real, b_imag):
     """Linear layer with complex weights."""
@@ -156,7 +132,6 @@ def _complex_linear(x, w_real, w_imag, b_real, b_imag):
     ang = torch.atan2(imag, real)
     return ComplexTensor(mag, ang)
 
-
 def _hilbert_similarity(ct1, ct2):
     """Re(⟨ψ₁|ψ₂⟩) / (||ψ₁|| ||ψ₂||)"""
     mag_prod = ct1.magnitude * ct2.magnitude
@@ -165,7 +140,6 @@ def _hilbert_similarity(ct1, ct2):
     norm1 = (ct1.magnitude ** 2).sum(dim=-1).sqrt()
     norm2 = (ct2.magnitude ** 2).sum(dim=-1).sqrt()
     return real_part / (norm1 * norm2 + 1e-8)
-
 
 def _hilbert_similarity_matrix(batch1, batch2):
     """Pairwise Hilbert similarities."""
@@ -182,14 +156,12 @@ def _hilbert_similarity_matrix(batch1, batch2):
     norm2 = (mag2 ** 2).sum(dim=-1).sqrt().unsqueeze(0)
     return real_part / (norm1 * norm2 + 1e-8)
 
-
 def _hilbert_infonce(anchor_ct, positive_ct, temperature=0.07):
     sim_matrix = _hilbert_similarity_matrix(anchor_ct, positive_ct)
     labels = torch.arange(len(anchor_ct.magnitude), device=anchor_ct.magnitude.device)
     loss_a2p = F.cross_entropy(sim_matrix / temperature, labels)
     loss_p2a = F.cross_entropy(sim_matrix.T / temperature, labels)
     return (loss_a2p + loss_p2a) / 2.0
-
 
 def _phase_triplet_loss(anchor_ct, positive_ct, negative_ct, margin=0.5, lambda_phase=0.5):
     d_pos_mag = 1 - _hilbert_similarity(anchor_ct, positive_ct)
@@ -202,15 +174,9 @@ def _phase_triplet_loss(anchor_ct, positive_ct, negative_ct, margin=0.5, lambda_
 
     return triplet + lambda_phase * phase_penalty
 
-
 def _normalize_hilbert(ct):
     n = (ct.magnitude ** 2).sum(dim=-1, keepdim=True).sqrt()
     return ComplexTensor(ct.magnitude / (n + 1e-8), ct.angle)
-
-
-# ---------------------------------------------------------------------------
-# Foundation model from scratch
-# ---------------------------------------------------------------------------
 
 def _create_foundation_model(config):
     """Create a small transformer from scratch for embedding training."""
@@ -228,22 +194,15 @@ def _create_foundation_model(config):
     model = BertModel(bert_config)
     return model
 
-
 def _load_base_model(config, tokenizer):
     """Load base model: either from pretrained or from scratch."""
     if getattr(config, 'from_scratch', False):
         print(f"Training from scratch: vocab={config.vocab_size}, hidden={config.hidden_size}, layers={config.num_hidden_layers}")
         base = _create_foundation_model(config)
-        # Resize token embeddings to match tokenizer
         base.resize_token_embeddings(len(tokenizer))
     else:
         base = AutoModel.from_pretrained(config.base_model_name)
     return base
-
-
-# ---------------------------------------------------------------------------
-# Classical: run_embedding_sft
-# ---------------------------------------------------------------------------
 
 def run_embedding_sft_torch(
     anchors: List[str],
@@ -335,7 +294,6 @@ def run_embedding_sft_torch(
     print(f"Model saved to {config.output_model_path}")
     return config.output_model_path
 
-
 def run_embedding_sft_mlx(
     anchors: List[str],
     positives: List[str],
@@ -402,7 +360,6 @@ def run_embedding_sft_mlx(
     print(f"MLX model saved to {config.output_model_path}")
     return config.output_model_path
 
-
 def run_embedding_sft(
     anchors: List[str],
     positives: List[str],
@@ -415,11 +372,6 @@ def run_embedding_sft(
     if config.device == "mlx":
         return run_embedding_sft_mlx(anchors, positives, negatives, config)
     return run_embedding_sft_torch(anchors, positives, negatives, config)
-
-
-# ---------------------------------------------------------------------------
-# Quantum: run_hilbert_embedding_sft
-# ---------------------------------------------------------------------------
 
 def run_hilbert_embedding_sft_torch(
     anchors: List[str],
@@ -444,7 +396,6 @@ def run_hilbert_embedding_sft_torch(
     hidden = base.config.hidden_size
     dim = config.embedding_dim
 
-    # Complex projector parameters
     proj_w_real = nn.Parameter(torch.randn(dim, hidden) * 0.02).to(device)
     proj_w_imag = nn.Parameter(torch.randn(dim, hidden) * 0.02).to(device)
     proj_b_real = nn.Parameter(torch.zeros(dim)).to(device)
@@ -519,7 +470,6 @@ def run_hilbert_embedding_sft_torch(
     print(f"Hilbert model saved to {config.output_model_path}")
     return config.output_model_path
 
-
 def run_hilbert_embedding_sft_mlx(
     anchors: List[str],
     positives: List[str],
@@ -565,7 +515,6 @@ def run_hilbert_embedding_sft_mlx(
         return mag / norm, ang
 
     def mlx_hilbert_infonce(a_mag, a_ang, p_mag, p_ang, temperature=0.07):
-        # Pairwise Hilbert similarities
         mag_prod = a_mag[:, None, :] * p_mag[None, :, :]
         phase_diff = a_ang[:, None, :] - p_ang[None, :, :]
         real_part = mx.sum(mag_prod * mx.cos(phase_diff), axis=-1)
@@ -604,7 +553,6 @@ def run_hilbert_embedding_sft_mlx(
     print(f"MLX Hilbert model saved to {config.output_model_path}")
     return config.output_model_path
 
-
 def run_hilbert_embedding_sft(
     anchors: List[str],
     positives: List[str],
@@ -617,11 +565,6 @@ def run_hilbert_embedding_sft(
     if config.device == "mlx":
         return run_hilbert_embedding_sft_mlx(anchors, positives, negatives, config)
     return run_hilbert_embedding_sft_torch(anchors, positives, negatives, config)
-
-
-# ---------------------------------------------------------------------------
-# Load / Encode / Evaluate
-# ---------------------------------------------------------------------------
 
 def load_embedding_model(model_path: str, device: str = "cpu"):
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -639,7 +582,6 @@ def load_embedding_model(model_path: str, device: str = "cpu"):
     projector = projector.to(dev)
 
     return base, projector, tokenizer, config
-
 
 def encode_texts(
     texts: List[str],
@@ -665,7 +607,6 @@ def encode_texts(
         emb = F.normalize(projector(pooled), p=2, dim=-1)
 
     return emb.cpu().numpy().tolist()
-
 
 def evaluate_embeddings(
     anchors: List[str],

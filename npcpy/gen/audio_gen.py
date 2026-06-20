@@ -806,9 +806,6 @@ def base64_to_audio(b64_string: str) -> bytes:
     """Decode base64 string to audio bytes."""
     return base64.b64decode(b64_string)
 
-
-# ─── Music generation ─────────────────────────────────────────────────
-
 def music_musicgen_local(
     prompt: str,
     duration: int = 10,
@@ -821,14 +818,11 @@ def music_musicgen_local(
     import numpy as np
     import scipy.io.wavfile as wavfile
     import torch
-    # Use concrete classes to sidestep AutoProcessor's auto-discovery path.
     from transformers import MusicgenProcessor, MusicgenForConditionalGeneration
 
     processor = MusicgenProcessor.from_pretrained(model)
     mg = MusicgenForConditionalGeneration.from_pretrained(model)
 
-    # MusicGen is numerically unstable on MPS (produces NaN/inf probs during
-    # sampling) — stick to CUDA or CPU.
     if torch.cuda.is_available():
         device = "cuda"
     else:
@@ -838,7 +832,6 @@ def music_musicgen_local(
 
     inputs = processor(text=[prompt], padding=True, return_tensors="pt").to(device)
 
-    # MusicGen uses ~50 tokens/sec at 32 kHz
     max_new_tokens = int(duration * 50)
 
     with torch.no_grad():
@@ -846,14 +839,12 @@ def music_musicgen_local(
 
     sample_rate = mg.config.audio_encoder.sampling_rate
     arr = audio_values[0, 0].detach().cpu().numpy()
-    # normalize to int16
     arr = np.clip(arr, -1.0, 1.0)
     pcm = (arr * 32767).astype(np.int16)
 
     buf = io.BytesIO()
     wavfile.write(buf, sample_rate, pcm)
     return buf.getvalue()
-
 
 def music_replicate(
     prompt: str,
@@ -869,7 +860,6 @@ def music_replicate(
     if not api_key:
         raise RuntimeError("REPLICATE_API_TOKEN env var required for Replicate music generation")
 
-    # Resolve model → latest version automatically if not given.
     if not version:
         owner_model = model
         r = requests.get(
@@ -897,7 +887,7 @@ def music_replicate(
     poll_url = pred["urls"]["get"]
 
     import time
-    for _ in range(180):  # up to ~6 minutes
+    for _ in range(180):
         p = requests.get(poll_url, headers={"Authorization": f"Token {api_key}"}, timeout=30).json()
         status = p.get("status")
         if status == "succeeded":
@@ -908,7 +898,6 @@ def music_replicate(
             raise RuntimeError(f"Replicate prediction {status}: {p.get('error')}")
         time.sleep(2)
     raise TimeoutError("Replicate music generation timed out")
-
 
 def music_elevenlabs_sfx(
     prompt: str,
@@ -922,7 +911,6 @@ def music_elevenlabs_sfx(
     if not api_key:
         raise RuntimeError("ELEVENLABS_API_KEY env var required for ElevenLabs sound generation")
 
-    # ElevenLabs caps sound-generation at 22 seconds.
     duration = max(0.5, min(22.0, float(duration)))
 
     r = requests.post(
@@ -936,8 +924,7 @@ def music_elevenlabs_sfx(
         timeout=180,
     )
     r.raise_for_status()
-    return r.content  # MP3 bytes
-
+    return r.content
 
 def _music_one(provider: str, prompt: str, model: Optional[str], duration: int, api_key: Optional[str]) -> dict:
     p = (provider or "").lower()
@@ -953,7 +940,6 @@ def _music_one(provider: str, prompt: str, model: Optional[str], duration: int, 
         return {"audio": music_elevenlabs_sfx(prompt, duration=duration, api_key=api_key),
                 "format": "mp3", "provider": "elevenlabs", "model": "sound-generation"}
     raise ValueError(f"Unknown music provider: {provider!r}")
-
 
 def generate_music(
     prompt: str,
@@ -975,7 +961,6 @@ def generate_music(
 
     errors: list[str] = []
     for prov in order:
-        # Skip cloud providers that have no credentials configured.
         if prov == "replicate" and not (api_key or os.environ.get("REPLICATE_API_TOKEN") or os.environ.get("REPLICATE_API_KEY")):
             errors.append(f"{prov}: no REPLICATE_API_TOKEN")
             continue

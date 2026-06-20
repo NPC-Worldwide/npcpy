@@ -140,21 +140,19 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
         airplane_mode = True
     else:
         logging.info("Internet connection detected. Proceeding based on 'airplane_mode' parameter.")
-    
+
     airplane_mode = False
     if not airplane_mode:
         timeout_seconds = 3.5
-        
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             if "ANTHROPIC_API_KEY" in env_vars or os.environ.get("ANTHROPIC_API_KEY"):
                 try:
                     import anthropic
-                    
+
                     def fetch_anthropic_models():
                         client = anthropic.Anthropic(api_key=env_vars.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
-                        
-                        
+
                         return client.models.list()
 
                     future = executor.submit(fetch_anthropic_models)
@@ -162,7 +160,7 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
 
                     for model in models.data:
                         available_models[model.id] = 'anthropic'
-                            
+
                 except (ImportError, concurrent.futures.TimeoutError, Exception) as e:
                     logging.info(f"Anthropic models not indexed or timed out: {e}")
 
@@ -198,7 +196,7 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
                     def fetch_gemini_models():
                         client = genai.Client(api_key=env_vars.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY"))
                         found_models = []
-                        
+
                         target_models = [
                             'gemini-2.5-pro', 
                             'gemini-2.5-flash', 
@@ -209,13 +207,13 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
                             'gemini-3-flash-preview',
                             'gemini-3.1-pro-preview',
                         ]
-                        
+
                         for m in client.models.list():
                             for action in m.supported_actions:
                                 if action == "generateContent":
                                     if 'models/' in m.name:
                                         model_name_part = m.name.split('/')[1]  
-                                        
+
                                         if any(model in model_name_part for model in target_models):
                                             found_models.append(model_name_part)
                         return set(found_models)
@@ -227,7 +225,7 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
                             available_models[model] = "gemini"
                 except (ImportError, concurrent.futures.TimeoutError, Exception) as e:
                     logging.info(f"Gemini models not indexed or timed out: {e}")
-            
+
             if "DEEPSEEK_API_KEY" in env_vars or os.environ.get("DEEPSEEK_API_KEY"):
                 available_models['deepseek-chat'] = 'deepseek'
                 available_models['deepseek-reasoner'] = 'deepseek'        
@@ -237,7 +235,7 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ollama_executor:
             def fetch_ollama_models():
                 return ollama.list()
-            
+
             future = ollama_executor.submit(fetch_ollama_models)
             models = future.result(timeout=timeout_seconds) 
 
@@ -372,7 +370,7 @@ def preprocess_markdown(md_text):
     for line in lines:
         if line.startswith("```"):  
             if inside_code_block:
-                
+
                 processed_lines.append("```")
                 processed_lines.extend(
                     textwrap.dedent("\n".join(current_code_block)).split("\n")
@@ -416,11 +414,10 @@ def render_markdown(text: str) -> None:
         if not prose_lines:
             return
         import re
-        # Normalize CR/CRLF and collapse 3+ consecutive blank lines to 2.
         block = "\n".join(ln.rstrip('\r') for ln in prose_lines)
         block = re.sub(r'\n{3,}', '\n\n', block)
 
-        _box_re = re.compile(r'[─-╿]')  # U+2500–U+257F box drawing block
+        _box_re = re.compile(r'[─-╿]')
 
         def _is_structured(ln: str) -> bool:
             """Box-drawing art or 4-space-indented code: must be rendered verbatim."""
@@ -428,7 +425,7 @@ def render_markdown(text: str) -> None:
             return bool(s) and (bool(_box_re.search(ln)) or ln.startswith('    '))
 
         lines = block.split('\n')
-        segments: list = []   # (is_structured: bool, lines: list[str])
+        segments: list = []
         struct_acc: list = []
         prose_acc: list = []
 
@@ -457,12 +454,11 @@ def render_markdown(text: str) -> None:
                 struct_acc.append(ln)
             elif not ln.strip():
                 if in_struct:
-                    # Suppress blank if the next non-blank line is also structured.
                     j = i + 1
                     while j < len(lines) and not lines[j].strip():
                         j += 1
                     if j < len(lines) and _is_structured(lines[j]):
-                        pass  # drop blank between consecutive structured lines
+                        pass
                     else:
                         _commit_struct()
                         in_struct = False
@@ -485,8 +481,6 @@ def render_markdown(text: str) -> None:
             if not seg.strip():
                 continue
             if is_str:
-                # Verbatim output preserves box-drawing structure.
-                # Rich Markdown would join consecutive lines as soft-breaks.
                 sys.stdout.write(seg + '\n')
                 sys.stdout.flush()
             else:
@@ -591,19 +585,19 @@ def get_model_and_provider(command: str, available_models: list) -> tuple:
     model_match = re.search(r"@(\S+)", command)
     if model_match:
         model_name = model_match.group(1)
-        
+
         matches = [m for m in available_models if m.startswith(model_name)]
         if matches:
             if len(matches) == 1:
                 model_name = matches[0]  
-            
+
             provider = lookup_provider(model_name)
             if provider:
-                
+
                 cleaned_command = command.replace(
                     f"@{model_match.group(1)}", ""
                 ).strip()
-                
+
                 return model_name, provider, cleaned_command
             else:
                 return None, None, command  
@@ -619,14 +613,14 @@ def render_code_block(code: str, language: str = None) -> None:
 
     console = Console(highlight=True)
     code = code.strip()
-    
+
     if code.split("\n", 1)[0].lower() in ["python", "bash", "javascript"]:
         code = code.split("\n", 1)[1]
     syntax = Syntax(
         code, language or "python", theme="monokai", line_numbers=False, padding=0
     )
     console.print(syntax)
-    
+
 def print_and_process_stream_with_markdown(response, model, provider, show=False, rerender=True):
     import sys
 
@@ -639,8 +633,7 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
         render_markdown(response)
         print('\n') 
         return response 
-    
-    
+
     if rerender:
         sys.stdout.write('\033[s')
         sys.stdout.flush()
@@ -710,7 +703,7 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
     except KeyboardInterrupt:
         interrupted = True
         print('\n⚠️ Stream interrupted by user')
-    
+
     if tool_call_data["id"] or tool_call_data["function_name"] or tool_call_data["arguments"]:
         str_output += "\n\n"
         if tool_call_data["id"]:
@@ -726,8 +719,7 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
 
     if interrupted:
         str_output += "\n\n[⚠️ Response interrupted by user]"
-    
-    
+
     if rerender:
         sys.stdout.write('\033[u')
         sys.stdout.write('\033[J')
@@ -738,12 +730,12 @@ def print_and_process_stream_with_markdown(response, model, provider, show=False
     return str_output
 
 def print_and_process_stream(response, model, provider):
-    
+
     str_output = ""
     dot_count = 0  
     tool_call_data = {"id": None, "function_name": None, "arguments": ""}
     interrupted = False
-    
+
     thinking_part=True
     thinking_str=''
     if isinstance(response, str):
@@ -775,7 +767,7 @@ def print_and_process_stream(response, model, provider):
                     thinking_part = True
                 if chunk_content != "":
                     print(chunk_content, end="", flush=True)
-                    
+
             else:
                 for c in chunk.choices:
                     if hasattr(c.delta, "tool_calls") and c.delta.tool_calls:
@@ -787,14 +779,13 @@ def print_and_process_stream(response, model, provider):
                                     tool_call_data["function_name"] = tool_call.function.name
                                 if hasattr(tool_call.function, "arguments") and tool_call.function.arguments:
                                     tool_call_data["arguments"] += tool_call.function.arguments
-                
+
                 chunk_content = ''
                 reasoning_content = ''
                 for c in chunk.choices:
                     if hasattr(c.delta, "reasoning_content"):        
                         reasoning_content += c.delta.reasoning_content
-                
-                        
+
                 chunk_content += "".join(
                     c.delta.content for c in chunk.choices if c.delta.content
                 )
@@ -805,8 +796,7 @@ def print_and_process_stream(response, model, provider):
                         print('<think>')
                     print(reasoning_content, end="", flush=True)
                     thinking_str+=reasoning_content
-                
-                
+
                 if chunk_content != "":
                     if len(thinking_str) >0 and not thinking_part and '</think>' not in thinking_str:
 
@@ -817,11 +807,11 @@ def print_and_process_stream(response, model, provider):
             if not chunk_content:
                 continue
             str_output += chunk_content
-    
+
     except KeyboardInterrupt:
         interrupted = True
         print('\n⚠️ Stream interrupted by user')
-    
+
     if tool_call_data["id"] or tool_call_data["function_name"] or tool_call_data["arguments"]:
         str_output += "\n\n"
         if tool_call_data["id"]:
@@ -837,9 +827,7 @@ def print_and_process_stream(response, model, provider):
 
     if interrupted:
         str_output += "\n\n[⚠️ Response interrupted by user]"
-    
 
-                
     return thinking_str+str_output   
 def get_system_message(npc, team=None, tool_capable=False) -> str:
 
@@ -872,7 +860,7 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         memory_context = npc.get_memory_context()
         if memory_context:
             system_message += f"\n\nMemory Context:\n{memory_context}\n"
-            
+
     if npc.db_conn is not None:
         db_path = None
         if hasattr(npc.db_conn, "url") and npc.db_conn.url:
@@ -948,22 +936,16 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                         "explanation": "Read the contents of <full_filename_path_from_user_request> and <detailed explanation of how to accomplish the problem outlined in the request>."
                     }
 
-
                     Do not use the jinx names as the action keys. You must use the action 'invoke_jinx' to invoke a jinx!
                     Do not invent jinx names. Use only those provided.
-
 
                 Respond with a single JSON object only.
                 To use a jinx, set action to jinx, jinx_name to one of [{jinx_names_str}], and inputs with the required parameters.
 
               [END GUIDELINES FOR JINX EXECUTION]
 
-
 """
                 system_message += jinx_instructions
-
-
-
 
     return system_message
 
@@ -1038,9 +1020,6 @@ gemini_api_key = os.getenv("GEMINI_API_KEY", None)
 anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", None)
 openai_api_key = os.getenv("OPENAI_API_KEY", None)
 
-
-# ── Team sync (git-based) ──────────────────────────────────────────
-
 def resolve_team_dir(team_path=None):
     """Resolve the team directory from a team_path identifier.
     None -> <data_dir>/npc_team/
@@ -1049,7 +1028,6 @@ def resolve_team_dir(team_path=None):
     if not team_path:
         return os.path.join(get_data_dir(), "npc_team")
     return team_path
-
 
 def _git(args, cwd, timeout=15):
     """Run a git command and return stdout."""
@@ -1063,7 +1041,6 @@ def _git(args, cwd, timeout=15):
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"git {args[0]} failed")
     return result.stdout.strip()
-
 
 def team_sync_status(team_path=None):
     """Get sync status for an npc_team directory."""
@@ -1116,7 +1093,6 @@ def team_sync_status(team_path=None):
 
     return {"status": status, "modified": modified, "ahead": ahead, "behind": behind}
 
-
 def team_sync_init(team_path=None):
     """Initialize git in an npc_team directory."""
     team_dir = resolve_team_dir(team_path)
@@ -1129,7 +1105,6 @@ def team_sync_init(team_path=None):
         _git(["commit", "-m", "Initial commit"], team_dir)
 
     return {"success": True, "error": None}
-
 
 def team_sync_pull(team_path=None):
     """Pull/rebase from upstream for an npc_team directory."""
@@ -1157,7 +1132,6 @@ def team_sync_pull(team_path=None):
         if conflicts:
             return {"conflicts": conflicts, "error": None}
         raise
-
 
 def team_sync_resolve(team_path=None, file_path=None, resolution="ours", content=None):
     """Resolve a merge conflict in an npc_team directory."""
@@ -1188,7 +1162,6 @@ def team_sync_resolve(team_path=None, file_path=None, resolution="ours", content
 
     return {"success": True, "error": None}
 
-
 def team_sync_commit(team_path=None, message="Update NPC team"):
     """Commit current state of an npc_team directory."""
     team_dir = resolve_team_dir(team_path)
@@ -1196,11 +1169,9 @@ def team_sync_commit(team_path=None, message="Update NPC team"):
     _git(["commit", "-m", message], team_dir)
     return {"success": True, "error": None}
 
-
 def team_sync_diff(team_path=None, file_path=None):
     """Get diff for an npc_team directory."""
     team_dir = resolve_team_dir(team_path)
     args = ["diff", "--", file_path] if file_path else ["diff"]
     diff = _git(args, team_dir)
     return {"diff": diff, "error": None}
-

@@ -5,9 +5,9 @@ Only jinxes are exposed as tools. NPC switching happens via MCP prompts,
 which swap the tool list and notify the client.
 
 Usage:
-    python -m npcpy.mcp_server                        # auto-discover team
-    python -m npcpy.mcp_server --npc ledbi             # start as specific NPC
-    python -m npcpy.mcp_server --team /path/to/team    # explicit team path
+    python -m npcpy.mcp_server
+    python -m npcpy.mcp_server --npc ledbi
+    python -m npcpy.mcp_server --team /path/to/team
 """
 
 import os
@@ -16,7 +16,6 @@ import json
 import time
 import argparse
 from typing import Optional
-
 
 def discover_team_path(explicit_path: Optional[str] = None) -> str:
     """Find the team directory: explicit > cwd/agents > cwd/npc_team."""
@@ -35,7 +34,6 @@ def discover_team_path(explicit_path: Optional[str] = None) -> str:
         "No team found. Checked: ./agents, ./npc_team"
     )
 
-
 class NPCServerState:
     """Holds the loaded team, all NPCs, and tracks the active NPC."""
 
@@ -44,7 +42,7 @@ class NPCServerState:
         from npcpy.npc_compiler import Team
 
         self.team_path = team_path
-        self.mcp = None  # set by build_server
+        self.mcp = None
 
         print(f"[npc-mcp] Loading team from {team_path}", file=sys.stderr)
         self.team = Team(
@@ -52,10 +50,6 @@ class NPCServerState:
             db_conn=db_conn,
         )
 
-        # Resolve active NPC: explicit arg > forenpc > first NPC.
-        # If caller asked for a specific NPC that's NOT in this team, fail loudly
-        # — silent fallback to forenpc is what makes the incognide MCP picker look
-        # empty when a user picks an NPC whose team doesn't match the selected server.
         if npc_name:
             if npc_name in self.team.npcs:
                 self.active_npc = self.team.npcs[npc_name]
@@ -75,7 +69,6 @@ class NPCServerState:
         else:
             self.active_npc = None
 
-        # Track which jinx tool names are currently registered
         self._registered_jinx_names = set()
 
         if self.active_npc:
@@ -132,14 +125,10 @@ class NPCServerState:
 
         jinx = npc.jinxes_dict.get(tool_name) if npc else None
         if not jinx:
-            # Check team-level jinxes as fallback
             jinx = self.team.jinxes_dict.get(tool_name)
         if not jinx:
             return f"Jinx '{tool_name}' not found."
 
-        # For jinxes that use engine: X (e.g. engine: incognide), the compiled
-        # steps contain the engine's code which reads action/args from context.
-        # Reconstruct those from _raw_steps and render templates with the MCP args.
         if hasattr(jinx, '_raw_steps') and jinx._raw_steps:
             from jinja2.sandbox import SandboxedEnvironment
             env = SandboxedEnvironment()
@@ -190,9 +179,7 @@ class NPCServerState:
 
         self.active_npc = self.team.npcs[npc_name]
 
-        # Swap jinx tools
         if self.mcp:
-            # Remove old jinx tools
             for name in list(self._registered_jinx_names):
                 try:
                     self.mcp.remove_tool(name)
@@ -200,10 +187,8 @@ class NPCServerState:
                     pass
             self._registered_jinx_names.clear()
 
-            # Register new NPC's jinxes
             _register_jinxes(self.mcp, self)
 
-            # Notify client to re-fetch tool list
             if ctx:
                 try:
                     session = ctx.request_context.session
@@ -218,7 +203,6 @@ class NPCServerState:
         if npc_name and npc_name in self.team.npcs:
             return self.team.npcs[npc_name]
         return self.active_npc
-
 
 def _make_jinx_handler(state, jname, params, desc):
     """Create an async handler function for a jinx."""
@@ -242,7 +226,6 @@ def _make_jinx_handler(state, jname, params, desc):
     handler.__name__ = jname
     handler.__doc__ = desc
     return handler
-
 
 def _register_jinxes(mcp, state):
     """Register the active NPC's jinxes as MCP tools."""
@@ -268,7 +251,6 @@ def _register_jinxes(mcp, state):
         except Exception as e:
             print(f"[npc-mcp] Failed to register {jinx_name}: {e}", file=sys.stderr)
 
-
 def build_server(state: NPCServerState):
     """Build and return a FastMCP server from an NPCServerState."""
     from mcp.server.fastmcp import FastMCP, Context
@@ -276,12 +258,8 @@ def build_server(state: NPCServerState):
     mcp = FastMCP("npcpy_mcp")
     state.mcp = mcp
 
-    # Register active NPC's jinxes
     _register_jinxes(mcp, state)
 
-    # -- MCP Prompts --
-
-    # Per-NPC prompts — selecting one switches NPC and swaps tools
     for npc_name in state.team.npcs:
         def make_npc_prompt(name):
             @mcp.prompt(name=f"npc_{name}")
@@ -315,8 +293,6 @@ def build_server(state: NPCServerState):
             parts.append(f"  @{name}{active}: {directive}")
         return "\n".join(parts)
 
-    # -- Resources --
-
     @mcp.resource("npc://system_prompt")
     async def get_system_prompt() -> str:
         return state.get_system_prompt_text()
@@ -329,7 +305,6 @@ def build_server(state: NPCServerState):
         return ctx if ctx else "No team context loaded"
 
     return mcp
-
 
 def main():
     parser = argparse.ArgumentParser(description="NPC-governed MCP server")
@@ -345,7 +320,6 @@ def main():
     print(f"[npc-mcp] Starting as '{npc_label}' from {team_path}", file=sys.stderr)
     print(f"[npc-mcp] Tools: {list(state._registered_jinx_names)}", file=sys.stderr)
     mcp.run(transport="stdio")
-
 
 if __name__ == "__main__":
     main()

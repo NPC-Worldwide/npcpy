@@ -16,7 +16,6 @@ from npcpy.npc_sysenv import get_jobs_dir, get_logs_dir
 JOBS_DIR = get_jobs_dir()
 LOGS_DIR = get_logs_dir()
 
-
 def _npc_bin_path():
     """Full path to the ``npc`` binary in the current environment."""
     candidate = os.path.join(os.path.dirname(sys.executable), 'npc')
@@ -24,18 +23,13 @@ def _npc_bin_path():
         return candidate
     return shutil.which('npc') or 'npc'
 
-
 def _plist_path(job_name, launchd_prefix='com.job.'):
     return os.path.expanduser(
         '~/Library/LaunchAgents/' + launchd_prefix + job_name + '.plist'
     )
 
-
 def _cron_tag(job_name, cron_tag_prefix='# job:'):
     return cron_tag_prefix + job_name
-
-
-# ── Core scheduling primitives ──────────────────────────────────────
 
 def compile_job_script(command, job_name):
     """Turn *command* into a self-contained executable bash script.
@@ -54,7 +48,6 @@ def compile_job_script(command, job_name):
                 + npc + ' ' + command.lstrip('/') + '\n')
     os.chmod(script_path, 0o755)
     return script_path
-
 
 def schedule_job(schedule, command, job_name,
                  launchd_prefix='com.job.',
@@ -78,7 +71,6 @@ def schedule_job(schedule, command, job_name,
     return _schedule_crontab(script_path, schedule, job_name, log_path,
                              cron_tag_prefix=cron_tag_prefix)
 
-
 def unschedule_job(job_name,
                    launchd_prefix='com.job.',
                    cron_tag_prefix='# job:',
@@ -90,7 +82,6 @@ def unschedule_job(job_name,
     elif system == 'Windows':
         return _unschedule_windows(job_name, win_task_prefix=win_task_prefix)
     return _unschedule_crontab(job_name, cron_tag_prefix=cron_tag_prefix)
-
 
 def list_jobs(launchd_prefix='com.job.',
               cron_tag_prefix='# job:',
@@ -131,7 +122,6 @@ def list_jobs(launchd_prefix='com.job.',
                     jobs.append({'name': name, 'active': True})
     return jobs
 
-
 def job_is_active(job_name,
                   launchd_prefix='com.job.',
                   cron_tag_prefix='# job:',
@@ -150,7 +140,6 @@ def job_is_active(job_name,
     if r.returncode == 0:
         return any(_cron_tag(job_name, cron_tag_prefix=cron_tag_prefix) in l for l in r.stdout.splitlines())
     return False
-
 
 def job_status(job_name,
                launchd_prefix='com.job.',
@@ -174,9 +163,6 @@ def job_status(job_name,
         except OSError:
             pass
     return info
-
-
-# ── macOS (launchd) ─────────────────────────────────────────────────
 
 def _schedule_launchd(script_path, schedule, job_name, log_path,
                       launchd_prefix='com.job.'):
@@ -203,7 +189,6 @@ def _schedule_launchd(script_path, schedule, job_name, log_path,
                 plist += '    <key>' + key + '</key>\n    <integer>' + parts[idx] + '</integer>\n'
         plist += '  </dict>\n'
     else:
-        # Treat as interval in seconds
         try:
             plist += '  <key>StartInterval</key>\n  <integer>' + str(int(schedule)) + '</integer>\n'
         except ValueError:
@@ -220,7 +205,6 @@ def _schedule_launchd(script_path, schedule, job_name, log_path,
     subprocess.run(['launchctl', 'load', ppath], capture_output=True)
     return True, 'Scheduled "' + job_name + '": ' + schedule
 
-
 def _unschedule_launchd(job_name, launchd_prefix='com.job.'):
     ppath = _plist_path(job_name, launchd_prefix=launchd_prefix)
     if os.path.exists(ppath):
@@ -228,9 +212,6 @@ def _unschedule_launchd(job_name, launchd_prefix='com.job.'):
         os.remove(ppath)
         return True, 'Removed "' + job_name + '"'
     return False, 'Job "' + job_name + '" not found.'
-
-
-# ── Linux (crontab) ─────────────────────────────────────────────────
 
 def _schedule_crontab(script_path, schedule, job_name, log_path,
                       cron_tag_prefix='# job:'):
@@ -243,7 +224,6 @@ def _schedule_crontab(script_path, schedule, job_name, log_path,
         return True, 'Scheduled "' + job_name + '": ' + schedule
     return False, 'Failed: ' + p.stderr
 
-
 def _unschedule_crontab(job_name, cron_tag_prefix='# job:'):
     r = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
     if r.returncode == 0:
@@ -254,9 +234,6 @@ def _unschedule_crontab(job_name, cron_tag_prefix='# job:'):
             return True, 'Removed "' + job_name + '"'
         return False, 'Failed: ' + p.stderr
     return False, 'No crontab found.'
-
-
-# ── Windows (Task Scheduler) ────────────────────────────────────────
 
 def _schedule_windows(script_path, schedule, job_name, log_path,
                       win_task_prefix='TASK_'):
@@ -272,7 +249,6 @@ def _schedule_windows(script_path, schedule, job_name, log_path,
         return True, 'Scheduled "' + job_name + '": ' + schedule
     return False, 'Failed: ' + r.stderr
 
-
 def _unschedule_windows(job_name, win_task_prefix='TASK_'):
     task_name = win_task_prefix + job_name
     r = subprocess.run(
@@ -282,9 +258,6 @@ def _unschedule_windows(job_name, win_task_prefix='TASK_'):
     if r.returncode == 0:
         return True, 'Removed "' + job_name + '"'
     return False, 'Failed: ' + r.stderr
-
-
-# ── LLM-driven /plan command ────────────────────────────────────────
 
 def execute_plan_command(
     command,
@@ -449,13 +422,10 @@ Get-CpuUsage",
 
     log_path = os.path.join(LOGS_DIR, f"{job_name}.log")
 
-    # Write the LLM-generated script directly (not via compile_job_script,
-    # since the LLM already produced the full script content)
     with open(script_path, "w") as f:
         f.write(schedule_info["script"])
     os.chmod(script_path, 0o755)
 
-    # Register with OS scheduler using the shared primitives
     if platform_system == "Linux":
         ok, msg = _schedule_crontab(script_path, sched, job_name, log_path)
     elif platform_system == "Darwin":

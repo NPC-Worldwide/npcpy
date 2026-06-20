@@ -199,11 +199,6 @@ def load_yaml_file(file_path, jinja_context=None):
         with open(os.path.expanduser(file_path), 'r', encoding="utf-8") as f:
             content = f.read()
 
-        # Only trigger Jinja on {{ }} if jinja_context is provided (NPC and team
-        # .ctx files). Callers signal "render Jinja" by passing ANY jinja_context,
-        # including {}, so first-pass .ctx loads can use SilentUndefined without
-        # supplying the full macro set. Jinx files use {{ }} for runtime templating
-        # and should NOT be rendered at load time, so they pass None.
         has_jinja = '{%' in content or (jinja_context is not None and '{{' in content and '}}' in content)
         if not has_jinja:
             return yaml.safe_load(content)
@@ -359,10 +354,6 @@ def _update_field_in_yaml(content, field, new_value):
     return '\n'.join(result)
 
 
-# Default jinx set for markdown-loaded agents (agents.md / AGENTS.md / CLAUDE.md /
-# agents/*.md) when no explicit frontmatter or team-level spec is given. These
-# are generic tools that any Claude-Code-style agent expects to have available.
-# Only jinxes actually present in the team's jinxes_dict are applied.
 DEFAULT_MD_AGENT_JINXES = [
     'sh', 'python', 'edit_file', 'load_file', 'file_search',
     'web_search', 'ask_form', 'chat', 'stop',
@@ -570,7 +561,6 @@ class Jinx:
 
         active_npc = self.npc if self.npc else npc
 
-        # If npc is a list or NPCArray, run this jinx in parallel across all instances
         from npcpy.npc_array import NPCArray
         if isinstance(active_npc, (list, NPCArray)):
             arr = NPCArray.from_npcs(active_npc) if isinstance(active_npc, list) else active_npc
@@ -863,12 +853,9 @@ def _parse_skill_md(path):
         name: skill-name
         description: What it does. Use when ...
         ---
-        # Skill Title
 
-        ## section-one
         Content for section one...
 
-        ## section-two
         Content for section two...
 
     Returns dict with name, description, sections, frontmatter or None on failure.
@@ -1093,17 +1080,14 @@ def match_jinx_spec_to_names(jinx_spec: str, team_jinxes_dict: Dict[str, 'Jinx']
     Returns:
         List of jinx names that match the spec
     """
-    # 1) Direct name match
     if jinx_spec in team_jinxes_dict:
         return [jinx_spec]
 
-    # 1.5) Reverse path lookup - resolved paths like 'lib/core/sql' map back to names
     if jinx_path_map:
         for name, path in jinx_path_map.items():
             if jinx_spec == path and name in team_jinxes_dict:
                 return [name]
 
-    # 2) Path/glob match against source_path relative to jinxes_base_dir
     spec_pattern = jinx_spec
     if not spec_pattern.endswith('.jinx') and not spec_pattern.endswith('*'):
         spec_pattern += '.jinx'
@@ -1382,9 +1366,6 @@ class NPC:
                         matched_names = [jinx_spec] if jinx_spec in self.team.jinxes_dict else []
 
                     if not matched_names:
-                        # Warn-and-skip instead of crashing the whole process. A missing
-                        # external/foreign jinx (offline, wrong repo, rename) shouldn't
-                        # take the MCP server down with it — the NPC just has fewer tools.
                         print(
                             f"Warning: NPC '{self.name}' references jinx '{jinx_spec}' but no matching jinx was found. "
                             f"Skipping. Available jinxes (first 20): {list(self.team.jinxes_dict.keys())[:20]}",
@@ -1396,9 +1377,6 @@ class NPC:
                         if jinx_name in self.team.jinxes_dict:
                             self.jinxes_dict[jinx_name] = self.team.jinxes_dict[jinx_name]
 
-        # Additively merge team-level jinxes (from team .ctx `jinxes:`) on top of
-        # whatever this NPC resolved from its own spec. This eliminates the need
-        # to list universal jinxes (chat, stop, ask_form) in every .npc file.
         team_jinxes_spec = getattr(self.team, 'team_jinxes_spec', None) if self.team else None
         if team_jinxes_spec and hasattr(self.team, 'jinxes_dict') and self.team.jinxes_dict:
             jinxes_base_dir = None
@@ -1476,7 +1454,6 @@ class NPC:
         """Get formatted memory context for system prompt using KnowledgeManager."""
         parts = []
 
-        # Local .knowledge.yaml
         if hasattr(self, 'knowledge_store') and self.knowledge_store:
             try:
                 local_ctx = self.knowledge_store.build_context(max_memories=10)
@@ -1485,7 +1462,6 @@ class NPC:
             except Exception as e:
                 logger.warning(f".knowledge.yaml context failed for {self.name}: {e}")
 
-        # KnowledgeManager scopes
         if self.knowledge_manager and self.knowledge_scopes:
             try:
                 db_ctx = self.knowledge_manager.get_memory_context(
@@ -1496,7 +1472,6 @@ class NPC:
             except Exception as e:
                 logger.warning(f"KnowledgeManager context failed for {self.name}: {e}")
 
-        # Legacy fallback
         if not parts and self.kg_data:
             recent_facts = self.kg_data.get('facts', [])[-10:]
             if recent_facts:
@@ -1613,7 +1588,6 @@ class NPC:
         if not os.path.isabs(file):
             file = os.path.abspath(file)
 
-        # If team has jinx path context, pass it so {{ jinx_name }} resolves
         jinja_ctx = None
         if self.team and hasattr(self.team, '_npc_jinja_context'):
             jinja_ctx = self.team._npc_jinja_context
@@ -1651,8 +1625,6 @@ class NPC:
             if not self.api_key and hasattr(self.team, 'api_key'):
                 self.api_key = self.team.api_key
 
-            # Resolve named provider references from team.providers
-            # Each entry: {name, api_url, api_key, provider_type, model, models: [...]}
             if self.provider and hasattr(self.team, 'providers') and isinstance(self.team.providers, list):
                 for prov in self.team.providers:
                     if isinstance(prov, dict) and prov.get('name') == self.provider:
@@ -1669,7 +1641,6 @@ class NPC:
 
         self.name = npc_data.get("name", self.name)
 
-        # Preserve any extra fields from the YAML that we don't explicitly handle
         known_keys = {
             "name", "primary_directive", "jinxes", "model", "provider",
             "api_url", "api_key", "mcp_servers", "plain_system_message",
@@ -1699,7 +1670,6 @@ class NPC:
         print(f"[TOOLS] NPC '{self.name}' jinx_tool_catalog has {len(self.jinx_tool_catalog or {})} entries")
         print(f"[TOOLS] NPC '{self.name}' mcp_servers: {self.mcp_servers}")
 
-        # 1. Jinx tools
         catalog = self.jinx_tool_catalog or build_jinx_tool_catalog(self.jinxes_dict)
         print(f"[TOOLS] Built catalog with {len(catalog)} jinx entries")
         for name, tool_def in catalog.items():
@@ -1708,7 +1678,6 @@ class NPC:
                 tool_executors[name] = {"type": "jinx", "jinx": self.jinxes_dict.get(name)}
                 seen.add(name)
 
-        # 2. MCP server tools
         if mcp_clients_cache is None:
             mcp_clients_cache = {}
 
@@ -1762,7 +1731,6 @@ class NPC:
                 }
                 seen.add(name)
 
-        # Resolve tool-name-only specs by searching team MCP servers
         if nameonly_tools and self.team and hasattr(self.team, "mcp_servers"):
             for team_server in (self.team.mcp_servers or []):
                 ts = team_server if isinstance(team_server, dict) else {"path": team_server}
@@ -1785,7 +1753,6 @@ class NPC:
                         }
                         seen.add(name)
 
-        # 3. Python tools (from auto_tools)
         for tool_def in (self.tools_schema or []):
             name = tool_def["function"]["name"]
             if name not in seen:
@@ -1828,24 +1795,20 @@ class NPC:
                 self.tables = None
                 self.db_type = None
 
-        # Initialize unified knowledge manager
         if KnowledgeManager and self.db_conn:
             try:
                 self.knowledge_manager = KnowledgeManager(self.db_conn)
-                # Default scopes: global + npc-specific + team-specific (if available)
                 scopes = ["global"]
                 if self.name:
                     scopes.append(f"npc:{self.name}")
                 if self.team and hasattr(self.team, 'name') and self.team.name:
                     scopes.append(f"team:{self.team.name}")
                 self.knowledge_scopes = scopes
-                # Backfill self.kg_data from primary scope for legacy compat
                 primary_scope = scopes[-1] if len(scopes) > 1 else "global"
                 self.kg_data = self.knowledge_manager.load_kg(primary_scope)
             except Exception as e:
                 logger.warning(f"Failed to initialize KnowledgeManager for NPC {self.name}: {e}")
 
-        # Load local .knowledge.yaml context
         if KnowledgeStore:
             try:
                 search_dirs = []
@@ -1940,7 +1903,6 @@ class NPC:
             except Exception as e:
                 logger.warning(f"KnowledgeManager search failed for {self.name}: {e}")
 
-        # Legacy fallback
         if not self.kg_data:
             return "No memories available"
         query_lower = query.lower()
@@ -2554,8 +2516,6 @@ class Team:
 
         self._load_team_context_file()
 
-        # Load jinxes FIRST so we can build the name→path map for NPC Jinja context.
-        # Sub-teams use the same jinxes as the team — they're just organizational groupings.
         if self._team_jinxes:
             self._raw_jinxes_list.extend(self._team_jinxes)
 
@@ -2575,15 +2535,12 @@ class Team:
             else:
                 print(f"[TEAM] Warning: SKILLS_DIRECTORY not found: {skills_path}")
 
-        # Build jinx name→relative_path map for Jinja context.
-        # e.g. { "edit_file": "lib/core/files/edit_file", "sh": "lib/core/sh", ... }
         self._jinx_path_map = {}
         for jinx_obj in self._raw_jinxes_list:
             if jinx_obj.jinx_name in self._jinx_path_map:
                 continue
             source = getattr(jinx_obj, '_source_path', None)
             if source:
-                # Derive the jinxes/ base dir from the source path
                 base_dir = None
                 parts = source.split(os.sep)
                 for i, p in enumerate(parts):
@@ -2598,8 +2555,6 @@ class Team:
                     self._jinx_path_map[jinx_obj.jinx_name] = rel
                 except ValueError:
                     pass
-
-        # --- Unified Jinja template functions (dbt-style) ---
 
         def _Jinx(name, path=None, *, repo=None, ref=None):
             """Resolve a jinx by name, optionally from a foreign team.
@@ -2616,11 +2571,9 @@ class Team:
             Foreign jinxes are loaded into this team's pool on first resolve,
             so subsequent renders hit the normal in-memory path.
             """
-            # Already known (own-team or previously-hydrated external).
             if name in self._jinx_path_map and not (repo or path):
                 return self._jinx_path_map[name]
 
-            # External source requested — resolve to a team root, then load.
             if repo or path:
                 try:
                     team_root = _resolve_external_team_root(repo=repo, path=path, ref=ref)
@@ -2634,9 +2587,6 @@ class Team:
                 if name in self._jinx_path_map:
                     return self._jinx_path_map[name]
 
-            # Warnings MUST go to stderr — npc_compiler runs inside the MCP server
-            # process, which uses stdout for JSON-RPC. A stray print on stdout
-            # corrupts the protocol and kills the connection.
             print(f"Warning: Jinx('{name}') not found. Available: {list(self._jinx_path_map.keys())[:15]}...", file=sys.stderr)
             return name
 
@@ -2668,13 +2618,10 @@ class Team:
                 cmd += [url, clone_dir]
                 _sp.run(cmd, check=True, capture_output=True)
 
-            # Find a directory named npc_team (the first one wins).
             for root, dirs, _ in os.walk(clone_dir):
-                # Skip .git and node_modules to keep this fast.
                 dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', '.venv', 'venv', 'dist')]
                 if os.path.basename(root) == 'npc_team':
                     return root
-            # Fallback: repo root itself if it has jinxes/ at top level.
             if os.path.isdir(os.path.join(clone_dir, 'jinxes')):
                 return clone_dir
             return None
@@ -2685,7 +2632,6 @@ class Team:
             jinxes_dir = os.path.join(team_root, 'jinxes')
             if not os.path.isdir(jinxes_dir):
                 return
-            # Walk to find <jinx_name>.jinx at any depth.
             for root, _, files in os.walk(jinxes_dir):
                 target = f"{jinx_name}.jinx"
                 if target in files:
@@ -2695,7 +2641,6 @@ class Team:
                     except Exception as _e:
                         print(f"Warning: failed to load foreign jinx {jinx_path}: {_e}", file=sys.stderr)
                         return
-                    # De-dupe by name — own team already wins above.
                     for existing in self._raw_jinxes_list:
                         if existing.jinx_name == jinx_obj.jinx_name:
                             return
@@ -2739,24 +2684,16 @@ class Team:
                     matched.append(rel_path)
             return matched
 
-        # Context dict used for NPC file loading and first-pass jinx rendering.
-        # Provides both explicit functions and bare name shortcuts.
         self._npc_jinja_context = {
-            # Explicit functions (preferred)
             'Jinx': _Jinx,
             'NPC': _NPC,
             'ref': _ref,
             'jinxes_list': _jinxes_list,
-            # Bare jinx names as shortcuts (backward compat)
             **self._jinx_path_map,
         }
 
-        # Resolve team-level `jinxes:` from the .ctx (Jinja-rendered) now that
-        # the Jinx() macro is available. Every NPC on this team merges these
-        # into its own jinxes_dict during initialize_jinxes.
         self._resolve_team_jinxes_spec()
 
-        # Now load NPCs with jinx path context available
         for filename in os.listdir(self.team_path):
             if filename.endswith(".npc"):
                 npc_path = os.path.join(self.team_path, filename)
@@ -2775,8 +2712,6 @@ class Team:
                     )
                 self.npcs[npc.name] = npc
 
-        # Load markdown agents from the project root (parent of npc_team/).
-        # Accepts agents.md, AGENTS.md, CLAUDE.md, and an agents/ directory.
         project_root = os.path.dirname(os.path.abspath(self.team_path))
         for md_name in ("agents.md", "AGENTS.md", "CLAUDE.md"):
             md_path = os.path.join(project_root, md_name)
@@ -2921,18 +2856,14 @@ class Team:
 
             jinx_macro_globals[raw_jinx.jinx_name] = create_jinx_callable(raw_jinx)
 
-        # Inject unified Jinja context + jinx macros + ctx into first-pass globals
         self.jinja_env_for_first_pass.globals['jinxes'] = jinx_macro_globals
-        # ctx — exposes team context variables: {{ ctx.forenpc }}, {{ ctx.preferences }}, etc.
         self.jinja_env_for_first_pass.globals['ctx'] = self.shared_context
         if hasattr(self, '_npc_jinja_context'):
-            # Adds: Jinx(), NPC(), ref(), jinxes_list(), and bare jinx name shortcuts
             self.jinja_env_for_first_pass.globals.update(self._npc_jinja_context)
         self.jinja_env_for_first_pass.globals.update(jinx_macro_globals)
 
         for raw_jinx in self._raw_jinxes_list:
             try:
-                # Re-resolve top-level 'npc' field if it contains Jinja
                 if hasattr(raw_jinx, 'npc') and isinstance(raw_jinx.npc, str):
                     if '{{' in raw_jinx.npc and '}}' in raw_jinx.npc:
                         try:
@@ -3002,13 +2933,11 @@ class Team:
         """
         candidates = []
 
-        # Normal subdirectories of the team path
         for item in os.listdir(self.team_path):
             item_path = os.path.join(self.team_path, item)
             if os.path.isdir(item_path) and not item.startswith('.') and item != "jinxes":
                 candidates.append((item, item_path))
 
-        # Also scan agents/ for subdirectories that look like teams
         agents_dir = os.path.join(self.team_path, "agents")
         if os.path.isdir(agents_dir):
             for item in os.listdir(agents_dir):
@@ -3059,7 +2988,6 @@ class Team:
         """Load agents from an agents.md / AGENTS.md / CLAUDE.md file.
 
         Format:
-            ## agent_name
             directive body text...
 
         Each H2 heading becomes an NPC with that name and the body as its directive.
@@ -3095,14 +3023,13 @@ class Team:
         for fname in os.listdir(agents_dir):
             if not fname.endswith('.md'):
                 continue
-            name = fname[:-3]  # strip .md
+            name = fname[:-3]
             if name in self.npcs:
                 continue
             fpath = os.path.join(agents_dir, fname)
             with open(fpath, 'r') as f:
                 content = f.read()
 
-            # Check for YAML frontmatter
             model = self.model
             provider = self.provider
             jinxes_spec = None
@@ -3116,8 +3043,6 @@ class Team:
                             model = fm.get('model', model)
                             provider = fm.get('provider', provider)
                             name = fm.get('name', name)
-                            # Accept either `jinxes:` (native) or `tools:`
-                            # (Claude-Code / Agents-md convention).
                             fm_jinxes = fm.get('jinxes', fm.get('tools'))
                             if isinstance(fm_jinxes, list):
                                 jinxes_spec = [str(s) for s in fm_jinxes if s]
@@ -3167,8 +3092,6 @@ class Team:
         if source_path:
             npc.source_path = source_path
         self.npcs[name] = npc
-        # Markdown agents never get initialize_jinxes called via the .npc load path,
-        # so call it here so their jinxes_dict is actually populated.
         try:
             npc.initialize_jinxes(team_raw_jinxes=self._raw_jinxes_list)
         except Exception as e:
@@ -3406,8 +3329,6 @@ class Team:
         return "\n".join(context_parts)
 
 
-# ── Shebang support for .npc and .jinx files ──
-
 NPC_SHEBANG = "#!/usr/bin/env npc"
 JINX_SHEBANG = "#!/usr/bin/env npc-jinx"
 
@@ -3448,7 +3369,6 @@ def strip_shebang(content: str) -> str:
     return content
 
 
-# ── Default tool functions for Agent subclasses ──
 
 def _tool_sh(bash_command: str) -> str:
     """Execute a bash/shell command and return stdout+stderr."""
@@ -3797,8 +3717,6 @@ class Agent(NPC):
                 return last_content
 
             messages = result.get("messages", messages)
-            # Drop the empty assistant turn get_ollama_response appends when the
-            # model only emitted tool_calls — we'll add a proper one below.
             if (messages and messages[-1].get("role") == "assistant"
                     and not messages[-1].get("content")
                     and "tool_calls" not in messages[-1]):

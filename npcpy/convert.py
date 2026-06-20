@@ -28,22 +28,14 @@ import yaml
 
 from npcpy.npc_compiler import load_yaml_file
 
-
-# ---------------------------------------------------------------------------
-# IO + Jinja-compile helpers
-# ---------------------------------------------------------------------------
-
-
 def _read(path: str) -> str:
     with open(path, 'r', encoding='utf-8') as f:
         return f.read()
-
 
 def _write(path: str, content: str) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
-
 
 def _identity_jinja_context() -> Dict[str, Any]:
     """Compile-out context: Jinx()/NPC()/ref() return the name verbatim, so
@@ -55,7 +47,6 @@ def _identity_jinja_context() -> Dict[str, Any]:
         'ref': lambda name: name,
         'jinxes_list': lambda pattern: [],
     }
-
 
 def _load_compiled_yaml(path: str) -> Dict[str, Any]:
     """Load a .npc file with Jinja fully resolved. For .npc, `{{ Jinx('x') }}`
@@ -69,7 +60,6 @@ def _load_compiled_yaml(path: str) -> Dict[str, Any]:
         return data if isinstance(data, dict) else {}
     data = load_yaml_file(path, jinja_context=_identity_jinja_context())
     return data if isinstance(data, dict) else {}
-
 
 def _parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
     """Split `---\n...\n---\nbody` into (frontmatter_dict, body_str)."""
@@ -86,20 +76,12 @@ def _parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
         fm = {}
     return fm, parts[2].lstrip('\n')
 
-
 def _dump_frontmatter(fm: Dict[str, Any], body: str) -> str:
     fm_yaml = yaml.safe_dump(fm, sort_keys=False, default_flow_style=False).strip()
     return f"---\n{fm_yaml}\n---\n\n{body.rstrip()}\n"
 
-
 def _slugify(name: str) -> str:
     return re.sub(r'[^A-Za-z0-9_.-]+', '_', name).strip('_') or 'step'
-
-
-# ---------------------------------------------------------------------------
-# jinx ↔ skill
-# ---------------------------------------------------------------------------
-
 
 def jinx_to_skill(jinx_path: str, out_dir: str) -> str:
     """Compile a .jinx into a skill folder: <out_dir>/<jinx_name>/ containing
@@ -167,11 +149,9 @@ def jinx_to_skill(jinx_path: str, out_dir: str) -> str:
     _write(out_path, skill_md)
     return out_path
 
-
 _SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 _STEP_LINK_RE = re.compile(r"-\s+`([^`]+)`\s*→\s*\[`([^`]+)`\]\(\./([^)]+)\)")
 _INPUT_LINE_RE = re.compile(r"^-\s+`([^`]+)`(?:\s*\(default:\s*`([^`]+)`\))?", re.MULTILINE)
-
 
 def _split_sections(body: str) -> Dict[str, str]:
     """Split markdown body into {heading: section_content} keyed by ## headings."""
@@ -184,12 +164,11 @@ def _split_sections(body: str) -> Dict[str, str]:
         sections[heading] = body[start:end].strip()
     return sections
 
-
 def skill_to_jinx(skill_path: str, out_dir: str) -> str:
     """Read a skill folder's SKILL.md back into a single .jinx file.
 
     skill_path can point at either `<skill_dir>/SKILL.md` or the skill folder
-    itself. Step .py files referenced in the `## Steps` section are inlined
+    itself. Step .py files referenced in the `
     back into the jinx's steps[].code. Falls back to scanning for .py files
     alongside SKILL.md if no steps section exists.
     """
@@ -219,7 +198,7 @@ def skill_to_jinx(skill_path: str, out_dir: str) -> str:
             f for f in os.listdir(skill_dir)
             if f.endswith('.py')
         )
-        step_entries = [(Path(f).stem, f, f) for f in fallback]  # (name, display, file)
+        step_entries = [(Path(f).stem, f, f) for f in fallback]
 
     steps: List[Dict[str, Any]] = []
     for entry in step_entries:
@@ -240,12 +219,6 @@ def skill_to_jinx(skill_path: str, out_dir: str) -> str:
     out_path = os.path.join(out_dir, name + '.jinx')
     _write(out_path, yaml.safe_dump(jinx_data, sort_keys=False, default_flow_style=False))
     return out_path
-
-
-# ---------------------------------------------------------------------------
-# agents ↔ npc
-# ---------------------------------------------------------------------------
-
 
 def _iter_inline_agents_md(path: str) -> List[Tuple[str, Dict[str, Any], str]]:
     """Parse an agents.md / AGENTS.md / CLAUDE.md / single .md file into
@@ -279,7 +252,6 @@ def _iter_inline_agents_md(path: str) -> List[Tuple[str, Dict[str, Any], str]]:
         agents.append((current_name, dict(file_fm), '\n'.join(buf).strip()))
     return agents
 
-
 def _iter_dir_agents(path: str) -> List[Tuple[str, Dict[str, Any], str]]:
     """Parse a directory of per-agent .md files into (name, frontmatter, body)."""
     agents: List[Tuple[str, Dict[str, Any], str]] = []
@@ -290,7 +262,6 @@ def _iter_dir_agents(path: str) -> List[Tuple[str, Dict[str, Any], str]]:
         name = fm.get('name') or fname[:-3]
         agents.append((name, fm, body.strip()))
     return agents
-
 
 def agents_to_npc(
     agents_path: str,
@@ -387,14 +358,12 @@ def agents_to_npc(
         written.append(out_path)
     return written
 
-
 def _iter_npc_files(path: str) -> List[str]:
     if os.path.isfile(path):
         return [path] if path.endswith('.npc') else []
     if os.path.isdir(path):
         return [os.path.join(path, f) for f in sorted(os.listdir(path)) if f.endswith('.npc')]
     return []
-
 
 def npc_to_agents(npc_path: str, out_dir: str, combined: bool = False) -> List[str]:
     """Convert .npc file(s) into markdown agent files.
@@ -436,12 +405,6 @@ def npc_to_agents(npc_path: str, out_dir: str, combined: bool = False) -> List[s
             written.append(out_path)
     return written
 
-
-# ---------------------------------------------------------------------------
-# CLI wrappers
-# ---------------------------------------------------------------------------
-
-
 def _cli_jinx_to_skill(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog='jinx2skill', description='Compile a .jinx into a skill folder (SKILL.md + one .py per step). Accepts a single .jinx file or a directory (recursed for bulk regen).')
     p.add_argument('jinx_path', help='Path to a .jinx file or a directory of jinxes.')
@@ -471,7 +434,6 @@ def _cli_jinx_to_skill(argv: Optional[List[str]] = None) -> int:
     print(jinx_to_skill(args.jinx_path, args.out_dir))
     return 0
 
-
 def _cli_skill_to_jinx(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog='skill2jinx', description='Bundle a skill folder back into a .jinx.')
     p.add_argument('skill_path', help='Path to a SKILL.md or the skill directory.')
@@ -479,7 +441,6 @@ def _cli_skill_to_jinx(argv: Optional[List[str]] = None) -> int:
     args = p.parse_args(argv)
     print(skill_to_jinx(args.skill_path, args.out_dir))
     return 0
-
 
 def _cli_agents_to_npc(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog='agents2npc', description='Convert markdown agent files into .npc files.')
@@ -494,7 +455,6 @@ def _cli_agents_to_npc(argv: Optional[List[str]] = None) -> int:
         print(path)
     return 0
 
-
 def _cli_npc_to_agents(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog='npc2agents', description='Compile .npc files into markdown agent files.')
     p.add_argument('npc_path', help='Path to a .npc file or a directory containing them.')
@@ -504,7 +464,6 @@ def _cli_npc_to_agents(argv: Optional[List[str]] = None) -> int:
     for path in npc_to_agents(args.npc_path, args.out_dir, combined=args.combined):
         print(path)
     return 0
-
 
 if __name__ == '__main__':
     prog = os.path.basename(sys.argv[0]).lower()

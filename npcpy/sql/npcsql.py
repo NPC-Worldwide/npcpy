@@ -69,25 +69,15 @@ except ImportError:
         PANDAS_BACKEND = 'pandas'
 
 class DatabaseAIFunctionMapper:
-    # Snowflake Cortex uses non-standard model identifiers.
-    # This maps common model names → Cortex identifiers so users
-    # can set e.g. NQL_MODEL=llama3.1-70b and it Just Works
-    # on both local (ollama) and Snowflake.
     SNOWFLAKE_CORTEX_MODELS = {
-        # Claude family
         'claude-4-opus', 'claude-4-sonnet', 'claude-3-7-sonnet', 'claude-3-5-sonnet',
-        # Llama family
         'llama3-8b', 'llama3-70b',
         'llama3.1-8b', 'llama3.1-70b', 'llama3.1-405b',
         'llama3.3-70b',
         'llama4-maverick', 'llama4-scout',
-        # Mistral family
         'mistral-large', 'mistral-large2', 'mistral-7b', 'mixtral-8x7b',
-        # OpenAI
         'openai-gpt-4.1', 'openai-o4-mini',
-        # Snowflake-tuned
         'snowflake-arctic', 'snowflake-llama-3.1-405b', 'snowflake-llama-3.3-70b',
-        # DeepSeek
         'deepseek-r1',
     }
 
@@ -108,25 +98,19 @@ class DatabaseAIFunctionMapper:
         'mistral': 'mistral-large2',
     }
 
-    # Databricks Foundation Model API endpoint names
     DATABRICKS_MODELS = {
-        # OpenAI
         'databricks-gpt-5-2', 'databricks-gpt-5-1',
         'databricks-gpt-5-1-codex-max', 'databricks-gpt-5-1-codex-mini',
         'databricks-gpt-5', 'databricks-gpt-5-mini', 'databricks-gpt-5-nano',
         'databricks-gpt-oss-120b', 'databricks-gpt-oss-20b',
-        # Google
         'databricks-gemini-3-flash', 'databricks-gemini-3.1-pro',
         'databricks-gemini-2-5-pro', 'databricks-gemini-2-5-flash',
         'databricks-gemma-3-12b',
-        # Alibaba
         'databricks-qwen3-next-80b-a3b-instruct',
-        # Meta Llama
         'databricks-llama-4-maverick',
         'databricks-meta-llama-3-3-70b-instruct',
         'databricks-meta-llama-3-1-405b-instruct',
         'databricks-meta-llama-3-1-8b-instruct',
-        # Anthropic Claude
         'databricks-claude-haiku-4-5', 'databricks-claude-sonnet-4-5',
         'databricks-claude-opus-4-6', 'databricks-claude-opus-4-5',
         'databricks-claude-sonnet-4', 'databricks-claude-opus-4-1',
@@ -134,7 +118,6 @@ class DatabaseAIFunctionMapper:
     }
 
     DATABRICKS_MODEL_ALIASES = {
-        # Standard names → databricks endpoint names
         'llama3.1:8b': 'databricks-meta-llama-3-1-8b-instruct',
         'llama3.1:70b': 'databricks-meta-llama-3-3-70b-instruct',
         'llama3.1-8b': 'databricks-meta-llama-3-1-8b-instruct',
@@ -157,25 +140,18 @@ class DatabaseAIFunctionMapper:
         'claude-3.7-sonnet': 'databricks-claude-3-7-sonnet',
     }
 
-    # BigQuery uses Vertex AI model names directly.
-    # These are standard Vertex AI endpoint identifiers.
     BIGQUERY_MODELS = {
-        # Gemini
         'gemini-2.5-flash', 'gemini-2.5-pro',
         'gemini-2.0-flash', 'gemini-2.0-pro',
         'gemini-1.5-flash', 'gemini-1.5-pro',
-        # Claude (via Vertex AI Model Garden)
         'claude-3-5-sonnet-v2@20241022', 'claude-3-5-haiku@20241022',
         'claude-3-opus@20240229', 'claude-3-sonnet@20240229',
-        # Llama (via openapi/ endpoint format)
         'meta/llama-3.1-405b-instruct-maas',
         'meta/llama-3.1-70b-instruct-maas',
-        # Mistral (via Vertex AI Model Garden)
         'mistral-large@2407', 'mistral-nemo@2407',
     }
 
     BIGQUERY_MODEL_ALIASES = {
-        # Standard names → Vertex AI identifiers
         'gemini-flash': 'gemini-2.5-flash',
         'gemini-pro': 'gemini-2.5-pro',
         'llama3.1:70b': 'meta/llama-3.1-70b-instruct-maas',
@@ -482,7 +458,6 @@ class NPCSQLOperations:
         import types
 
         function_map = {}
-        # Register all llm_funcs
         for name in dir(llm_funcs):
             if name.startswith('_'):
                 continue
@@ -490,8 +465,6 @@ class NPCSQLOperations:
             if (isinstance(obj, types.FunctionType) or
                 (isinstance(obj, types.MethodType) and obj.__self__ is not None)):
                 function_map[name] = obj
-
-        # Register all ml_funcs
         try:
             import npcpy.ml_funcs as ml_funcs
             for name in dir(ml_funcs):
@@ -709,10 +682,8 @@ class SQLModel:
         return set(re.findall(pattern, self.content))
     
     def _check_ai_functions(self) -> bool:
-        # Check for explicit nql. prefix or any extracted AI functions
         if "nql." in self.content:
             return True
-        # Defer to _extract_ai_functions for bare function names
         return bool(self.ai_functions) if hasattr(self, 'ai_functions') else False
 
     def _extract_ai_functions(self) -> Dict[str, Dict]:
@@ -720,7 +691,6 @@ class SQLModel:
         import types
 
         ai_functions = {}
-        # Match both nql.func() and bare func() for registered AI/ML functions
         pattern = r"(?:nql\.)?(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(\s+as\s+(\w+))?"
         
         matches = re.finditer(pattern, self.content, flags=re.DOTALL | re.IGNORECASE)
@@ -734,7 +704,6 @@ class SQLModel:
                 (isinstance(obj, types.MethodType) and obj.__self__ is not None)):
                 available_functions.append(name.lower())
 
-        # Also register ml_funcs
         try:
             import npcpy.ml_funcs as ml_funcs_mod
             for name in dir(ml_funcs_mod):
@@ -1078,7 +1047,6 @@ class ModelCompiler:
 
         def replace_with_null(match):
             func_name = match.group(1).lower()
-            # Only replace known AI functions, not standard SQL functions
             if func_name not in known_ai_funcs:
                 return match.group(0)
 

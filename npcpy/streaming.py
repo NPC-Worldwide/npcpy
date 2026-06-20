@@ -30,10 +30,6 @@ from npcpy.llm_funcs import get_llm_response, check_llm_command
 from npcpy.npc_compiler import NPC, Team
 
 
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
-
 @dataclass
 class StreamConfig:
     """Configuration for a streaming request."""
@@ -74,10 +70,6 @@ class StreamEvent:
     type: str
     data: dict = field(default_factory=dict)
 
-
-# ---------------------------------------------------------------------------
-# Message cleaning
-# ---------------------------------------------------------------------------
 
 def clean_messages_for_llm(messages: List[dict]) -> List[dict]:
     """Remove orphaned tool_calls and tool results from message history.
@@ -121,10 +113,6 @@ def clean_messages_for_llm(messages: List[dict]) -> List[dict]:
     return cleaned
 
 
-# ---------------------------------------------------------------------------
-# System prompt management
-# ---------------------------------------------------------------------------
-
 def ensure_system_prompt(messages: List[dict], npc=None, system_prompt: str = None, tool_capable=False) -> List[dict]:
     """Ensure messages start with a system prompt.
 
@@ -148,10 +136,6 @@ def ensure_system_prompt(messages: List[dict], npc=None, system_prompt: str = No
     return messages
 
 
-# ---------------------------------------------------------------------------
-# Chunk parsing — provider-agnostic
-# ---------------------------------------------------------------------------
-
 def parse_stream_chunk(response_chunk, model: str = "", provider: str = "") -> Tuple[str, str, list]:
     """Normalize a streaming chunk from any provider into (content, reasoning, tool_call_deltas).
 
@@ -165,7 +149,6 @@ def parse_stream_chunk(response_chunk, model: str = "", provider: str = "") -> T
     reasoning = ""
     tool_call_deltas = []
 
-    # --- Ollama / HF style (message-based) ---
     if provider == 'ollama' or (isinstance(model, str) and 'hf.co' in model):
         msg = getattr(response_chunk, 'message', None)
         if msg is None and hasattr(response_chunk, 'get'):
@@ -197,7 +180,6 @@ def parse_stream_chunk(response_chunk, model: str = "", provider: str = "") -> T
                         })
         return content, reasoning, tool_call_deltas
 
-    # --- llamacpp style (raw dict with choices) ---
     if provider == 'llamacpp':
         if isinstance(response_chunk, dict) and response_chunk.get('choices'):
             delta = response_chunk['choices'][0].get('delta', {})
@@ -205,7 +187,6 @@ def parse_stream_chunk(response_chunk, model: str = "", provider: str = "") -> T
             reasoning = delta.get('reasoning_content', '') or ''
         return content, reasoning, tool_call_deltas
 
-    # --- OpenAI / litellm SDK objects ---
     if hasattr(response_chunk, 'choices') and response_chunk.choices:
         for choice in response_chunk.choices:
             delta = getattr(choice, 'delta', None)
@@ -220,7 +201,6 @@ def parse_stream_chunk(response_chunk, model: str = "", provider: str = "") -> T
                     tool_call_deltas.append(tc_delta)
         return content, reasoning, tool_call_deltas
 
-    # --- Plain dict fallback ---
     if isinstance(response_chunk, dict):
         content = response_chunk.get('content', '') or response_chunk.get('response', '') or ''
 
@@ -247,14 +227,6 @@ def _build_sse_chunk(content: str, model: str, reasoning: str = None,
     }
 
 
-# ---------------------------------------------------------------------------
-# SSE formatting
-# ---------------------------------------------------------------------------
-
-# Eventlet/gevent WSGI servers buffer responses until minimum_chunk_size
-# (default 4096 bytes). SSE events are typically ~80 bytes, so they get
-# batched instead of streaming in real-time. We pad each event with an
-# SSE comment line (ignored by clients) to force an immediate flush.
 _SSE_FLUSH_PAD = ": {}\n\n".format(" " * 4096)
 
 
@@ -276,7 +248,6 @@ def format_sse_event(event: StreamEvent) -> str:
         )
         return "data: {}\n\n".format(json.dumps(chunk)) + _SSE_FLUSH_PAD
 
-    # All other event types just serialize data with the type field
     payload = dict(event.data)
     payload['type'] = event.type
     return "data: {}\n\n".format(json.dumps(payload)) + _SSE_FLUSH_PAD
@@ -286,10 +257,6 @@ def format_sse_raw(data: dict) -> str:
     """Format a raw dict as an SSE data line."""
     return "data: {}\n\n".format(json.dumps(data)) + _SSE_FLUSH_PAD
 
-
-# ---------------------------------------------------------------------------
-# Tool resolution
-# ---------------------------------------------------------------------------
 
 def resolve_npc_tools(npc, mcp_clients_cache: dict = None,
                       selected_tools: List[str] = None) -> Tuple[list, dict]:
@@ -307,13 +274,11 @@ def resolve_npc_tools(npc, mcp_clients_cache: dict = None,
     if npc is None:
         return tools_for_llm, tool_executors
 
-    # 1. NPC.resolve_tools() — covers MCP + python tools
     if hasattr(npc, 'resolve_tools'):
         tools_for_llm, tool_executors = npc.resolve_tools(
             mcp_clients_cache=mcp_clients_cache or {}
         )
 
-    # 2. Jinx tool catalog (backward compat for NPCs without resolve_tools)
     if hasattr(npc, 'jinx_tool_catalog') and npc.jinx_tool_catalog:
         existing_names = {td['function']['name'] for td in tools_for_llm}
         jinxes_dict = getattr(npc, 'jinxes_dict', {}) or getattr(npc, 'jinxs_dict', {}) or {}
@@ -327,7 +292,6 @@ def resolve_npc_tools(npc, mcp_clients_cache: dict = None,
                 }
                 existing_names.add(name)
 
-    # 3. auto_tools for plain callable tools
     if not tools_for_llm and hasattr(npc, 'tools') and npc.tools:
         if isinstance(npc.tools, list) and npc.tools and callable(npc.tools[0]):
             tools_schema, tool_map = auto_tools(npc.tools)
@@ -335,7 +299,6 @@ def resolve_npc_tools(npc, mcp_clients_cache: dict = None,
             for name, func in tool_map.items():
                 tool_executors[name] = {'type': 'python', 'func': func}
 
-    # 4. Filter by selected tools
     if selected_tools:
         allowed = set(selected_tools)
         tools_for_llm = [t for t in tools_for_llm if t['function']['name'] in allowed]
@@ -343,10 +306,6 @@ def resolve_npc_tools(npc, mcp_clients_cache: dict = None,
 
     return tools_for_llm, tool_executors
 
-
-# ---------------------------------------------------------------------------
-# Tool execution
-# ---------------------------------------------------------------------------
 
 def execute_tool(tool_name: str, tool_args: dict, tool_id: str,
                  tool_executors: dict, npc=None) -> StreamEvent:
@@ -397,14 +356,9 @@ def execute_tool(tool_name: str, tool_args: dict, tool_id: str,
         })
 
 
-# ---------------------------------------------------------------------------
-# Accumulate tool call deltas into complete calls
-# ---------------------------------------------------------------------------
-
 def _accumulate_tool_call_deltas(collected: list, deltas) -> list:
     """Merge streaming tool_call deltas into collected list."""
     for tc_delta in deltas:
-        # Raw SDK delta objects
         idx = getattr(tc_delta, 'index', len(collected))
         while len(collected) <= idx:
             collected.append({
@@ -422,10 +376,6 @@ def _accumulate_tool_call_deltas(collected: list, deltas) -> list:
                 collected[idx]['function']['arguments'] += fn.arguments
     return collected
 
-
-# ---------------------------------------------------------------------------
-# Chat stream (no tool execution)
-# ---------------------------------------------------------------------------
 
 def create_chat_stream(config: StreamConfig,
                        cancellation_check: Callable[[], bool] = None,
@@ -482,10 +432,8 @@ def create_chat_stream(config: StreamConfig,
         yield StreamEvent('tool_error', {'error': "LLM call failed: {}".format(str(e))})
         return
 
-    # Unwrap: response might be a dict with 'response' key containing the iterator
     stream_iter = response
     if isinstance(response, dict):
-        # Check for non-streaming response with direct content
         for key in ('content', 'text', 'message', 'output'):
             if key in response:
                 val = response[key]
@@ -505,7 +453,6 @@ def create_chat_stream(config: StreamConfig,
             yield StreamEvent('message_stop', {})
             return
 
-    # Stream chunks
     try:
         for chunk in stream_iter:
             if cancellation_check and cancellation_check():
@@ -524,10 +471,6 @@ def create_chat_stream(config: StreamConfig,
 
     yield StreamEvent('message_stop', {})
 
-
-# ---------------------------------------------------------------------------
-# Tool-agent stream (with tool-calling loop)
-# ---------------------------------------------------------------------------
 
 def create_tool_agent_stream(config: StreamConfig,
                              tools_for_llm: list,
@@ -594,7 +537,6 @@ def create_tool_agent_stream(config: StreamConfig,
         collected_content = ""
         collected_tool_calls = []
 
-        # Stream response chunks
         if hasattr(stream_iter, '__iter__') and not isinstance(stream_iter, (str, dict)):
             for chunk in stream_iter:
                 if cancellation_check and cancellation_check():
@@ -609,11 +551,9 @@ def create_tool_agent_stream(config: StreamConfig,
                 if reasoning:
                     yield StreamEvent('reasoning_delta', {'reasoning': reasoning, 'model': model})
 
-                # Accumulate tool call deltas
                 if tc_deltas:
                     _accumulate_tool_call_deltas(collected_tool_calls, tc_deltas)
 
-                # Extract usage from streaming chunks
                 chunk_usage = getattr(chunk, 'usage', None)
                 if chunk_usage is None and isinstance(chunk, dict):
                     chunk_usage = chunk.get('usage')
@@ -624,7 +564,6 @@ def create_tool_agent_stream(config: StreamConfig,
                         total_input_tokens = inp
                     if out:
                         total_output_tokens = out
-                # Ollama-style usage
                 prompt_eval = getattr(chunk, 'prompt_eval_count', None)
                 eval_count = getattr(chunk, 'eval_count', None)
                 if prompt_eval:
@@ -640,11 +579,9 @@ def create_tool_agent_stream(config: StreamConfig,
             collected_content = str(val)
             yield StreamEvent('content_delta', {'content': collected_content, 'model': model})
 
-        # No tool calls — we're done
         if not collected_tool_calls:
             break
 
-        # Serialize tool calls for message history
         serialized_tool_calls = []
         for tc in collected_tool_calls:
             parsed_args = tc['function']['arguments']
@@ -667,7 +604,6 @@ def create_tool_agent_stream(config: StreamConfig,
             'tool_calls': serialized_tool_calls,
         })
 
-        # Signal tool execution start
         yield StreamEvent('tool_execution_start', {
             'tool_calls': [
                 {'name': tc['function']['name'], 'id': tc['id'],
@@ -676,7 +612,6 @@ def create_tool_agent_stream(config: StreamConfig,
             ]
         })
 
-        # Execute each tool
         for tc in collected_tool_calls:
             tool_name = tc['function']['name']
             tool_args = tc['function']['arguments']
@@ -693,7 +628,6 @@ def create_tool_agent_stream(config: StreamConfig,
             result_event = execute_tool(tool_name, tool_args, tool_id, tool_executors, npc=npc)
             yield result_event
 
-            # Add to messages for next iteration
             tool_content = result_event.data.get('result', result_event.data.get('error', ''))
             messages.append({
                 'role': 'tool',
@@ -702,9 +636,8 @@ def create_tool_agent_stream(config: StreamConfig,
                 'content': tool_content,
             })
 
-        prompt = ""  # Next iteration uses tool results in messages, no new prompt
+        prompt = ""
 
-    # Emit usage
     if total_input_tokens or total_output_tokens:
         try:
             from npcpy.gen.response import calculate_cost
@@ -719,10 +652,6 @@ def create_tool_agent_stream(config: StreamConfig,
 
     yield StreamEvent('message_stop', {})
 
-
-# ---------------------------------------------------------------------------
-# jinx-based stream
-# ---------------------------------------------------------------------------
 
 def create_jinx_stream(npc,
                        command: str,
@@ -742,13 +671,11 @@ def create_jinx_stream(npc,
     provider = npc.provider
     messages = npc.memory
 
-    # Check if we even have jinxes
     jinxes_dict = None
     if npc:
         jinxes_dict = getattr(npc, 'jinxes_dict', None) or getattr(npc, 'jinxs_dict', None)
 
     if not jinxes_dict:
-        # No jinxes — just call get_llm_response directly
         response = get_llm_response(
             command, model=model, provider=provider, npc=npc,
             messages=messages, stream=True, **kwargs,
@@ -764,7 +691,6 @@ def create_jinx_stream(npc,
         yield StreamEvent('message_stop', {})
         return
 
-    # --- Agentic loop: everything goes through check_llm_command / jinxes ---
     for iteration in range(max_followups):
         if cancellation_check and cancellation_check():
             yield StreamEvent('interrupt', {})
@@ -798,7 +724,6 @@ def create_jinx_stream(npc,
                 output = data.get('result', '')
 
                 if name == 'chat':
-                    # Chat — stream wrapper or string becomes content
                     if hasattr(output, '__iter__') and not isinstance(output, (str, bytes, dict)):
                         for chunk in output:
                             content, reasoning, tcd = parse_stream_chunk(chunk, model, provider)
@@ -812,7 +737,6 @@ def create_jinx_stream(npc,
                 elif name != 'stop':
                     yield StreamEvent('tool_result', data)
             elif event_type == 'content':
-                # Direct response (no jinx) — may be stream wrapper or string
                 output = data
                 if hasattr(output, '__iter__') and not isinstance(output, (str, bytes, dict)):
                     for chunk in output:
@@ -822,7 +746,6 @@ def create_jinx_stream(npc,
                 elif isinstance(output, str) and output:
                     yield StreamEvent('content_delta', {'content': output, 'model': model})
             elif event_type == 'content':
-                # Direct content (no jinxes path)
                 output = data
                 if hasattr(output, '__iter__') and not isinstance(output, (str, bytes, dict)):
                     for chunk in output:

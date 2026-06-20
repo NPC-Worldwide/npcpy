@@ -74,13 +74,9 @@ def _relative_position_bucket(
         relative_position = -mx.minimum(
             relative_position, mx.zeros_like(relative_position)
         )
-    # now relative_position is in the range [0, inf)
-
-    # half of the buckets are for exact increments in positions
     max_exact = num_buckets // 2
     is_small = relative_position < max_exact
 
-    # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
     scale = (num_buckets - max_exact) / np.log(max_distance / max_exact)
     relative_position_if_large = max_exact + (
         mx.log(relative_position.astype(mx.float32) / max_exact) * scale
@@ -107,7 +103,6 @@ class RelativePositionBias(nn.Module):
         context_position = mx.arange(offset, query_length)[:, None]
         memory_position = mx.arange(key_length)[None, :]
 
-        # shape (query_length, key_length)
         relative_position = memory_position - context_position
         relative_position_bucket = _relative_position_bucket(
             relative_position,
@@ -116,10 +111,8 @@ class RelativePositionBias(nn.Module):
             max_distance=self.max_distance,
         )
 
-        # shape (query_length, key_length, num_heads)
         values = self.embeddings(relative_position_bucket)
 
-        # shape (num_heads, query_length, key_length)
         return values.transpose(2, 0, 1)
 
 
@@ -157,7 +150,6 @@ class MultiHeadAttention(nn.Module):
             keys = mx.concatenate([key_cache, keys], axis=3)
             values = mx.concatenate([value_cache, values], axis=2)
 
-        # Dimensions are [batch x num heads x sequence x hidden dim]
         scores = queries @ keys
         if mask is not None:
             scores = scores + mask.astype(scores.dtype)

@@ -37,7 +37,7 @@ from npcpy.ft.sft import _resolve_mlx_model, _num_lora_layers
 class USFTConfig:
     base_model_name: str = "Qwen/Qwen3-0.6B"
     output_model_path: str = "models/usft_model"
-    device: str = "cpu"  # "cpu", "cuda", "mlx"
+    device: str = "cpu"
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.15

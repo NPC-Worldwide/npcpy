@@ -24,8 +24,6 @@ name: npcs
 description: List available NPCs and switch the active NPC. Use when the user asks to "list NPCs", "switch NPC", "show team", or "change agent".
 ---
 
-# NPC Team Management
-
 Use the MCP prompts to see available NPCs and switch:
 
 1. Use the `npc_team` MCP prompt to see all available NPCs
@@ -36,10 +34,6 @@ When switching, the available tools change to match the new NPC's jinxes.
 If called with arguments: switch directly to the NPC named "$ARGUMENTS" by using the `npc_$ARGUMENTS` MCP prompt.
 """
 
-
-# ---------------------------------------------------------------------------
-# Direct registration
-# ---------------------------------------------------------------------------
 
 def _write(path: Path, content: str, executable: bool = False):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,7 +50,6 @@ def setup_claude(uninstall: bool = False):
         if plugin_dir.exists():
             shutil.rmtree(plugin_dir)
             print(f"Removed {plugin_dir}")
-        # Also remove from settings.json mcpServers
         settings_path = Path.home() / ".claude" / "settings.json"
         if settings_path.exists():
             try:
@@ -71,7 +64,6 @@ def setup_claude(uninstall: bool = False):
 
     print(f"Installing NPC plugin to {plugin_dir}")
 
-    # Plugin manifest
     _write(plugin_dir / ".claude-plugin" / "plugin.json", json.dumps({
         "name": "npc",
         "description": "NPC team integration — agents, tools, and conversation logging via npcpy MCP server",
@@ -87,10 +79,8 @@ def setup_claude(uninstall: bool = False):
         }
     }, indent=2) + "\n")
 
-    # Skill
     _write(plugin_dir / "skills" / "npcs" / "SKILL.md", NPCS_SKILL)
 
-    # Also write to settings.json mcpServers for direct MCP access
     settings_path = Path.home() / ".claude" / "settings.json"
     try:
         data = {}
@@ -116,7 +106,6 @@ def setup_codex(uninstall: bool = False):
 
     if uninstall:
         if mcp_path.exists():
-            # Remove just the npc entry, not the whole file
             data = json.loads(mcp_path.read_text())
             data.pop("npc", None)
             if data:
@@ -126,7 +115,6 @@ def setup_codex(uninstall: bool = False):
             print("Removed NPC from Codex MCP config.")
         return
 
-    # Merge into existing .mcp.json if it exists
     data = {}
     if mcp_path.exists():
         try:

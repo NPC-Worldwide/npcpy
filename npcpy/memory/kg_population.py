@@ -111,7 +111,6 @@ def mutate_individual(ind: KGIndividual) -> KGIndividual:
     new.total_queries = 0
     g = new.genome
 
-    # Apply 1-3 random mutations
     mutations = [
         lambda: setattr(g, 'lambda_depth', max(0.5, g.lambda_depth + np.random.normal(0, 0.5))),
         lambda: setattr(g, 'lambda_breadth', max(1.0, g.lambda_breadth + np.random.normal(0, 1.0))),
@@ -148,7 +147,6 @@ def crossover_individuals(a: KGIndividual, b: KGIndividual) -> KGIndividual:
         link_concepts_concepts=random.choice([a.genome.link_concepts_concepts, b.genome.link_concepts_concepts]),
     )
 
-    # Merge graphs — union of facts from both parents, deduplicated
     a_facts = {f.get('statement', str(f)): f for f in a.kg_data.get('facts', [])}
     b_facts = {f.get('statement', str(f)): f for f in b.kg_data.get('facts', [])}
     merged_facts = list({**a_facts, **b_facts}.values())
@@ -266,7 +264,6 @@ class SememolutionPopulation:
         if not facts:
             return []
 
-        # Simple keyword + threshold search over this individual's facts
         query_lower = query.lower()
         query_words = set(query_lower.split())
         scored = []
@@ -279,10 +276,8 @@ class SememolutionPopulation:
 
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        # Breadth controls how many results we take
         results = scored[:breadth]
 
-        # Depth controls how many hops we follow through links
         if depth > 1 and results:
             ftc = ind.kg_data.get('fact_to_concept_links', {})
             ftf = ind.kg_data.get('fact_to_fact_links', [])
@@ -292,7 +287,6 @@ class SememolutionPopulation:
                 new_facts = []
                 for _, f in results:
                     stmt = f.get('statement', '')
-                    # Follow fact-to-fact links
                     for link in ftf:
                         if isinstance(link, (list, tuple)) and len(link) == 2:
                             other = link[1] if link[0] == stmt else (link[0] if link[1] == stmt else None)
@@ -348,10 +342,8 @@ class SememolutionPopulation:
                 'n_facts': len(context_facts),
             })
 
-        # Rank responses
         rankings = self._rank_responses(query, candidates)
 
-        # Update fitness
         for i, c in enumerate(rankings):
             ind = c['individual']
             ind.total_queries += 1
@@ -397,7 +389,6 @@ class SememolutionPopulation:
         except Exception:
             pass
 
-        # Fallback: rank by number of facts used
         candidates.sort(key=lambda c: c['n_facts'], reverse=True)
         return candidates
 
@@ -427,10 +418,6 @@ class SememolutionPopulation:
             'unique_sleep_configs': len(set(tuple(ind.genome.sleep_ops) for ind in pop)),
         }
 
-
-# ---------------------------------------------------------------------------
-# Persistence: SQLite-backed population store. No command_history schema churn.
-# ---------------------------------------------------------------------------
 
 def _ensure_population_schema(engine):
     """Create the kg_populations + kg_individuals tables if missing."""
@@ -527,7 +514,6 @@ def save_population(engine, population_id: str, name: str, mgr: 'SememolutionPop
             'sample_size': mgr.sample_size, 'config_json': config_json,
         })
 
-        # Drop and re-insert all individuals (simpler than diff).
         conn.execute(text("DELETE FROM kg_individuals WHERE population_id = :pid"),
                      {'pid': population_id})
         for ind in mgr.ga.population:
