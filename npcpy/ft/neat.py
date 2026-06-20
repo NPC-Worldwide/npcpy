@@ -12,7 +12,7 @@ Usage:
         input_size=12,
         output_size=3,
         config=NEATConfig(population_size=150),
-        engine="numpy",  # or "jax", "mlx", "cuda"
+        engine="numpy",
     )
 
     def fitness_fn(network):
@@ -36,7 +36,6 @@ import csv
 import numpy as np
 
 from npcpy.ft.engine import Engine, get_engine
-
 
 @dataclass
 class NEATConfig:
@@ -64,8 +63,8 @@ class NEATConfig:
 class NodeGene:
     """A node (neuron) in the network."""
     id: int
-    type: str  # "input", "hidden", "output"
-    activation: str = "tanh"  # "tanh", "relu", "sigmoid", "identity"
+    type: str
+    activation: str = "tanh"
     bias: float = 0.0
 
     def copy(self):
@@ -73,7 +72,6 @@ class NodeGene:
             id=self.id, type=self.type,
             activation=self.activation, bias=self.bias,
         )
-
 
 @dataclass
 class ConnectionGene:
@@ -90,7 +88,6 @@ class ConnectionGene:
             weight=self.weight, enabled=self.enabled,
             innovation=self.innovation,
         )
-
 
 class InnovationTracker:
     """
@@ -113,7 +110,6 @@ class InnovationTracker:
     def reset_generation(self):
         """Call between generations to allow re-discovery."""
         self._history.clear()
-
 
 class Genome:
     """
@@ -191,8 +187,6 @@ class Genome:
         if g.nodes:
             g._next_node_id = max(g.nodes.keys()) + 1
         return g
-
-
 
 class NEATNetwork:
     """
@@ -303,7 +297,6 @@ class NEATNetwork:
             outputs.append(values.get(i, 0.0))
 
         return np.array(outputs)
-
 
 class NEATEvolver:
     """
@@ -743,7 +736,7 @@ class NEATEvolver:
 
         with open(base + "_meta.csv", "r") as f:
             r = csv.reader(f)
-            next(r)  # skip header
+            next(r)
             meta = {row[0]: row[1] for row in r}
 
         g = Genome(int(meta["input_size"]), int(meta["output_size"]))
@@ -775,7 +768,6 @@ class NEATEvolver:
             g._next_node_id = max(g.nodes.keys()) + 1
 
         return g
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Species:

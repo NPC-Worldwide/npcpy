@@ -79,7 +79,7 @@ def _num_lora_layers(lora_r: int) -> int:
 class SFTConfig:
     base_model_name: str = "google/gemma-3-270m-it"
     output_model_path: str = "adapters/sft_model"
-    device: str = "cpu"  # "cpu", "cuda", "mlx"
+    device: str = "cpu"
     lora_r: int = 8
     lora_alpha: int = 16
     use_4bit: bool = False

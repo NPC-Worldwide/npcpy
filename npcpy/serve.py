@@ -5339,7 +5339,6 @@ def api_mcp_start():
     explicit = data.get("serverPath")
     env_vars = data.get("envVars")
     try:
-        # For command strings, don't resolve as file path
         if _is_command_string(explicit or ""):
             server_path = (explicit or "").strip()
         else:
@@ -5358,7 +5357,6 @@ def api_mcp_stop():
     if not explicit:
         return jsonify({"error": "serverPath is required to stop a server."}), 400
     try:
-        # _resolve_key in manager handles both file paths and commands
         result = mcp_server_manager.stop(explicit)
         return jsonify({**result, "error": None})
     except Exception as e:
@@ -5372,7 +5370,6 @@ def api_mcp_status():
     current_path = request.args.get("currentPath")
     try:
         if explicit:
-            # For command strings, use directly without resolving as file path
             if _is_command_string(explicit):
                 result = mcp_server_manager.status(explicit.strip())
             else:
@@ -5632,7 +5629,6 @@ def stream():
     provider = data.get("provider", None)
     print(f"🔍 Stream request - model: {model}, provider from request: {provider}")
 
-    # Defensive provider resolution: validate/correct against model catalog
     if model:
         resolved_provider = available_models.get(model) or lookup_provider(model)
         if resolved_provider and resolved_provider != provider:
@@ -5852,20 +5848,15 @@ def stream():
     else:
         messages = fetch_messages_for_conversation(conversation_id)
 
-    # clean_messages_for_llm imported from npcpy.streaming
     messages = clean_messages_for_llm(messages)
 
     exe_mode = data.get('executionMode','chat')
-    # Chat mode should never see jinx instructions; strip them from the NPC
-    # before building the system prompt so the model outputs plain text.
     if exe_mode == 'chat' and npc_object is not None and hasattr(npc_object, 'jinxes_dict'):
         npc_object.jinxes_dict = {}
-    # ensure_system_prompt imported from npcpy.streaming
     messages = ensure_system_prompt(messages, npc=npc_object, tool_capable=(exe_mode == 'tool_agent'))
 
     stream_response = {"output": "", "messages": messages}
 
-    # Only attach tools in agent mode, never in plain chat
     tool_args = {}
     if exe_mode == 'tool_agent' and npc_object is not None:
         if hasattr(npc_object, 'tools') and npc_object.tools:
@@ -5920,7 +5911,6 @@ def stream():
     elif exe_mode == 'tool_agent':
         selected_mcp_tools_from_request = data.get("selectedMcpTools", [])
 
-        # Build tools from NPC config via resolve_tools()
         if not hasattr(app, 'mcp_clients_cache'):
             app.mcp_clients_cache = {}
 
@@ -5931,8 +5921,6 @@ def stream():
                 mcp_clients_cache=app.mcp_clients_cache
             )
 
-        # If frontend sent ad-hoc MCP server(s), add their tools too.
-        # Supports both legacy single mcpServerPath and new mcpServerPaths array.
         extra_paths = []
         if "mcpServerPaths" in data and isinstance(data["mcpServerPaths"], list):
             extra_paths = [p for p in data["mcpServerPaths"] if p]
@@ -5967,7 +5955,6 @@ def stream():
                         }
                         existing_names.add(name)
 
-        # Also add jinx tools if not already included (backward compat for NPCs without resolve_tools)
         if npc_object and hasattr(npc_object, "jinx_tool_catalog"):
             jinx_tool_catalog = npc_object.jinx_tool_catalog or {}
             existing_names = {td["function"]["name"] for td in tools_for_llm}
@@ -5981,16 +5968,13 @@ def stream():
                     }
                     existing_names.add(name)
 
-        # Apply frontend tool filter if set
         if selected_mcp_tools_from_request:
             tools_for_llm = [t for t in tools_for_llm if t["function"]["name"] in selected_mcp_tools_from_request]
-            # Also filter executors
             allowed = set(selected_mcp_tools_from_request)
             tool_executors = {k: v for k, v in tool_executors.items() if k in allowed}
 
         print(f"[MCP] resolved {len(tools_for_llm)} tools: {[t['function']['name'] for t in tools_for_llm]}")
 
-        # Legacy mcp_client reference for backward compat with message storage
         if not hasattr(app, 'mcp_clients'):
             app.mcp_clients = {}
         state_key = f"{conversation_id}_{npc_name or 'default'}"
@@ -5998,7 +5982,6 @@ def stream():
             app.mcp_clients[state_key] = {"client": None, "server_path": None, "messages": messages}
         messages = app.mcp_clients[state_key].get("messages", messages)
 
-        # sanitize_mcp_messages replaced by clean_messages_for_llm from npcpy.streaming
         messages = clean_messages_for_llm(messages)
 
         if not messages:
@@ -6016,7 +5999,6 @@ def stream():
             while iteration < 10:
                 iteration += 1
                 print(f"[MCP] iteration {iteration} prompt len={len(prompt)}")
-                # tools_for_llm and tool_executors are pre-built above
                 print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
 
                 agent_context = f'''The user's working directory is {current_path}
@@ -6542,7 +6524,6 @@ IMPORTANT AGENT BEHAVIOR:
                         }
                         yield f"data: {json.dumps(chunk_data)}\n\n"
 
-                    # Extract usage from streaming chunks (works across all providers)
                     chunk_usage = getattr(response_chunk, 'usage', None)
                     if chunk_usage is None and isinstance(response_chunk, dict):
                         chunk_usage = response_chunk.get('usage')
@@ -6551,7 +6532,6 @@ IMPORTANT AGENT BEHAVIOR:
                         out = getattr(chunk_usage, 'completion_tokens', None) or (chunk_usage.get('completion_tokens', 0) if isinstance(chunk_usage, dict) else 0)
                         if inp: total_input_tokens = inp
                         if out: total_output_tokens = out
-                    # Ollama-style usage
                     prompt_eval = getattr(response_chunk, 'prompt_eval_count', None)
                     eval_count = getattr(response_chunk, 'eval_count', None)
                     if prompt_eval:
@@ -6598,7 +6578,6 @@ IMPORTANT AGENT BEHAVIOR:
                 execution_mode=exe_mode,
             )
 
-            # Async memory extraction to local .knowledge.yaml
             conversation_turn_text = f"User: {commandstr}\nAssistant: {final_response_text}"
             background_thread = threading.Thread(
                 target=_run_stream_post_processing,
@@ -6935,7 +6914,6 @@ def get_conversations():
                                 "models": [m for m in (conv[5] or "").split(",") if m],
                                 "providers": [p for p in (conv[6] or "").split(",") if p],
                                 "execution_mode": conv[7] or "chat",
-                                # Keep singular fields for backwards compat (first entry)
                                 "npc": (conv[4] or "").split(",")[0] if conv[4] else "",
                                 "model": (conv[5] or "").split(",")[0] if conv[5] else "",
                                 "provider": (conv[6] or "").split(",")[0] if conv[6] else "",
@@ -6979,7 +6957,6 @@ def search_conversations():
 
                 conversations = []
                 for row in rows:
-                    # Get the matching message snippet
                     snippet_q = text("""
                     SELECT content FROM conversation_history
                     WHERE conversation_id = :cid AND content LIKE :pattern
@@ -7025,7 +7002,6 @@ def unified_search():
         engine = get_db_connection()
         results = []
 
-        # 1. Conversations via FTS5 (fallback to LIKE if FTS5 table missing)
         try:
             with engine.connect() as conn:
                 fts_query = text("""
@@ -7056,7 +7032,6 @@ def unified_search():
                         "score": 1.0,
                     })
         except Exception as fts_err:
-            # Fallback to LIKE if FTS5 not available
             try:
                 with engine.connect() as conn:
                     like_query = text("""
@@ -7088,7 +7063,6 @@ def unified_search():
             except Exception:
                 pass
 
-        # 2. Memories from .knowledge.yaml
         try:
             from npcpy.memory.knowledge_store import KnowledgeStore
             store = KnowledgeStore(directory_path)
@@ -7106,10 +7080,8 @@ def unified_search():
         except Exception:
             pass
 
-        # 3. Backend KG facts and concepts
         try:
             with engine.connect() as conn:
-                # kg_facts
                 fact_query = text("""
                     SELECT statement, source_text, type, generation, origin
                     FROM kg_facts
@@ -7127,7 +7099,6 @@ def unified_search():
                         "origin": row[4],
                         "score": 0.85,
                     })
-                # kg_concepts
                 concept_query = text("""
                     SELECT name, description, generation, origin
                     FROM kg_concepts
@@ -7147,10 +7118,8 @@ def unified_search():
         except Exception:
             pass
 
-        # 4. Daemon KG entities and triples
         try:
             with engine.connect() as conn:
-                # kg_entities
                 ent_query = text("""
                     SELECT name, entity_type, source, metadata
                     FROM kg_entities
@@ -7167,7 +7136,6 @@ def unified_search():
                         "metadata": row[3],
                         "score": 0.82,
                     })
-                # kg_triples joined with entity names
                 triple_query = text("""
                     SELECT eh.name AS head_name, r.name AS relation_name, et.name AS tail_name, t.weight
                     FROM kg_triples t
@@ -7190,7 +7158,6 @@ def unified_search():
         except Exception:
             pass
 
-        # Sort by score desc, then take top limit
         results.sort(key=lambda x: x.get("score", 0), reverse=True)
         return jsonify({"results": results[:limit], "error": None})
     except Exception as e:
@@ -7521,7 +7488,6 @@ def openai_chat_completions():
                     continue
 
         if not npc and agent_name:
-            # Fallback: try registered teams as directories containing NPC files
             for team_path in search_paths:
                 npc_file = os.path.join(team_path, f"{agent_name}.npc")
                 if os.path.exists(npc_file):
@@ -8174,7 +8140,6 @@ if __name__ == "__main__":
         traceback.print_exc()
         sys.exit(1)
 
-# Global error handler to ensure JSON responses instead of HTML
 @app.errorhandler(Exception)
 def handle_global_exception(e):
     """Handle all unhandled exceptions and return JSON instead of HTML."""

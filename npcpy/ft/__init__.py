@@ -10,17 +10,13 @@ Quick-start:
     from npcpy.ft import SFTConfig, run_sft, RLConfig, train_with_dpo
     from npcpy.ft import export_adapter, convert_to_mlx, merge_and_save, download_from_hub
 
-    # Train a LoRA adapter on MLX
     cfg = SFTConfig(base_model_name="mlx-community/Qwen3-4B-4bit", device="mlx")
     adapter = run_sft(X, y, config=cfg, format_style="qwen3")
 
-    # Export the adapter to a format suitable for Ollama / llama.cpp
     export_adapter(adapter_path, output_path="./npcsh_q4.gguf", format="gguf")
 
-    # Merge LoRA weights into the base model and save a full checkpoint
     merge_and_save(adapter_path, base_model="Qwen/Qwen3-4B", output_path="./npcsh_full")
 
-    # Download a published adapter from HuggingFace
     download_from_hub("npc-worldwide/enpisi-coder", "adapters/npcsh-sft", path_in_repo="adapters/npcsh-sft")
 """
 

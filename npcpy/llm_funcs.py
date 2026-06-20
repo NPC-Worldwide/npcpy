@@ -175,11 +175,7 @@ def resolve_model_provider(
         if team.provider is not None:
             p = team.provider
     else:
-        # No fallback.  Caller must supply model/provider or configure an
-        # npc/team that carries one.  Returning (None, None) surfaces the
-        # problem immediately instead of silently hardcoding "ollama".
         pass
-    # Always resolve api_url and api_key from npc/team if not explicitly provided
     if a_url is None and npc is not None and getattr(npc, 'api_url', None) is not None:
         a_url = npc.api_url
     if a_url is None and team is not None and getattr(team, 'api_url', None) is not None:
@@ -227,7 +223,6 @@ def get_llm_response(
     multi_sample = n_samples and n_samples > 1
 
     if not use_matrix and not multi_sample:
-        # Simple single-call path
         run_model, run_provider, run_api_url, run_api_key = resolve_model_provider(
             npc=npc, team=team, model=base_model, provider=base_provider,
             api_url=api_url, api_key=api_key, images=images, attachments=attachments,
@@ -235,12 +230,10 @@ def get_llm_response(
         tool_capable = bool(kwargs.get("tools"))
         system_message = get_system_message(npc, team, tool_capable=tool_capable) if npc is not None else "You are a helpful assistant."
 
-        # Build messages
         run_messages = copy.deepcopy(messages) if messages else []
         if not run_messages:
             run_messages = [{"role": "system", "content": system_message}]
 
-        # Build full text from prompt and/or context
         full_text = ""
         if prompt and context:
             full_text = f"{prompt}\n\n\nUser Provided Context: {context}"
@@ -271,7 +264,6 @@ def get_llm_response(
             **kwargs,
         )
 
-    # Matrix / multi-sample path
     combos = []
     if use_matrix:
         keys = list(matrix.keys())
@@ -658,7 +650,6 @@ Original request: {command}""",
 
     print(f"[JINX] {jinx.jinx_name}", flush=True)
 
-    # Build example format from jinx inputs
     example_format = {}
     for inp in jinx.inputs:
         if isinstance(inp, str):
@@ -668,7 +659,6 @@ Original request: {command}""",
             example_format[key] = "..."
     json_format_str = json.dumps(example_format, indent=4)
 
-    # Show full jinx definition so model understands what it's filling
     prompt = f"""The user wants to use the jinx '{jinx_name}' with the following request:
 '{command}'
 
@@ -738,7 +728,6 @@ The format of the JSON object is:
     else:
         input_values = {}
 
-    # Validate required inputs
     missing = []
     for inp in jinx.inputs:
         if not isinstance(inp, dict):
@@ -747,19 +736,19 @@ The format of the JSON object is:
     if missing and attempt < n_attempts:
         return handle_jinx_call(
             command + f". Previous attempt missing inputs: {missing}. Values were: {input_values}.",
-            jinx_name, 
+            jinx_name,
             jinxes,
-            model=model, 
-            provider=provider, 
-            api_url=api_url, 
+            model=model,
+            provider=provider,
+            api_url=api_url,
             api_key=api_key,
-            npc=npc, team=team, 
-            messages=messages, 
+            npc=npc, team=team,
+            messages=messages,
             stream=stream,
-            context=context, 
-            extra_globals=extra_globals, 
+            context=context,
+            extra_globals=extra_globals,
             previous_output=previous_output,
-            n_attempts=n_attempts, 
+            n_attempts=n_attempts,
             attempt=attempt + 1,
         )
     elif missing:
@@ -767,36 +756,32 @@ The format of the JSON object is:
 
     print(f"[INPUTS] {json.dumps({k: str(v)[:200] for k, v in input_values.items()})}", flush=True)
 
-    # Inject previous step output for inter-step data flow
     if previous_output is not None:
         input_values['previous_output'] = previous_output
 
-    # Execute
     output = _execute_jinx(jinx, input_values, npc, team, messages, extra_globals)
 
     print(f"[RESULT] {str(output)[:300]}", flush=True)
 
-    # Retry on error
     if isinstance(output, str) and output.startswith("Error:") and attempt < n_attempts:
         return handle_jinx_call(
-            command, 
-            jinx_name, 
+            command,
+            jinx_name,
             jinxes,
-            model=model, 
-            provider=provider, 
-            api_url=api_url, 
+            model=model,
+            provider=provider,
+            api_url=api_url,
             api_key=api_key,
-            npc=npc, team=team, 
-            messages=messages, 
+            npc=npc, team=team,
+            messages=messages,
             stream=stream,
             context=f"Jinx failed: {output}. Previous inputs: {input_values}",
-            extra_globals=extra_globals, 
+            extra_globals=extra_globals,
             previous_output=previous_output,
-            n_attempts=n_attempts, 
+            n_attempts=n_attempts,
             attempt=attempt + 1,
         )
 
-    # Collect any stream events produced during jinx execution (e.g. delegation sub-events)
     stream_events = []
     if npc and hasattr(npc, 'shared_context') and npc.shared_context.get('sub_events'):
         stream_events = npc.shared_context.pop('sub_events')
@@ -813,17 +798,17 @@ The format of the JSON object is:
     }
 
 def handle_action_choice(command: str,
-                         action_data: dict, 
-                         jinxes: list, 
+                         action_data: dict,
+                         jinxes: list,
                          model : str = None,
-                         provider: str = None, 
-                         api_url:str = None, 
-                         api_key: str = None , 
+                         provider: str = None,
+                         api_url:str = None,
+                         api_key: str = None ,
                          npc: Any = None,
                          team: Any = None,
                          messages: list = None,
                          images: list = None,
-                         stream: bool = False, 
+                         stream: bool = False,
                          extra_globals: dict = None,
                          last_jinx_output = None,
                          step_outputs: list = None,
@@ -838,18 +823,18 @@ def handle_action_choice(command: str,
             step_context += f"\nContext from previous steps: {json.dumps(step_outputs)}"
 
         result = handle_jinx_call(
-            command, 
-            jname, 
+            command,
+            jname,
             jinxes,
-            model=model, 
-            provider=provider, 
-            api_url=api_url, 
+            model=model,
+            provider=provider,
+            api_url=api_url,
             api_key=api_key,
-            npc=npc, 
-            team=team, 
-            messages=messages, 
+            npc=npc,
+            team=team,
+            messages=messages,
             stream=stream,
-            context=step_context, 
+            context=step_context,
             extra_globals=extra_globals,
             previous_output=last_jinx_output,
         )
@@ -858,7 +843,6 @@ def handle_action_choice(command: str,
         jinx_calls = result.get("jinx_calls", [])
         stream_events = result.get("stream_events", [])
 
-        # Display
         if output and str(output).strip():
             content = str(output).replace('\\n', '\n').replace('\\t', '\t')
             render_markdown(f"\n⚡ {jname}:")
@@ -927,7 +911,6 @@ def check_llm_command(
     if jinxes is None:
         jinxes = _get_jinxes(npc, team)
 
-    # No jinxes — just answer directly
     if not jinxes:
         print('no jinxes detected')
 
@@ -1006,12 +989,9 @@ def check_llm_command(
     )
 
     actions = response.get("response", {})
-    #import pdb
-    #pdb.set_trace()
-    # Display plan
     print(actions)
 
-    if not isinstance(actions,list) and isinstance(actions,dict): # the llm returned only one action
+    if not isinstance(actions,list) and isinstance(actions,dict):
         actions = [actions]
 
     def _execute():
@@ -1062,7 +1042,6 @@ def check_llm_command(
                 return
 
             if stream:
-                # Yield any sub-events from delegation before the tool_result
                 for evt in action_result.get('stream_events', []):
                     yield evt
                 if is_jinx and jname:
@@ -1084,7 +1063,6 @@ def check_llm_command(
     if stream:
         return _execute()
 
-    # Non-streaming: consume the generator and return the result dict
     result = None
     for event_type, data in _execute():
         if event_type == 'result':
@@ -1490,7 +1468,6 @@ def get_facts(content_text,
 
     rules = rules or FILE_RULES
 
-    # Merge NPC context with any additional passed context
     full_context = ""
     if npc and hasattr(npc, "context") and npc.context:
         full_context = str(npc.context)

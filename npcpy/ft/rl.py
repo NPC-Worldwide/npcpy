@@ -62,7 +62,7 @@ from npcpy.ft.sft import _resolve_mlx_model, _num_lora_layers
 class RLConfig:
     base_model_name: str = "Qwen/Qwen3-0.6B"
     adapter_path: str = "./rl_adapter"
-    device: str = "cpu"  # "cpu", "cuda", "mlx"
+    device: str = "cpu"
     max_iterations: int = 8
     min_reward_gap: float = 0.4
     num_train_epochs: int = 20

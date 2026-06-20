@@ -4,14 +4,14 @@ Launch AI coding tools as an NPC from your team.
 Supports: Claude Code, Codex, Gemini CLI, OpenCode, Aider, Amp
 
 Usage:
-    python -m npcpy.claude_launcher                        # Claude Code (default)
+    python -m npcpy.claude_launcher
     python -m npcpy.claude_launcher --tool codex
     python -m npcpy.claude_launcher --tool gemini
     python -m npcpy.claude_launcher --tool opencode
     python -m npcpy.claude_launcher --tool aider
     python -m npcpy.claude_launcher --tool amp
-    python -m npcpy.claude_launcher --npc corca             # skip picker
-    python -m npcpy.claude_launcher --team /path            # explicit team path
+    python -m npcpy.claude_launcher --npc corca
+    python -m npcpy.claude_launcher --team /path
 """
 
 import os
@@ -20,7 +20,6 @@ import json
 import argparse
 from typing import Optional
 
-
 def _discover_team_path(explicit: Optional[str] = None) -> str:
     if explicit and os.path.isdir(explicit):
         return os.path.abspath(explicit)
@@ -28,7 +27,6 @@ def _discover_team_path(explicit: Optional[str] = None) -> str:
     if os.path.isdir(cwd_team):
         return cwd_team
     raise FileNotFoundError("No npc_team found. Checked: ./npc_team")
-
 
 def _load_team(team_path: str):
     from npcpy.npc_compiler import Team
@@ -44,7 +42,6 @@ def _load_team(team_path: str):
             "first_line": directive.split("\n")[0].strip(),
         }
     return npcs
-
 
 def _pick_npc(npcs: dict) -> str:
     names = list(npcs.keys())
@@ -83,8 +80,6 @@ def _pick_npc(npcs: dict) -> str:
             print()
             sys.exit(0)
 
-
-
 def _build_system_prompt(npc_name: str, selected: dict, npcs: dict) -> str:
     """Build the full system prompt for the NPC."""
     parts = [f"You are {npc_name}.\n\n{selected['directive']}"]
@@ -95,7 +90,6 @@ def _build_system_prompt(npc_name: str, selected: dict, npcs: dict) -> str:
         for n, desc in other.items():
             parts.append(f"  @{n}: {desc}")
     return "\n".join(parts)
-
 
 def launch_claude(npc_name, selected, npcs, extra_args):
     agents = {}
@@ -108,7 +102,6 @@ def launch_claude(npc_name, selected, npcs, extra_args):
     print(f"  Starting Claude Code as {npc_name}")
     os.execvp("claude", cmd)
 
-
 def launch_codex(npc_name, selected, npcs, extra_args):
     prompt = _build_system_prompt(npc_name, selected, npcs)
     cmd = ["codex", "--system-prompt", prompt]
@@ -116,7 +109,6 @@ def launch_codex(npc_name, selected, npcs, extra_args):
         cmd.extend(extra_args)
     print(f"  Starting Codex as {npc_name}")
     os.execvp("codex", cmd)
-
 
 def launch_gemini(npc_name, selected, npcs, extra_args):
     import tempfile
@@ -134,7 +126,6 @@ def launch_gemini(npc_name, selected, npcs, extra_args):
     print(f"  (system prompt: {prompt_file})")
     os.execvp("gemini", cmd)
 
-
 def launch_opencode(npc_name, selected, npcs, extra_args):
     prompt = _build_system_prompt(npc_name, selected, npcs)
     agent_md = os.path.join(os.getcwd(), "AGENT.md")
@@ -148,7 +139,6 @@ def launch_opencode(npc_name, selected, npcs, extra_args):
     print(f"  Starting OpenCode as {npc_name}")
     print(f"  (wrote {agent_md})")
     os.execvp("opencode", cmd)
-
 
 def launch_aider(npc_name, selected, npcs, extra_args):
     import tempfile
@@ -164,7 +154,6 @@ def launch_aider(npc_name, selected, npcs, extra_args):
     print(f"  Starting Aider as {npc_name}")
     os.execvp("aider", cmd)
 
-
 def launch_amp(npc_name, selected, npcs, extra_args):
     prompt = _build_system_prompt(npc_name, selected, npcs)
     agent_md = os.path.join(os.getcwd(), "AGENT.md")
@@ -179,7 +168,6 @@ def launch_amp(npc_name, selected, npcs, extra_args):
     print(f"  (wrote {agent_md})")
     os.execvp("amp", cmd)
 
-
 TOOLS = {
     "claude": launch_claude,
     "claude-code": launch_claude,
@@ -189,7 +177,6 @@ TOOLS = {
     "aider": launch_aider,
     "amp": launch_amp,
 }
-
 
 def launch(tool: str = "claude", team_path: Optional[str] = None,
            npc_name: Optional[str] = None, extra_args: Optional[list] = None):
@@ -216,7 +203,6 @@ def launch(tool: str = "claude", team_path: Optional[str] = None,
 
     launcher(npc_name, selected, npcs, extra_args)
 
-
 def main():
     invoked = os.path.basename(sys.argv[0])
     default_tool = invoked.replace("npc-", "") if invoked.startswith("npc-") else "claude"
@@ -232,7 +218,6 @@ def main():
 
     launch(tool=args.tool, team_path=args.team, npc_name=args.npc,
            extra_args=extra if extra else None)
-
 
 if __name__ == "__main__":
     main()
