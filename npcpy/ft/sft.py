@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from datasets import Dataset
 import json
 import numpy as np
 import os
@@ -230,6 +229,7 @@ def _run_sft_torch(
     else:
         train_examples = formatted_examples
 
+    from datasets import Dataset
     dataset = Dataset.from_list(train_examples)
 
     model_kwargs = {
