@@ -16,8 +16,6 @@ def _is_cli_provider(provider: str) -> bool:
     return provider in _CLI_PROVIDERS
 
 
-# ── Stream parsers ──────────────────────────────────────────────────────────
-
 class _ParserResult:
     __slots__ = ("text", "usage", "session_id", "cost")
     def __init__(self, text="", usage=None, session_id=None, cost=0.0):
@@ -146,8 +144,6 @@ _STREAM_PARSERS = {
 }
 
 
-# ── Session resolvers ───────────────────────────────────────────────────────
-
 def _fetch_opencode_session_id():
     try:
         r = subprocess.run(["opencode", "session", "list"], capture_output=True, text=True, timeout=10)
@@ -197,8 +193,6 @@ _SESSION_RESOLVERS = {
 }
 
 
-# ── Usage extractors ────────────────────────────────────────────────────────
-
 def _extract_kimi_usage(session_id: str) -> Dict[str, Any]:
     """Read token usage from kimi wire.jsonl."""
     try:
@@ -237,8 +231,6 @@ _USAGE_EXTRACTORS = {
     "kimi_code": _extract_kimi_usage,
 }
 
-
-# ── Command builder ───────────────────────────────────────────────────────────
 
 def _wrap_with_system(prompt, system_prompt, session_id):
     if session_id or not system_prompt:
@@ -355,8 +347,6 @@ def _build_cli_cmd(provider, model, prompt, system_prompt=None, session_id=None,
     return None
 
 
-# ── Subprocess runners ──────────────────────────────────────────────────────
-
 def _run_subprocess(cmd, verbose=False):
     if verbose:
         print(f"[cli_agent] running: {' '.join(cmd)}", file=os.sys.stderr)
@@ -417,8 +407,6 @@ def _run_subprocess_parsed(cmd, parser: _BaseStreamParser, verbose=False):
         }
 
 
-# ── Public API ──────────────────────────────────────────────────────────────
-
 def run_cli_agent(provider, prompt, model=None, system_prompt=None, session_id=None, history=None, images=None, think=None, n_samples=1, verbose=False):
     if not _is_cli_provider(provider):
         return {"response": f"Unknown CLI provider: {provider}", "output": f"Unknown CLI provider: {provider}", "messages": [], "usage": {}}
@@ -428,7 +416,6 @@ def run_cli_agent(provider, prompt, model=None, system_prompt=None, session_id=N
         if resolver:
             session_id = resolver()
 
-    # For claude: pre-assign a UUID on first call so subsequent calls reuse it
     if provider in ("claude", "claude_code") and not session_id:
         session_id = str(uuid.uuid4())
 
@@ -445,7 +432,6 @@ def run_cli_agent(provider, prompt, model=None, system_prompt=None, session_id=N
                 result = _run_subprocess_parsed(cmd, parser_cls(), verbose=verbose)
             else:
                 result = _run_subprocess(cmd, verbose=verbose)
-            # Extract post-run usage for kimi
             if provider in _USAGE_EXTRACTORS and result.get("session_id"):
                 extra_usage = _USAGE_EXTRACTORS[provider](result["session_id"])
                 if extra_usage:
@@ -462,7 +448,6 @@ def run_cli_agent(provider, prompt, model=None, system_prompt=None, session_id=N
     else:
         result = _run_subprocess(cmd, verbose=verbose)
 
-    # Extract post-run usage for kimi
     if provider in _USAGE_EXTRACTORS and result.get("session_id"):
         extra_usage = _USAGE_EXTRACTORS[provider](result["session_id"])
         if extra_usage:

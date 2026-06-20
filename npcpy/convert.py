@@ -29,11 +29,6 @@ import yaml
 from npcpy.npc_compiler import load_yaml_file
 
 
-# ---------------------------------------------------------------------------
-# IO + Jinja-compile helpers
-# ---------------------------------------------------------------------------
-
-
 def _read(path: str) -> str:
     with open(path, 'r', encoding='utf-8') as f:
         return f.read()
@@ -94,11 +89,6 @@ def _dump_frontmatter(fm: Dict[str, Any], body: str) -> str:
 
 def _slugify(name: str) -> str:
     return re.sub(r'[^A-Za-z0-9_.-]+', '_', name).strip('_') or 'step'
-
-
-# ---------------------------------------------------------------------------
-# jinx ↔ skill
-# ---------------------------------------------------------------------------
 
 
 def jinx_to_skill(jinx_path: str, out_dir: str) -> str:
@@ -240,11 +230,6 @@ def skill_to_jinx(skill_path: str, out_dir: str) -> str:
     out_path = os.path.join(out_dir, name + '.jinx')
     _write(out_path, yaml.safe_dump(jinx_data, sort_keys=False, default_flow_style=False))
     return out_path
-
-
-# ---------------------------------------------------------------------------
-# agents ↔ npc
-# ---------------------------------------------------------------------------
 
 
 def _iter_inline_agents_md(path: str) -> List[Tuple[str, Dict[str, Any], str]]:
@@ -435,11 +420,6 @@ def npc_to_agents(npc_path: str, out_dir: str, combined: bool = False) -> List[s
             _write(out_path, _dump_frontmatter(fm, body))
             written.append(out_path)
     return written
-
-
-# ---------------------------------------------------------------------------
-# CLI wrappers
-# ---------------------------------------------------------------------------
 
 
 def _cli_jinx_to_skill(argv: Optional[List[str]] = None) -> int:

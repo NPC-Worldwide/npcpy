@@ -52,10 +52,6 @@ class NPCServerState:
             db_conn=db_conn,
         )
 
-        # Resolve active NPC: explicit arg > forenpc > first NPC.
-        # If caller asked for a specific NPC that's NOT in this team, fail loudly
-        # — silent fallback to forenpc is what makes the incognide MCP picker look
-        # empty when a user picks an NPC whose team doesn't match the selected server.
         if npc_name:
             if npc_name in self.team.npcs:
                 self.active_npc = self.team.npcs[npc_name]
@@ -75,7 +71,6 @@ class NPCServerState:
         else:
             self.active_npc = None
 
-        # Track which jinx tool names are currently registered
         self._registered_jinx_names = set()
 
         if self.active_npc:
@@ -137,9 +132,6 @@ class NPCServerState:
         if not jinx:
             return f"Jinx '{tool_name}' not found."
 
-        # For jinxes that use engine: X (e.g. engine: incognide), the compiled
-        # steps contain the engine's code which reads action/args from context.
-        # Reconstruct those from _raw_steps and render templates with the MCP args.
         if hasattr(jinx, '_raw_steps') and jinx._raw_steps:
             from jinja2.sandbox import SandboxedEnvironment
             env = SandboxedEnvironment()
@@ -190,9 +182,7 @@ class NPCServerState:
 
         self.active_npc = self.team.npcs[npc_name]
 
-        # Swap jinx tools
         if self.mcp:
-            # Remove old jinx tools
             for name in list(self._registered_jinx_names):
                 try:
                     self.mcp.remove_tool(name)
@@ -200,10 +190,8 @@ class NPCServerState:
                     pass
             self._registered_jinx_names.clear()
 
-            # Register new NPC's jinxes
             _register_jinxes(self.mcp, self)
 
-            # Notify client to re-fetch tool list
             if ctx:
                 try:
                     session = ctx.request_context.session

@@ -97,8 +97,6 @@ def _build_system_prompt(npc_name: str, selected: dict, npcs: dict) -> str:
     return "\n".join(parts)
 
 
-# ── Launchers ──
-
 def launch_claude(npc_name, selected, npcs, extra_args):
     agents = {}
     for name, info in npcs.items():
@@ -124,7 +122,6 @@ def launch_gemini(npc_name, selected, npcs, extra_args):
     import tempfile
     prompt = _build_system_prompt(npc_name, selected, npcs)
 
-    # Gemini CLI uses GEMINI_SYSTEM_MD env var pointing to a markdown file
     with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, prefix=f'npc_{npc_name}_') as f:
         f.write(prompt)
         prompt_file = f.name
@@ -139,11 +136,9 @@ def launch_gemini(npc_name, selected, npcs, extra_args):
 
 
 def launch_opencode(npc_name, selected, npcs, extra_args):
-    # OpenCode uses AGENT.md or config.json agents
     prompt = _build_system_prompt(npc_name, selected, npcs)
     agent_md = os.path.join(os.getcwd(), "AGENT.md")
 
-    # Write/update AGENT.md in current directory
     with open(agent_md, "w") as f:
         f.write(prompt)
 
@@ -159,7 +154,6 @@ def launch_aider(npc_name, selected, npcs, extra_args):
     import tempfile
     prompt = _build_system_prompt(npc_name, selected, npcs)
 
-    # Aider uses --read for static context files
     with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, prefix=f'npc_{npc_name}_') as f:
         f.write(prompt)
         prompt_file = f.name
@@ -172,7 +166,6 @@ def launch_aider(npc_name, selected, npcs, extra_args):
 
 
 def launch_amp(npc_name, selected, npcs, extra_args):
-    # Amp uses AGENT.md in project root
     prompt = _build_system_prompt(npc_name, selected, npcs)
     agent_md = os.path.join(os.getcwd(), "AGENT.md")
 
@@ -225,7 +218,6 @@ def launch(tool: str = "claude", team_path: Optional[str] = None,
 
 
 def main():
-    # Auto-detect tool from how we were invoked (npc-claude, npc-codex, etc.)
     invoked = os.path.basename(sys.argv[0])
     default_tool = invoked.replace("npc-", "") if invoked.startswith("npc-") else "claude"
     if default_tool not in TOOLS:

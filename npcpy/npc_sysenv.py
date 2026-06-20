@@ -416,7 +416,6 @@ def render_markdown(text: str) -> None:
         if not prose_lines:
             return
         import re
-        # Normalize CR/CRLF and collapse 3+ consecutive blank lines to 2.
         block = "\n".join(ln.rstrip('\r') for ln in prose_lines)
         block = re.sub(r'\n{3,}', '\n\n', block)
 
@@ -457,7 +456,6 @@ def render_markdown(text: str) -> None:
                 struct_acc.append(ln)
             elif not ln.strip():
                 if in_struct:
-                    # Suppress blank if the next non-blank line is also structured.
                     j = i + 1
                     while j < len(lines) and not lines[j].strip():
                         j += 1
@@ -485,8 +483,6 @@ def render_markdown(text: str) -> None:
             if not seg.strip():
                 continue
             if is_str:
-                # Verbatim output preserves box-drawing structure.
-                # Rich Markdown would join consecutive lines as soft-breaks.
                 sys.stdout.write(seg + '\n')
                 sys.stdout.flush()
             else:
@@ -1038,8 +1034,6 @@ gemini_api_key = os.getenv("GEMINI_API_KEY", None)
 anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", None)
 openai_api_key = os.getenv("OPENAI_API_KEY", None)
 
-
-# ── Team sync (git-based) ──────────────────────────────────────────
 
 def resolve_team_dir(team_path=None):
     """Resolve the team directory from a team_path identifier.
