@@ -69,9 +69,6 @@ def sanitize_messages(messages: list) -> list:
                 ids.add(tc_id)
         return ids
 
-    # Pass 1: for each assistant with tool_calls, check that ALL tool_call_ids
-    # are fulfilled by immediately following tool messages.  Collect fulfilled
-    # IDs only from the contiguous run of tool messages right after the assistant.
     cleaned = []
     i = 0
     while i < len(messages):
@@ -80,7 +77,6 @@ def sanitize_messages(messages: list) -> list:
         if msg.get('role') == 'assistant' and msg.get('tool_calls'):
             expected_ids = _extract_tc_ids(msg['tool_calls'])
 
-            # Collect tool results that immediately follow this assistant message
             fulfilled_ids = set()
             j = i + 1
             while j < len(messages) and messages[j].get('role') == 'tool':
@@ -90,26 +86,21 @@ def sanitize_messages(messages: list) -> list:
                 j += 1
 
             if expected_ids and expected_ids.issubset(fulfilled_ids):
-                # Valid pair — keep assistant and all its tool results
                 cleaned.append(msg)
                 for k in range(i + 1, j):
                     cleaned.append(messages[k])
                 i = j
             elif not expected_ids and j > i + 1:
-                # Tool calls without IDs (e.g. Ollama) but with following results — keep both
                 cleaned.append(msg)
                 for k in range(i + 1, j):
                     cleaned.append(messages[k])
                 i = j
             else:
-                # Orphaned tool_use — strip tool_calls, keep text content if any
                 text_content = msg.get('content')
                 if text_content:
                     cleaned.append({'role': 'assistant', 'content': text_content})
-                # Also skip any partial tool results that followed
                 i = j
         elif msg.get('role') == 'tool':
-            # Stray tool result not preceded by an assistant with tool_calls
             content = msg.get('content', '')
             name = msg.get('name', 'tool')
             cleaned.append({
@@ -121,8 +112,6 @@ def sanitize_messages(messages: list) -> list:
             cleaned.append(msg)
             i += 1
 
-    # Pass 2: merge consecutive same-role messages (except system).
-    # Anthropic requires strict user/assistant alternation.
     merged = []
     for msg in cleaned:
         role = msg.get('role', '')
@@ -137,11 +126,7 @@ def sanitize_messages(messages: list) -> list:
         else:
             merged.append(msg)
 
-    # Pass 3: ensure conversation doesn't end with an assistant message.
-    # Anthropic rejects "assistant message prefill" — last msg must be user/tool.
     while merged and merged[-1].get('role') == 'assistant' and not merged[-1].get('tool_calls'):
-        # If the last non-system message is assistant text, drop it from the tail.
-        # The caller will re-add the user prompt or tool result.
         merged.pop()
 
     return merged
@@ -216,7 +201,6 @@ def get_model_context_window(model: str, provider: str = None) -> int:
     if not model:
         return 0
 
-    # Try litellm first - it has a comprehensive model database
     try:
         info = litellm.get_model_info(model)
         ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
@@ -225,7 +209,6 @@ def get_model_context_window(model: str, provider: str = None) -> int:
     except Exception:
         pass
 
-    # Try with provider prefix if given
     if provider:
         try:
             prefixed = f"{provider}/{model}"
@@ -236,7 +219,6 @@ def get_model_context_window(model: str, provider: str = None) -> int:
         except Exception:
             pass
 
-    # Fallback: query ollama directly for local models
     resolved_provider = provider
     if not resolved_provider:
         try:
@@ -254,7 +236,6 @@ def get_model_context_window(model: str, provider: str = None) -> int:
                     return int(val)
         except Exception:
             pass
-        # ollama default
         return int(os.environ.get("OLLAMA_NUM_CTX", 32768))
 
     return 0
@@ -389,14 +370,16 @@ def get_ollama_response(
     """
     _require_ollama()
 
-    # Create a fresh client so OLLAMA_API_KEY / OLLAMA_HOST are read at
-    # call time rather than at module import time.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+    except Exception:
+        pass
+
     client = ollama.Client()
 
     options = {}
 
-    # Set num_ctx from environment or kwargs (default 32768).
-    # Ollama defaults to 4096 which is too small for multi-turn tool use.
     num_ctx = int(os.environ.get("OLLAMA_NUM_CTX", 0)) or kwargs.pop("num_ctx", 32768)
     options["num_ctx"] = num_ctx
 
@@ -576,7 +559,6 @@ def get_ollama_response(
             result["response"] = res
             return result
 
-        # Extract usage if available
         if hasattr(res, 'prompt_eval_count') or 'prompt_eval_count' in res:
             input_tokens = getattr(res, 'prompt_eval_count', None) or res.get('prompt_eval_count', 0) or 0
             output_tokens = getattr(res, 'eval_count', None) or res.get('eval_count', 0) or 0
@@ -585,7 +567,6 @@ def get_ollama_response(
                 "output_tokens": output_tokens,
             }
 
-        # Always extract response content
         message = res.get("message", {})
         response_content = message.get("content", "")
         result["response"] = response_content
@@ -1533,11 +1514,9 @@ def get_litellm_response(
                  "extra_headers", "parallel_tool_calls",
                 "response_format", "user", "timeout", "think", "thinking", "reasoning_effort",
             ]:
-                # Handle temperature/top_p conflict for Claude models
                 if key == "temperature" and "claude" in str(api_params.get("model", "")).lower():
                     api_params[key] = value
                 elif key == "top_p" and "claude" in str(api_params.get("model", "")).lower():
-                    # Only add top_p for Claude if temperature is not provided
                     if "temperature" not in kwargs:
                         api_params[key] = value
                 else:
