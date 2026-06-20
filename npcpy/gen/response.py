@@ -246,7 +246,8 @@ def get_model_context_window(model: str, provider: str = None) -> int:
 
     if resolved_provider == "ollama":
         try:
-            info = ollama.show(model)
+            client = ollama.Client()
+            info = client.show(model)
             params = info.get("model_info", {})
             for key, val in params.items():
                 if "context_length" in key:
@@ -387,6 +388,10 @@ def get_ollama_response(
     Generates a response using the Ollama API, supporting both streaming and non-streaming.
     """
     _require_ollama()
+
+    # Create a fresh client so OLLAMA_API_KEY / OLLAMA_HOST are read at
+    # call time rather than at module import time.
+    client = ollama.Client()
 
     options = {}
 
@@ -564,7 +569,7 @@ def get_ollama_response(
     result["messages"] = api_params["messages"]
 
     if not auto_process_tool_calls or not (tools and tool_map):
-        res = ollama.chat(**api_params, options=options)
+        res = client.chat(**api_params, options=options)
         result["raw_response"] = res
 
         if stream:
@@ -622,7 +627,7 @@ def get_ollama_response(
         return result
 
     logger.debug(f"ollama api_params: {api_params}")
-    res = ollama.chat(**api_params, options=options)
+    res = client.chat(**api_params, options=options)
     result["raw_response"] = res
     
     
@@ -685,10 +690,10 @@ def get_ollama_response(
         }
 
         if stream:
-            final_stream = ollama.chat(**final_api_params, options=options)
+            final_stream = client.chat(**final_api_params, options=options)
             processed_result["response"] = final_stream
         else:
-            final_resp = ollama.chat(**final_api_params, options=options)
+            final_resp = client.chat(**final_api_params, options=options)
             final_message = final_resp.get("message", {})
             final_content = final_message.get("content", "")
             if final_content:
@@ -716,7 +721,7 @@ def get_ollama_response(
             if tools:
                 stream_api_params["tools"] = tools
             
-            result["response"] = ollama.chat(**stream_api_params, options=options)
+            result["response"] = client.chat(**stream_api_params, options=options)
         else:
 
             if format == "json":
