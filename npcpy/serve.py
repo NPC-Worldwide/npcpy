@@ -10,12 +10,13 @@ except ImportError:
     redis = None
 import threading
 import uuid
-import sys 
+import sys
 import traceback
 import glob
 import re
 import time
 import asyncio
+import argparse
 from typing import Optional, List, Dict, Callable, Any
 from contextlib import AsyncExitStack
 
@@ -610,8 +611,11 @@ def load_kg_data(store_paths=None):
 
 
 def _get_registered_stores():
-    """Read ~/.incognide/kg_registry.yaml and return list of store directory paths."""
-    registry_path = os.path.expanduser('~/.incognide/kg_registry.yaml')
+    """Read the configured KG registry YAML and return store directory paths."""
+    registry_path = app.config.get('KG_REGISTRY_PATH')
+    if not registry_path:
+        return []
+    registry_path = os.path.expanduser(registry_path)
     if not os.path.exists(registry_path):
         return []
     try:
@@ -4757,14 +4761,14 @@ def get_available_image_models(current_path=None):
     
     all_image_models = []
 
-    env_image_model = os.getenv("INCOGNIDE_IMAGE_MODEL")
-    env_image_provider = os.getenv("INCOGNIDE_IMAGE_PROVIDER")
+    cfg_image_model = app.config.get('IMAGE_MODEL')
+    cfg_image_provider = app.config.get('IMAGE_PROVIDER')
 
-    if env_image_model and env_image_provider:
+    if cfg_image_model and cfg_image_provider:
         all_image_models.append({
-            "value": env_image_model,
-            "provider": env_image_provider,
-            "display_name": f"{env_image_model} | {env_image_provider} (Configured)"
+            "value": cfg_image_model,
+            "provider": cfg_image_provider,
+            "display_name": f"{cfg_image_model} | {cfg_image_provider} (Configured)"
         })
 
     for provider_key, models_list in IMAGE_MODELS.items():
@@ -7683,9 +7687,9 @@ def scan_gguf_models():
         os.path.expanduser('~/.cache/huggingface/hub'),
     ]
 
-    env_dir = os.environ.get('INCOGNIDE_GGUF_DIR')
-    if env_dir:
-        default_dirs.insert(0, os.path.expanduser(env_dir))
+    cfg_dir = app.config.get('GGUF_DIR')
+    if cfg_dir:
+        default_dirs.insert(0, os.path.expanduser(cfg_dir))
 
     dirs_to_scan = [os.path.expanduser(directory)] if directory else default_dirs
 
@@ -8065,13 +8069,19 @@ def track_activity():
 
 def start_flask_server(
     port=5337,
+    host="0.0.0.0",
     cors_origins=None,
     static_files=None,
     debug=False,
     teams=None,
     npcs=None,
     db_path: str ='',
-    user_npc_directory = None
+    user_npc_directory = None,
+    data_dir = None,
+    kg_registry = None,
+    image_model = None,
+    image_provider = None,
+    gguf_dir = None,
 ):
     try:
         if teams:
@@ -8086,6 +8096,11 @@ def start_flask_server(
             app.registered_npcs = {}
         app.config['DB_PATH'] = db_path
         app.config['user_npc_directory'] = user_npc_directory
+        app.config['DATA_DIR'] = data_dir
+        app.config['KG_REGISTRY_PATH'] = kg_registry
+        app.config['IMAGE_MODEL'] = image_model
+        app.config['IMAGE_PROVIDER'] = image_provider
+        app.config['GGUF_DIR'] = gguf_dir
         if cors_origins:
             CORS(
                 app,
@@ -8094,8 +8109,8 @@ def start_flask_server(
                 methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                 supports_credentials=True,
             )
-        print(f"Starting Flask server on http://0.0.0.0:{port}")
-        app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
+        print(f"Starting Flask server on http://{host}:{port}")
+        app.run(host=host, port=port, debug=debug, threaded=True)
     except OSError as e:
         if "Address already in use" in str(e) or "10048" in str(e):
             print(f"Address already in use")
@@ -8108,29 +8123,80 @@ def start_flask_server(
         raise
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generic npcpy API server")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind the server on")
+    parser.add_argument("--port", type=int, default=5337, help="Port to bind the server on")
+    parser.add_argument("--db-path", default=None, help="Path to the SQLite history database")
+    parser.add_argument("--dir", default=".", help="Path to the NPC directory (default: current working directory)")
+    parser.add_argument("--data-dir", default=None, help="Path to the server data directory")
+    parser.add_argument("--kg-registry", default=None, help="Path to a YAML KG registry file")
+    parser.add_argument("--image-model", default=None, help="Default image generation model")
+    parser.add_argument("--image-provider", default=None, help="Default image generation provider")
+    parser.add_argument("--gguf-dir", default=None, help="Directory to scan for GGUF models")
+    parser.add_argument("--team", action="append", dest="teams", default=None, help="Path to a team directory to register (can be given multiple times)")
+    parser.add_argument("--teams-yaml", default=None, help="Path to a YAML file mapping team names to team directory paths")
+    args = parser.parse_args()
 
     base_dir = os.path.expanduser("~/.npcpy")
-    db_path = os.environ.get('INCOGNIDE_DB_PATH', os.path.join(base_dir, "history.db"))
-    user_npc_directory = os.environ.get('USER_NPC_DIRECTORY', os.path.join(base_dir, "npc_team"))
+    db_path = args.db_path or os.path.join(base_dir, "history.db")
+    npc_dir = os.path.abspath(os.path.expanduser(args.dir))
+    data_dir = args.data_dir or os.path.join(base_dir, "data")
+    kg_registry = args.kg_registry
 
     try:
         db_dir = os.path.dirname(db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
-        os.makedirs(user_npc_directory, exist_ok=True)
-        os.makedirs(os.path.join(user_npc_directory, "jinxes"), exist_ok=True)
-        data_dir = os.environ.get('INCOGNIDE_DATA_DIR', os.path.join(base_dir, "data"))
+        os.makedirs(npc_dir, exist_ok=True)
+        os.makedirs(os.path.join(npc_dir, "jinxes"), exist_ok=True)
         os.makedirs(data_dir, exist_ok=True)
     except Exception as dir_err:
         print(f"[SERVE] Warning: Could not create directories: {dir_err}")
 
-    port = int(os.environ.get('INCOGNIDE_PORT', 5337))
+    teams = {}
+    if args.teams_yaml:
+        teams_yaml_path = os.path.abspath(os.path.expanduser(args.teams_yaml))
+        if os.path.isfile(teams_yaml_path):
+            try:
+                with open(teams_yaml_path, 'r') as f:
+                    yaml_data = yaml.safe_load(f) or {}
+                loaded = yaml_data.get('teams', yaml_data)
+                if isinstance(loaded, dict):
+                    for team_name, team_path in loaded.items():
+                        team_path = os.path.abspath(os.path.expanduser(str(team_path)))
+                        if os.path.isdir(team_path):
+                            teams[str(team_name)] = team_path
+                elif isinstance(loaded, list):
+                    for team_path in loaded:
+                        team_path = os.path.abspath(os.path.expanduser(str(team_path)))
+                        if os.path.isdir(team_path):
+                            team_name = os.path.basename(team_path)
+                            teams[team_name] = team_path
+            except Exception as e:
+                print(f"[SERVE] Warning: Could not load teams YAML {teams_yaml_path}: {e}")
+    if args.teams:
+        for team_path in args.teams:
+            team_path = os.path.abspath(os.path.expanduser(team_path))
+            if os.path.isdir(team_path):
+                team_name = os.path.basename(team_path)
+                teams[team_name] = team_path
 
     try:
-        start_flask_server(db_path=db_path, user_npc_directory=user_npc_directory, port=port)
+        start_flask_server(
+            host=args.host,
+            port=args.port,
+            db_path=db_path,
+            user_npc_directory=npc_dir,
+            data_dir=data_dir,
+            kg_registry=kg_registry,
+            image_model=args.image_model,
+            image_provider=args.image_provider,
+            gguf_dir=args.gguf_dir,
+            teams=teams,
+        )
     except OSError as e:
         if "Address already in use" in str(e) or "10048" in str(e):
-            print(f"Port {port} is in use by another program. Either identify and stop that program, or start the server with a different port.")
+            print(f"Port {args.port} is in use by another program. Either identify and stop that program, or start the server with a different port.")
         else:
             print(f"[SERVE] Failed to start server: {e}")
         sys.exit(1)
