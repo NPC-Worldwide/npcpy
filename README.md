@@ -707,9 +707,9 @@ for npc, result in zip(npcs, results.data):
 You can also pass a list directly to `jinx.execute()`:
 
 ```python
-from npcpy.npc_compiler import load_jinx_from_file
+from npcpy.npc_compiler import Jinx
 
-jinx = load_jinx_from_file('npc_team/jinxes/analyze.jinx')
+jinx = Jinx(jinx_path='npc_team/jinxes/analyze.jinx')
 results = jinx.execute({'topic': 'rate limiting'}, npc=npcs)  # list → parallel NPCArray run
 ```
 
