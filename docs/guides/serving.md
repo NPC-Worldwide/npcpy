@@ -1,6 +1,6 @@
 # Serving & Deployment
 
-npcpy ships with a built-in Flask server that exposes your NPC teams as REST API endpoints. You can register NPCs and teams at startup, then interact with them over HTTP from any language or framework. The server handles streaming responses, conversation history, jinx execution, model management, and an OpenAI-compatible completions endpoint.
+npcpy ships with a built-in Flask server that exposes your NPC teams as REST API endpoints. You can register NPCs and teams at startup, then interact with them over HTTP from any language or framework. The server handles streaming responses, jinx execution, model management, and an OpenAI-compatible completions endpoint.
 
 ## Basic Server Setup
 
@@ -349,6 +349,8 @@ completion = requests.post(
 ).json()
 print(completion["choices"][0]["message"]["content"])
 ```
+
+> **Note on conversation persistence:** `npcpy.serve` does **not** read from or write to any conversation-history database. Callers are responsible for maintaining message context. Pass a `messages` array to `/api/stream`, or persist the returned assistant content in your own store.
 
 ## Team with Tools Example
 
