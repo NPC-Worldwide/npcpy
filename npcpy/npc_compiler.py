@@ -1634,8 +1634,6 @@ class NPC:
                             self.api_key = os.path.expandvars(prov['api_key'])
                         if not self.model and prov.get('model'):
                             self.model = prov['model']
-                        if prov.get('provider_type'):
-                            self.provider = prov['provider_type']
                         break
 
 
