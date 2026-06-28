@@ -5598,18 +5598,19 @@ def stream():
         except AttributeError:
             api_url = None
 
+    thinking_kwargs = {}
+    if disable_thinking:
+        if provider in ('ollama',):
+            thinking_kwargs['think'] = False
+        else:
+            thinking_kwargs['reasoning_effort'] = 'none'
+    elif provider in ('anthropic',):
+        thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
+        if params and 'temperature' in params:
+            del params['temperature']
+
     if exe_mode == 'chat':
         print(f"[DEBUG] Calling get_llm_response with images={images}, attachments={attachment_paths_for_llm}")
-        thinking_kwargs = {}
-        if disable_thinking:
-            if provider in ('ollama',):
-                thinking_kwargs['think'] = False
-            else:
-                thinking_kwargs['reasoning_effort'] = 'none'
-        elif provider in ('anthropic',):
-            thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
-            if params and 'temperature' in params:
-                del params['temperature']
         stream_response = get_llm_response(
             commandstr,
             messages=messages,
@@ -5739,8 +5740,9 @@ IMPORTANT AGENT BEHAVIOR:
                     tools=tools_for_llm,
                     stream=True,
                     team=team_object,
-                    context=agent_context,
+                    context=agent_context if iteration == 1 else None,
                     **(params or {}),
+                    **thinking_kwargs,
                 )
                 print('RESPONSE', llm_response)
 
