@@ -146,9 +146,12 @@ def _setup_stream(data):
         cancellation_flags[stream_id] = False
     return stream_id
 
-def _cleanup_stream(stream_id):
+def _cleanup_stream(stream_id, mcp_state_key=None):
     with cancellation_lock:
         cancellation_flags.pop(stream_id, None)
+    if mcp_state_key and hasattr(app, 'mcp_clients') and mcp_state_key in app.mcp_clients:
+        print(f"[CLEANUP] Removing MCP state for {mcp_state_key}")
+        del app.mcp_clients[mcp_state_key]
 
 def _serialize_jinxes_from_dir(directory):
     jinx_data = []
@@ -5697,6 +5700,7 @@ def stream():
         if not hasattr(app, 'mcp_clients'):
             app.mcp_clients = {}
         state_key = f"{conversation_id}_{npc_name or 'default'}"
+        app._last_mcp_state_key = state_key
         if state_key not in app.mcp_clients:
             app.mcp_clients[state_key] = {"client": None, "server_path": None, "messages": messages}
         messages = app.mcp_clients[state_key].get("messages", messages)
@@ -5910,6 +5914,11 @@ IMPORTANT AGENT BEHAVIOR:
 
                 tool_results = []
                 for tc in collected_tool_calls:
+                    with cancellation_lock:
+                        if cancellation_flags.get(stream_id, False):
+                            yield {"type": "interrupt"}
+                            return
+
                     tool_name = tc["function"]["name"]
                     tool_args = tc["function"]["arguments"]
                     tool_id = tc["id"]
@@ -6294,7 +6303,7 @@ IMPORTANT AGENT BEHAVIOR:
                 yield f"data: {json.dumps({'type': 'usage', 'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'cost': stream_cost or 0})}\n\n"
 
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
-            _cleanup_stream(current_stream_id)
+            _cleanup_stream(current_stream_id, getattr(app, '_last_mcp_state_key', None))
     return Response(event_stream(stream_id), mimetype="text/event-stream", headers={
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
@@ -6531,6 +6540,11 @@ def interrupt_stream():
     with cancellation_lock:
         print(f"Received interruption request for stream ID: {stream_id_to_cancel}")
         cancellation_flags[stream_id_to_cancel] = True
+
+    mcp_state_key = getattr(app, '_last_mcp_state_key', None)
+    if mcp_state_key and hasattr(app, 'mcp_clients') and mcp_state_key in app.mcp_clients:
+        print(f"[INTERRUPT] Removing MCP state for {mcp_state_key}")
+        del app.mcp_clients[mcp_state_key]
 
     return jsonify({"success": True, "message": f"Interruption for stream {stream_id_to_cancel} registered."})
 
