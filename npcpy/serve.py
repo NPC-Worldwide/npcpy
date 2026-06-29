@@ -2252,6 +2252,28 @@ def get_models():
     print(f"[models] Returning {len(formatted_models)} team-configured models")
     return jsonify({"models": formatted_models, "error": None})
 
+@app.route("/api/available_models", methods=["GET"])
+def get_available_models():
+    current_path = request.args.get("currentPath") or os.path.expanduser('~')
+    try:
+        available = get_locally_available_models(current_path, airplane_mode=False)
+        models = []
+        seen = set()
+        for model_name, model_provider in available.items():
+            key = (model_name, model_provider)
+            if key in seen:
+                continue
+            seen.add(key)
+            models.append({
+                "value": model_name,
+                "provider": model_provider,
+                "display_name": f"{model_name} | {model_provider}",
+            })
+        return jsonify({"models": models, "error": None})
+    except Exception as e:
+        print(f"[available_models] Failed: {e}")
+        return jsonify({"models": [], "error": str(e)})
+
 @app.route('/api/<command>', methods=['POST'])
 def api_command(command):
     data = request.json or {}
@@ -5576,18 +5598,19 @@ def stream():
         except AttributeError:
             api_url = None
 
+    thinking_kwargs = {}
+    if disable_thinking:
+        if provider in ('ollama',):
+            thinking_kwargs['think'] = False
+        else:
+            thinking_kwargs['reasoning_effort'] = 'none'
+    elif provider in ('anthropic',):
+        thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
+        if params and 'temperature' in params:
+            del params['temperature']
+
     if exe_mode == 'chat':
         print(f"[DEBUG] Calling get_llm_response with images={images}, attachments={attachment_paths_for_llm}")
-        thinking_kwargs = {}
-        if disable_thinking:
-            if provider in ('ollama',):
-                thinking_kwargs['think'] = False
-            else:
-                thinking_kwargs['reasoning_effort'] = 'none'
-        elif provider in ('anthropic',):
-            thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
-            if params and 'temperature' in params:
-                del params['temperature']
         stream_response = get_llm_response(
             commandstr,
             messages=messages,
@@ -5717,8 +5740,9 @@ IMPORTANT AGENT BEHAVIOR:
                     tools=tools_for_llm,
                     stream=True,
                     team=team_object,
-                    context=agent_context,
+                    context=agent_context if iteration == 1 else None,
                     **(params or {}),
+                    **thinking_kwargs,
                 )
                 print('RESPONSE', llm_response)
 
@@ -5730,7 +5754,9 @@ IMPORTANT AGENT BEHAVIOR:
                 collected_tool_calls = []
                 agent_tool_call_data = {"id": None, "function_name": None, "arguments": ""}
 
+                last_response_chunk = None
                 for response_chunk in stream:
+                    last_response_chunk = response_chunk
                     with cancellation_lock:
                         if cancellation_flags.get(stream_id, False):
                             yield {"type": "interrupt"}
@@ -5827,6 +5853,21 @@ IMPORTANT AGENT BEHAVIOR:
 
                 if not collected_tool_calls:
                     print("[MCP] no tool calls, finishing streaming loop")
+                    if last_response_chunk is not None:
+                        chunk_usage = getattr(last_response_chunk, 'usage', None)
+                        if chunk_usage is None and isinstance(last_response_chunk, dict):
+                            chunk_usage = last_response_chunk.get('usage')
+                        if chunk_usage:
+                            inp = getattr(chunk_usage, 'prompt_tokens', None) or (chunk_usage.get('prompt_tokens', 0) if isinstance(chunk_usage, dict) else 0)
+                            out = getattr(chunk_usage, 'completion_tokens', None) or (chunk_usage.get('completion_tokens', 0) if isinstance(chunk_usage, dict) else 0)
+                            if inp: total_input_tokens += inp
+                            if out: total_output_tokens += out
+                        prompt_eval = getattr(last_response_chunk, 'prompt_eval_count', None)
+                        eval_count = getattr(last_response_chunk, 'eval_count', None)
+                        if prompt_eval:
+                            total_input_tokens += prompt_eval
+                        if eval_count:
+                            total_output_tokens += eval_count
                     break
 
                 print(f"[MCP] collected tool calls: {[tc['function']['name'] for tc in collected_tool_calls]}")
@@ -5957,7 +5998,8 @@ IMPORTANT AGENT BEHAVIOR:
 
             app.mcp_clients[state_key]["messages"] = messages
             mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else 0
-            yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
+            if total_input_tokens or total_output_tokens:
+                yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
             return
         stream_response = stream_mcp_sse()
 
@@ -6101,7 +6143,9 @@ IMPORTANT AGENT BEHAVIOR:
                       error_msg = stream_response['error']
                       yield f"data: {json.dumps({'choices': [{'delta': {'content': f'Error: {error_msg}', 'role': 'assistant'}, 'finish_reason': 'stop'}]})}\n\n"
                       return
+                  last_response_chunk = None
                   for response_chunk in stream_response.get('response', stream_response.get('output')):
+                    last_response_chunk = response_chunk
                     with cancellation_lock:
                         if cancellation_flags.get(current_stream_id, False):
                             print(f"Cancellation flag triggered for {current_stream_id}. Breaking loop.")
@@ -6217,6 +6261,22 @@ IMPORTANT AGENT BEHAVIOR:
                         total_input_tokens = prompt_eval
                     if eval_count:
                         total_output_tokens = eval_count
+
+                  if last_response_chunk is not None:
+                      final_usage = getattr(last_response_chunk, 'usage', None)
+                      if final_usage is None and isinstance(last_response_chunk, dict):
+                          final_usage = last_response_chunk.get('usage')
+                      if final_usage:
+                          inp = getattr(final_usage, 'prompt_tokens', None) or (final_usage.get('prompt_tokens', 0) if isinstance(final_usage, dict) else 0)
+                          out = getattr(final_usage, 'completion_tokens', None) or (final_usage.get('completion_tokens', 0) if isinstance(final_usage, dict) else 0)
+                          if inp: total_input_tokens = inp
+                          if out: total_output_tokens = out
+                      final_prompt_eval = getattr(last_response_chunk, 'prompt_eval_count', None)
+                      final_eval_count = getattr(last_response_chunk, 'eval_count', None)
+                      if final_prompt_eval:
+                          total_input_tokens = final_prompt_eval
+                      if final_eval_count:
+                          total_output_tokens = final_eval_count
 
         except Exception as e:
             print(f"\nAn exception occurred during streaming for {current_stream_id}: {e}")
