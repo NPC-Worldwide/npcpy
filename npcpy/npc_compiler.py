@@ -1229,7 +1229,7 @@ class NPC:
             provider: LLM provider to use
             api_url: API URL for LLM
             api_key: API key for LLM
-            db_conn: Database connection
+            db_conn: Deprecated/no-op. Use initialize_db() to attach a DB explicitly.
         """
         if not file and not name and not primary_directive:
             raise ValueError("Either 'file' or 'name' and 'primary_directive' must be provided")
@@ -1291,9 +1291,6 @@ class NPC:
         self.memory = None
         self.knowledge_manager = None
         self.knowledge_scopes = []
-
-        if self.db_conn:
-            self._setup_db()
 
         self.jinxes_dict = {}
         if jinxes and jinxes != "*": 
@@ -1766,6 +1763,13 @@ class NPC:
             return self.primary_directive
         else:
             return get_system_message(self, team=self.team, tool_capable=tool_capable)
+
+    def initialize_db(self, db_conn):
+        """Explicitly attach a database connection for DB-dependent features."""
+        if db_conn is None:
+            return
+        self.db_conn = db_conn
+        self._setup_db()
 
     def _setup_db(self):
         """Set up database tables and determine type, and initialize knowledge manager."""
@@ -2430,7 +2434,7 @@ class Team:
         Args:
             team_path: Path to team directory
             npcs: List of NPC objects
-            db_conn: Database connection
+            db_conn: Deprecated/no-op. DB features are opt-in via NPC.initialize_db().
             team_jinxes: Pre-loaded jinxes (sub-teams use the same jinxes as the team)
         """
         self._team_jinxes = team_jinxes
@@ -2695,7 +2699,7 @@ class Team:
         for filename in os.listdir(self.team_path):
             if filename.endswith(".npc"):
                 npc_path = os.path.join(self.team_path, filename)
-                npc = NPC(npc_path, db_conn=self.db_conn, team=self)
+                npc = NPC(npc_path, team=self)
                 if _is_cli_provider(npc.provider):
                     npc = CLIAgent(
                         cli_provider=npc.provider,
@@ -2705,7 +2709,6 @@ class Team:
                         provider=npc.provider,
                         api_url=npc.api_url,
                         api_key=npc.api_key,
-                        db_conn=self.db_conn,
                         team=self,
                     )
                 self.npcs[npc.name] = npc
@@ -2952,7 +2955,7 @@ class Team:
                 os.path.isdir(os.path.join(item_path, "agents"))
             )
             if has_npc or has_md_team:
-                sub_team = Team(team_path=item_path, db_conn=self.db_conn, team_jinxes=self._raw_jinxes_list)
+                sub_team = Team(team_path=item_path, team_jinxes=self._raw_jinxes_list)
                 self.sub_teams[item] = sub_team
         
     def _resolve_team_jinxes_spec(self):
@@ -3084,7 +3087,6 @@ class Team:
             model=model or self.model,
             provider=provider or self.provider,
             jinxes=jinxes_spec,
-            db_conn=self.db_conn,
         )
         npc.team = self
         if source_path:

@@ -37,18 +37,14 @@ def discover_team_path(explicit_path: Optional[str] = None) -> str:
 class NPCServerState:
     """Holds the loaded team, all NPCs, and tracks the active NPC."""
 
-    def __init__(self, team_path: str, npc_name: Optional[str] = None,
-                 db_conn=None):
+    def __init__(self, team_path: str, npc_name: Optional[str] = None):
         from npcpy.npc_compiler import Team
 
         self.team_path = team_path
         self.mcp = None
 
         print(f"[npc-mcp] Loading team from {team_path}", file=sys.stderr)
-        self.team = Team(
-            team_path=team_path,
-            db_conn=db_conn,
-        )
+        self.team = Team(team_path=team_path)
 
         if npc_name:
             if npc_name in self.team.npcs:

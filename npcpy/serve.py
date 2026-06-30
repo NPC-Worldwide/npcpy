@@ -729,23 +729,20 @@ extension_map = {
     "BZ2": "archives",
     "ISO": "archives",
 }
-def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
+def load_npc_by_name_and_source(name, source, current_path=None):
     """
-    Loads an NPC from either project or global directory based on source
-    
+    Loads an NPC from either project or global directory based on source.
+    Database features are opt-in via NPC.initialize_db(); no DB connection is
+    opened implicitly here.
+
     Args:
         name: The name of the NPC to load
         source: Either 'project' or 'global' indicating where to look for the NPC
-        db_conn: Optional database connection
         current_path: The current path where project NPCs should be looked for
-    
+
     Returns:
         NPC object or None if not found
     """
-    if not db_conn:
-        db_conn = get_db_connection()
-    
-    
     if source == 'project':
         directories = [get_project_npc_directory(current_path)]
     else:
@@ -763,7 +760,7 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
             )):
                 continue
         try:
-            team = Team(team_path=npc_directory, db_conn=db_conn)
+            team = Team(team_path=npc_directory)
             npc = team.npcs.get(name)
             if npc is not None:
                 return npc
@@ -2063,10 +2060,9 @@ def execute_jinx():
     jinx = None
     
     if npc_name:
-        db_conn = get_db_connection()
-        npc_object = load_npc_by_name_and_source(npc_name, npc_source, db_conn, current_path)
+        npc_object = load_npc_by_name_and_source(npc_name, npc_source, current_path)
         if not npc_object and npc_source == 'project':
-            npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
+            npc_object = load_npc_by_name_and_source(npc_name, 'global')
     else:
         npc_object = None
     
@@ -3853,7 +3849,7 @@ def get_npc_team_global():
 
     for team_dir in search_dirs:
         try:
-            team = Team(team_path=team_dir, db_conn=get_db_connection())
+            team = Team(team_path=team_dir)
             for name, npc in team.npcs.items():
                 if name not in seen_names:
                     seen_names.add(name)
@@ -3880,7 +3876,7 @@ def get_npc_team_project():
         return jsonify({"npcs": [], "error": None})
 
     try:
-        team = Team(team_path=project_npc_directory, db_conn=get_db_connection())
+        team = Team(team_path=project_npc_directory)
         npc_data = []
         for npc in team.npcs.values():
             d = npc.to_dict()
@@ -3898,7 +3894,7 @@ def get_npc_team_from_path():
     if not team_path or not os.path.isdir(team_path):
         return jsonify({"npcs": [], "error": "invalid path"})
     try:
-        team = Team(team_path=team_path, db_conn=get_db_connection())
+        team = Team(team_path=team_path)
         npc_data = []
         for npc in team.npcs.values():
             d = npc.to_dict()
@@ -4314,13 +4310,12 @@ def get_attachment_response():
     
     npc_object = None
     if npc_name:
-        db_conn = get_db_connection()
-        npc_object = load_npc_by_name_and_source(npc_name, npc_source, db_conn, current_path)
-        
+        npc_object = load_npc_by_name_and_source(npc_name, npc_source, current_path)
+
         if not npc_object and npc_source == 'project':
             print(f"NPC {npc_name} not found in project directory, trying global...")
-            npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
-            
+            npc_object = load_npc_by_name_and_source(npc_name, 'global')
+
         if npc_object:
             print(f"Successfully loaded NPC {npc_name} from {npc_source} directory")
         else:
@@ -5036,7 +5031,7 @@ def get_npc_tools():
                 npc_file = os.path.join(d, f"{npc_name_param}.npc")
                 if os.path.exists(npc_file):
                     try:
-                        team_obj = Team(team_path=d, db_conn=get_db_connection())
+                        team_obj = Team(team_path=d)
                         npc_obj = team_obj.npcs.get(npc_name_param)
                     except Exception as e:
                         print(f"[npc_tools] Failed to load team/NPC from {d}: {e}")
@@ -5350,12 +5345,9 @@ def stream():
     provider = data.get("provider", None)
     print(f"🔍 Stream request - model: {model}, provider from request: {provider}")
 
-    if model:
+    if provider is None and model:
         resolved_provider = available_models.get(model) or lookup_provider(model)
-        if resolved_provider and resolved_provider != provider:
-            print(f"🔍 Correcting provider from {provider} to {resolved_provider} for model {model}")
-            provider = resolved_provider
-        elif provider is None:
+        if resolved_provider:
             provider = resolved_provider
             print(f"🔍 Provider looked up from available_models/lookup_provider: {provider}")
 
@@ -5429,17 +5421,16 @@ def stream():
         if not npc_object and hasattr(app, 'registered_npcs') and npc_name in app.registered_npcs:
             npc_object = app.registered_npcs[npc_name]
             print(f"Found NPC {npc_name} in registered NPCs (no specific team)")
-            team_object = Team(team_path=npc_object.npc_directory, db_conn=db_conn)
+            team_object = Team(team_path=npc_object.npc_directory)
             npc_object.team = team_object
         if not npc_object and registered_teams:
-            db_conn = get_db_connection()
             print(f"[STREAM] Searching for {npc_name} in {len(registered_teams)} registered teams")
             for team_path in registered_teams:
                 if not team_path or not os.path.isdir(team_path):
                     print(f"[STREAM] Skipping invalid team path: {team_path}")
                     continue
                 try:
-                    team_obj = Team(team_path=team_path, db_conn=db_conn)
+                    team_obj = Team(team_path=team_path)
                     print(f"[STREAM] Loaded team {team_obj.name} from {team_path} with {len(team_obj.jinxes_dict)} jinxes, npcs: {list(team_obj.npcs.keys())}")
                     if npc_name in team_obj.npcs:
                         npc_object = team_obj.npcs[npc_name]
@@ -5459,26 +5450,22 @@ def stream():
                     continue
 
         if not npc_object:
-            db_conn = get_db_connection()
-            npc_object = load_npc_by_name_and_source(npc_name,
-                                                     npc_source,
-                                                     db_conn,
-                                                     current_path)
+            npc_object = load_npc_by_name_and_source(npc_name, npc_source, current_path)
             if not npc_object and npc_source == 'project':
                 print(f"NPC {npc_name} not found in project directory, trying global...")
-                npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
+                npc_object = load_npc_by_name_and_source(npc_name, 'global')
             if npc_object and hasattr(npc_object, 'npc_directory') and npc_object.npc_directory:
                 team_directory = npc_object.npc_directory
-                
+
                 if os.path.exists(team_directory):
-                    team_object = Team(team_path=team_directory, db_conn=db_conn)
+                    team_object = Team(team_path=team_directory)
                     print('team', team_object)
 
                 else:
-                    team_object = Team(npcs=[npc_object], db_conn=db_conn)
+                    team_object = Team(npcs=[npc_object])
                     team_object.name = os.path.basename(team_directory) if team_directory else f"{npc_name}_team"
                     npc_object.team = team_object
-                    print('team', team_object)                    
+                    print('team', team_object)
                 team_name = team_object.name
                 
                 if not hasattr(app, 'registered_teams'):
