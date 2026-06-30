@@ -416,6 +416,24 @@ class Jinx:
         self.steps = jinx_data.get("steps", [])
         self.file_context = jinx_data.get("file_context", [])
         self._source_path = jinx_data.get("_source_path", None)
+        self.permissions = jinx_data.get("permissions", {})
+        if not isinstance(self.permissions, dict):
+            self.permissions = {}
+        if "default" not in self.permissions:
+            self.permissions["default"] = "ask"
+
+    def set_permission(self, level: str):
+        """Persist a permission level to this jinx's metadata and source file."""
+        self.permissions["default"] = level
+        if self._source_path:
+            self.save(os.path.dirname(self._source_path))
+
+    def check_permission(self) -> str:
+        """Return this jinx's default permission level: allow, deny, or ask."""
+        level = self.permissions.get("default", "ask")
+        if level not in ("allow", "deny", "ask"):
+            return "ask"
+        return level
 
     def to_tool_def(self) -> Dict[str, Any]:
         """Convert this Jinx to an OpenAI-style tool definition."""
@@ -782,7 +800,9 @@ class Jinx:
         
         if self.npc:
             result["npc"] = self.npc
-            
+
+        result["permissions"] = self.permissions
+
         return result
 
     def save(self, directory):
@@ -1229,7 +1249,7 @@ class NPC:
             provider: LLM provider to use
             api_url: API URL for LLM
             api_key: API key for LLM
-            db_conn: Database connection
+            db_conn: Deprecated/no-op. Use initialize_db() to attach a DB explicitly.
         """
         if not file and not name and not primary_directive:
             raise ValueError("Either 'file' or 'name' and 'primary_directive' must be provided")
@@ -1291,9 +1311,6 @@ class NPC:
         self.memory = None
         self.knowledge_manager = None
         self.knowledge_scopes = []
-
-        if self.db_conn:
-            self._setup_db()
 
         self.jinxes_dict = {}
         if jinxes and jinxes != "*": 
@@ -1766,6 +1783,13 @@ class NPC:
             return self.primary_directive
         else:
             return get_system_message(self, team=self.team, tool_capable=tool_capable)
+
+    def initialize_db(self, db_conn):
+        """Explicitly attach a database connection for DB-dependent features."""
+        if db_conn is None:
+            return
+        self.db_conn = db_conn
+        self._setup_db()
 
     def _setup_db(self):
         """Set up database tables and determine type, and initialize knowledge manager."""
@@ -2430,7 +2454,7 @@ class Team:
         Args:
             team_path: Path to team directory
             npcs: List of NPC objects
-            db_conn: Database connection
+            db_conn: Deprecated/no-op. DB features are opt-in via NPC.initialize_db().
             team_jinxes: Pre-loaded jinxes (sub-teams use the same jinxes as the team)
         """
         self._team_jinxes = team_jinxes
@@ -2695,7 +2719,7 @@ class Team:
         for filename in os.listdir(self.team_path):
             if filename.endswith(".npc"):
                 npc_path = os.path.join(self.team_path, filename)
-                npc = NPC(npc_path, db_conn=self.db_conn, team=self)
+                npc = NPC(npc_path, team=self)
                 if _is_cli_provider(npc.provider):
                     npc = CLIAgent(
                         cli_provider=npc.provider,
@@ -2705,7 +2729,6 @@ class Team:
                         provider=npc.provider,
                         api_url=npc.api_url,
                         api_key=npc.api_key,
-                        db_conn=self.db_conn,
                         team=self,
                     )
                 self.npcs[npc.name] = npc
@@ -2952,7 +2975,7 @@ class Team:
                 os.path.isdir(os.path.join(item_path, "agents"))
             )
             if has_npc or has_md_team:
-                sub_team = Team(team_path=item_path, db_conn=self.db_conn, team_jinxes=self._raw_jinxes_list)
+                sub_team = Team(team_path=item_path, team_jinxes=self._raw_jinxes_list)
                 self.sub_teams[item] = sub_team
         
     def _resolve_team_jinxes_spec(self):
@@ -3084,7 +3107,6 @@ class Team:
             model=model or self.model,
             provider=provider or self.provider,
             jinxes=jinxes_spec,
-            db_conn=self.db_conn,
         )
         npc.team = self
         if source_path:

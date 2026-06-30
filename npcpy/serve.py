@@ -113,6 +113,10 @@ from flask_cors import CORS
 cancellation_flags = {}
 cancellation_lock = threading.Lock()
 
+# Pending permission requests from /api/stream to the Rust/frontend shell.
+permission_requests = {}
+permission_lock = threading.Lock()
+
 class ServeState:
     """Minimal server-side execution context for jinxes and tools.
     Minimal server-side execution context for jinxes and tools."""
@@ -146,9 +150,12 @@ def _setup_stream(data):
         cancellation_flags[stream_id] = False
     return stream_id
 
-def _cleanup_stream(stream_id):
+def _cleanup_stream(stream_id, mcp_state_key=None):
     with cancellation_lock:
         cancellation_flags.pop(stream_id, None)
+    if mcp_state_key and hasattr(app, 'mcp_clients') and mcp_state_key in app.mcp_clients:
+        print(f"[CLEANUP] Removing MCP state for {mcp_state_key}")
+        del app.mcp_clients[mcp_state_key]
 
 def _serialize_jinxes_from_dir(directory):
     jinx_data = []
@@ -726,23 +733,20 @@ extension_map = {
     "BZ2": "archives",
     "ISO": "archives",
 }
-def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
+def load_npc_by_name_and_source(name, source, current_path=None):
     """
-    Loads an NPC from either project or global directory based on source
-    
+    Loads an NPC from either project or global directory based on source.
+    Database features are opt-in via NPC.initialize_db(); no DB connection is
+    opened implicitly here.
+
     Args:
         name: The name of the NPC to load
         source: Either 'project' or 'global' indicating where to look for the NPC
-        db_conn: Optional database connection
         current_path: The current path where project NPCs should be looked for
-    
+
     Returns:
         NPC object or None if not found
     """
-    if not db_conn:
-        db_conn = get_db_connection()
-    
-    
     if source == 'project':
         directories = [get_project_npc_directory(current_path)]
     else:
@@ -760,7 +764,7 @@ def load_npc_by_name_and_source(name, source, db_conn=None, current_path=None):
             )):
                 continue
         try:
-            team = Team(team_path=npc_directory, db_conn=db_conn)
+            team = Team(team_path=npc_directory)
             npc = team.npcs.get(name)
             if npc is not None:
                 return npc
@@ -2060,10 +2064,9 @@ def execute_jinx():
     jinx = None
     
     if npc_name:
-        db_conn = get_db_connection()
-        npc_object = load_npc_by_name_and_source(npc_name, npc_source, db_conn, current_path)
+        npc_object = load_npc_by_name_and_source(npc_name, npc_source, current_path)
         if not npc_object and npc_source == 'project':
-            npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
+            npc_object = load_npc_by_name_and_source(npc_name, 'global')
     else:
         npc_object = None
     
@@ -3850,7 +3853,7 @@ def get_npc_team_global():
 
     for team_dir in search_dirs:
         try:
-            team = Team(team_path=team_dir, db_conn=get_db_connection())
+            team = Team(team_path=team_dir)
             for name, npc in team.npcs.items():
                 if name not in seen_names:
                     seen_names.add(name)
@@ -3877,7 +3880,7 @@ def get_npc_team_project():
         return jsonify({"npcs": [], "error": None})
 
     try:
-        team = Team(team_path=project_npc_directory, db_conn=get_db_connection())
+        team = Team(team_path=project_npc_directory)
         npc_data = []
         for npc in team.npcs.values():
             d = npc.to_dict()
@@ -3895,7 +3898,7 @@ def get_npc_team_from_path():
     if not team_path or not os.path.isdir(team_path):
         return jsonify({"npcs": [], "error": "invalid path"})
     try:
-        team = Team(team_path=team_path, db_conn=get_db_connection())
+        team = Team(team_path=team_path)
         npc_data = []
         for npc in team.npcs.values():
             d = npc.to_dict()
@@ -4311,13 +4314,12 @@ def get_attachment_response():
     
     npc_object = None
     if npc_name:
-        db_conn = get_db_connection()
-        npc_object = load_npc_by_name_and_source(npc_name, npc_source, db_conn, current_path)
-        
+        npc_object = load_npc_by_name_and_source(npc_name, npc_source, current_path)
+
         if not npc_object and npc_source == 'project':
             print(f"NPC {npc_name} not found in project directory, trying global...")
-            npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
-            
+            npc_object = load_npc_by_name_and_source(npc_name, 'global')
+
         if npc_object:
             print(f"Successfully loaded NPC {npc_name} from {npc_source} directory")
         else:
@@ -5033,7 +5035,7 @@ def get_npc_tools():
                 npc_file = os.path.join(d, f"{npc_name_param}.npc")
                 if os.path.exists(npc_file):
                     try:
-                        team_obj = Team(team_path=d, db_conn=get_db_connection())
+                        team_obj = Team(team_path=d)
                         npc_obj = team_obj.npcs.get(npc_name_param)
                     except Exception as e:
                         print(f"[npc_tools] Failed to load team/NPC from {d}: {e}")
@@ -5347,12 +5349,9 @@ def stream():
     provider = data.get("provider", None)
     print(f"🔍 Stream request - model: {model}, provider from request: {provider}")
 
-    if model:
+    if provider is None and model:
         resolved_provider = available_models.get(model) or lookup_provider(model)
-        if resolved_provider and resolved_provider != provider:
-            print(f"🔍 Correcting provider from {provider} to {resolved_provider} for model {model}")
-            provider = resolved_provider
-        elif provider is None:
+        if resolved_provider:
             provider = resolved_provider
             print(f"🔍 Provider looked up from available_models/lookup_provider: {provider}")
 
@@ -5426,17 +5425,16 @@ def stream():
         if not npc_object and hasattr(app, 'registered_npcs') and npc_name in app.registered_npcs:
             npc_object = app.registered_npcs[npc_name]
             print(f"Found NPC {npc_name} in registered NPCs (no specific team)")
-            team_object = Team(team_path=npc_object.npc_directory, db_conn=db_conn)
+            team_object = Team(team_path=npc_object.npc_directory)
             npc_object.team = team_object
         if not npc_object and registered_teams:
-            db_conn = get_db_connection()
             print(f"[STREAM] Searching for {npc_name} in {len(registered_teams)} registered teams")
             for team_path in registered_teams:
                 if not team_path or not os.path.isdir(team_path):
                     print(f"[STREAM] Skipping invalid team path: {team_path}")
                     continue
                 try:
-                    team_obj = Team(team_path=team_path, db_conn=db_conn)
+                    team_obj = Team(team_path=team_path)
                     print(f"[STREAM] Loaded team {team_obj.name} from {team_path} with {len(team_obj.jinxes_dict)} jinxes, npcs: {list(team_obj.npcs.keys())}")
                     if npc_name in team_obj.npcs:
                         npc_object = team_obj.npcs[npc_name]
@@ -5456,26 +5454,22 @@ def stream():
                     continue
 
         if not npc_object:
-            db_conn = get_db_connection()
-            npc_object = load_npc_by_name_and_source(npc_name,
-                                                     npc_source,
-                                                     db_conn,
-                                                     current_path)
+            npc_object = load_npc_by_name_and_source(npc_name, npc_source, current_path)
             if not npc_object and npc_source == 'project':
                 print(f"NPC {npc_name} not found in project directory, trying global...")
-                npc_object = load_npc_by_name_and_source(npc_name, 'global', db_conn)
+                npc_object = load_npc_by_name_and_source(npc_name, 'global')
             if npc_object and hasattr(npc_object, 'npc_directory') and npc_object.npc_directory:
                 team_directory = npc_object.npc_directory
-                
+
                 if os.path.exists(team_directory):
-                    team_object = Team(team_path=team_directory, db_conn=db_conn)
+                    team_object = Team(team_path=team_directory)
                     print('team', team_object)
 
                 else:
-                    team_object = Team(npcs=[npc_object], db_conn=db_conn)
+                    team_object = Team(npcs=[npc_object])
                     team_object.name = os.path.basename(team_directory) if team_directory else f"{npc_name}_team"
                     npc_object.team = team_object
-                    print('team', team_object)                    
+                    print('team', team_object)
                 team_name = team_object.name
                 
                 if not hasattr(app, 'registered_teams'):
@@ -5697,6 +5691,7 @@ def stream():
         if not hasattr(app, 'mcp_clients'):
             app.mcp_clients = {}
         state_key = f"{conversation_id}_{npc_name or 'default'}"
+        app._last_mcp_state_key = state_key
         if state_key not in app.mcp_clients:
             app.mcp_clients[state_key] = {"client": None, "server_path": None, "messages": messages}
         messages = app.mcp_clients[state_key].get("messages", messages)
@@ -5909,7 +5904,13 @@ IMPORTANT AGENT BEHAVIOR:
                 }
 
                 tool_results = []
+                session_grants = {}
                 for tc in collected_tool_calls:
+                    with cancellation_lock:
+                        if cancellation_flags.get(stream_id, False):
+                            yield {"type": "interrupt"}
+                            return
+
                     tool_name = tc["function"]["name"]
                     tool_args = tc["function"]["arguments"]
                     tool_id = tc["id"]
@@ -5920,11 +5921,44 @@ IMPORTANT AGENT BEHAVIOR:
                         except json.JSONDecodeError:
                             tool_args = {}
 
+                    executor = tool_executors.get(tool_name)
+                    cmd_key = _build_command_key(tool_name, tool_args)
+                    perm = _check_tool_permission(tool_name, tool_args, executor, session_grants, team_object)
+
+                    if perm == "deny":
+                        tool_content = f"EPERM: Tool '{tool_name}' is denied by permission settings."
+                        messages.append({"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": tool_content})
+                        tool_results.append({"name": tool_name, "tool_call_id": tool_id, "content": tool_content})
+                        yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": tool_content}
+                        continue
+
+                    if perm == "ask":
+                        request_id = f"perm_{stream_id}_{tool_id}_{uuid.uuid4().hex[:8]}"
+                        preview = json.dumps(tool_args, default=str)
+                        if len(preview) > 500:
+                            preview = preview[:500] + "..."
+                        yield {
+                            "type": "permission_request",
+                            "request_id": request_id,
+                            "tool_name": tool_name,
+                            "command_key": cmd_key,
+                            "args_preview": preview,
+                        }
+                        decision = _wait_for_permission_response(request_id, timeout=120)
+                        if decision is None:
+                            decision = "No"
+                        allowed = _apply_permission_decision(decision, tool_name, tool_args, executor, session_grants, team_object)
+                        if not allowed:
+                            tool_content = f"EPERM: User denied execution of '{tool_name}'"
+                            messages.append({"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": tool_content})
+                            tool_results.append({"name": tool_name, "tool_call_id": tool_id, "content": tool_content})
+                            yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": tool_content}
+                            continue
+
                     print(f"[MCP] tool_start {tool_name} args={tool_args}")
                     yield {"type": "tool_start", "name": tool_name, "id": tool_id, "args": tool_args}
                     try:
                         tool_content = ""
-                        executor = tool_executors.get(tool_name)
                         if executor:
                             if executor["type"] == "jinx":
                                 jinx_obj = executor["jinx"]
@@ -6294,7 +6328,7 @@ IMPORTANT AGENT BEHAVIOR:
                 yield f"data: {json.dumps({'type': 'usage', 'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'cost': stream_cost or 0})}\n\n"
 
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
-            _cleanup_stream(current_stream_id)
+            _cleanup_stream(current_stream_id, getattr(app, '_last_mcp_state_key', None))
     return Response(event_stream(stream_id), mimetype="text/event-stream", headers={
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
@@ -6532,7 +6566,162 @@ def interrupt_stream():
         print(f"Received interruption request for stream ID: {stream_id_to_cancel}")
         cancellation_flags[stream_id_to_cancel] = True
 
+    mcp_state_key = getattr(app, '_last_mcp_state_key', None)
+    if mcp_state_key and hasattr(app, 'mcp_clients') and mcp_state_key in app.mcp_clients:
+        print(f"[INTERRUPT] Removing MCP state for {mcp_state_key}")
+        del app.mcp_clients[mcp_state_key]
+
     return jsonify({"success": True, "message": f"Interruption for stream {stream_id_to_cancel} registered."})
+
+
+def _build_command_key(tool_name: str, arguments: dict) -> str:
+    """Build a hierarchical command key for permission matching."""
+    cmd_key = tool_name
+    if tool_name == "sh" and arguments.get("bash_command"):
+        parts = arguments["bash_command"].strip().split()
+        if parts:
+            cmd_key = f"sh:{parts[0]}"
+            if len(parts) > 1 and not parts[1].startswith("-"):
+                cmd_key = f"sh:{parts[0]} {parts[1]}"
+    elif tool_name == "python" and arguments.get("code"):
+        cmd_key = "python"
+    elif tool_name == "edit_file" and arguments.get("filepath"):
+        cmd_key = f"edit_file:{os.path.basename(arguments['filepath'])}"
+    elif tool_name == "delegate" and arguments.get("target"):
+        cmd_key = f"delegate:{arguments['target']}"
+    return cmd_key
+
+
+def _match_permission(cmd_key: str, rules: dict) -> Optional[str]:
+    """Find the most specific matching permission rule."""
+    if cmd_key in rules:
+        return rules[cmd_key]
+    best_match = None
+    best_len = 0
+    for rule_key in rules:
+        if cmd_key.startswith(rule_key):
+            nxt = cmd_key[len(rule_key):len(rule_key)+1]
+            if nxt in ("", ":", " ") and len(rule_key) > best_len:
+                best_len = len(rule_key)
+                best_match = rules[rule_key]
+    return best_match
+
+
+def _load_permission_file(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f) or {}
+        rules = data.get("rules", data) if isinstance(data, dict) else {}
+        return {k: str(v) for k, v in rules.items()}
+    except Exception:
+        return {}
+
+
+def _permission_rules_for_team(team_object):
+    rules = _load_permission_file(os.path.expanduser("~/.npcsh/npc_team/permissions.yaml"))
+    if team_object and getattr(team_object, "team_path", None):
+        global_path = os.path.expanduser("~/.npcsh/npc_team")
+        if os.path.abspath(team_object.team_path) != os.path.abspath(global_path):
+            workspace_path = os.path.join(team_object.team_path, "permissions.yaml")
+            if os.path.exists(workspace_path):
+                rules.update(_load_permission_file(workspace_path))
+    return rules
+
+
+def _check_tool_permission(tool_name, arguments, executor, session_grants, team_object):
+    """Return 'allow', 'deny', or 'ask' for a tool call."""
+    cmd_key = _build_command_key(tool_name, arguments)
+
+    # Session grants first.
+    session_decision = _match_permission(cmd_key, session_grants)
+    if session_decision:
+        return session_decision if session_decision != "session" else "allow"
+
+    # Jinx own metadata.
+    if executor and executor.get("type") == "jinx" and executor.get("jinx"):
+        jinx_perm = executor["jinx"].check_permission()
+        if jinx_perm != "ask":
+            return jinx_perm
+
+    # Workspace/global rules.
+    rules = _permission_rules_for_team(team_object)
+    rule = _match_permission(cmd_key, rules)
+    if rule:
+        return "allow" if rule == "auto" else rule
+
+    # Safe defaults.
+    if tool_name in ("chat", "help", "stop"):
+        return "allow"
+
+    return "ask"
+
+
+def _apply_permission_decision(decision, tool_name, arguments, executor, session_grants, team_object):
+    """Apply user's decision and persist if always/never. Returns True if allowed."""
+    cmd_key = _build_command_key(tool_name, arguments)
+    allowed = str(decision).startswith("Yes")
+
+    if "session" in decision.lower():
+        session_grants[cmd_key] = "session"
+    elif "always" in decision.lower():
+        session_grants[cmd_key] = "auto"
+        if executor and executor.get("type") == "jinx" and executor.get("jinx"):
+            executor["jinx"].set_permission("allow")
+        else:
+            _save_permission(cmd_key, "auto", team_object)
+    elif "never" in decision.lower():
+        if executor and executor.get("type") == "jinx" and executor.get("jinx"):
+            executor["jinx"].set_permission("deny")
+        else:
+            _save_permission(cmd_key, "deny", team_object)
+
+    return allowed
+
+
+def _save_permission(key: str, level: str, team_object):
+    team_dir = getattr(team_object, "team_path", None)
+    if team_dir:
+        global_path = os.path.expanduser("~/.npcsh/npc_team")
+        if os.path.abspath(team_dir) == os.path.abspath(global_path):
+            team_dir = None
+    dir_path = team_dir if team_dir else os.path.expanduser("~/.npcsh/npc_team")
+    os.makedirs(dir_path, exist_ok=True)
+    perm_path = os.path.join(dir_path, "permissions.yaml")
+    existing = _load_permission_file(perm_path)
+    existing[key] = level
+    with open(perm_path, "w") as f:
+        yaml.dump({"rules": existing}, f, default_flow_style=False)
+
+
+def _wait_for_permission_response(request_id, timeout=120):
+    event = threading.Event()
+    with permission_lock:
+        permission_requests[request_id] = {"event": event, "decision": None}
+    ready = event.wait(timeout=timeout)
+    with permission_lock:
+        entry = permission_requests.pop(request_id, None)
+    if not ready or not entry:
+        return None
+    return entry.get("decision")
+
+
+@app.route("/api/permission_response", methods=["POST"])
+def permission_response():
+    data = request.json or {}
+    request_id = data.get("request_id")
+    decision = data.get("decision")
+    if not request_id:
+        return jsonify({"error": "request_id is required"}), 400
+    with permission_lock:
+        entry = permission_requests.get(request_id)
+        if entry is None:
+            return jsonify({"error": "unknown request_id"}), 404
+        entry["decision"] = decision
+        entry["event"].set()
+    return jsonify({"success": True})
+
 
 @app.after_request
 def after_request(response):

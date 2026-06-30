@@ -861,7 +861,7 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         if memory_context:
             system_message += f"\n\nMemory Context:\n{memory_context}\n"
 
-    if npc.db_conn is not None:
+    if getattr(npc, "db_conn", None) is not None:
         db_path = None
         if hasattr(npc.db_conn, "url") and npc.db_conn.url:
             db_path = npc.db_conn.url.database
