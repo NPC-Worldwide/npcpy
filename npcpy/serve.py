@@ -113,6 +113,10 @@ from flask_cors import CORS
 cancellation_flags = {}
 cancellation_lock = threading.Lock()
 
+# Pending permission requests from /api/stream to the Rust/frontend shell.
+permission_requests = {}
+permission_lock = threading.Lock()
+
 class ServeState:
     """Minimal server-side execution context for jinxes and tools.
     Minimal server-side execution context for jinxes and tools."""
@@ -5900,6 +5904,7 @@ IMPORTANT AGENT BEHAVIOR:
                 }
 
                 tool_results = []
+                session_grants = {}
                 for tc in collected_tool_calls:
                     with cancellation_lock:
                         if cancellation_flags.get(stream_id, False):
@@ -5916,11 +5921,44 @@ IMPORTANT AGENT BEHAVIOR:
                         except json.JSONDecodeError:
                             tool_args = {}
 
+                    executor = tool_executors.get(tool_name)
+                    cmd_key = _build_command_key(tool_name, tool_args)
+                    perm = _check_tool_permission(tool_name, tool_args, executor, session_grants, team_object)
+
+                    if perm == "deny":
+                        tool_content = f"EPERM: Tool '{tool_name}' is denied by permission settings."
+                        messages.append({"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": tool_content})
+                        tool_results.append({"name": tool_name, "tool_call_id": tool_id, "content": tool_content})
+                        yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": tool_content}
+                        continue
+
+                    if perm == "ask":
+                        request_id = f"perm_{stream_id}_{tool_id}_{uuid.uuid4().hex[:8]}"
+                        preview = json.dumps(tool_args, default=str)
+                        if len(preview) > 500:
+                            preview = preview[:500] + "..."
+                        yield {
+                            "type": "permission_request",
+                            "request_id": request_id,
+                            "tool_name": tool_name,
+                            "command_key": cmd_key,
+                            "args_preview": preview,
+                        }
+                        decision = _wait_for_permission_response(request_id, timeout=120)
+                        if decision is None:
+                            decision = "No"
+                        allowed = _apply_permission_decision(decision, tool_name, tool_args, executor, session_grants, team_object)
+                        if not allowed:
+                            tool_content = f"EPERM: User denied execution of '{tool_name}'"
+                            messages.append({"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": tool_content})
+                            tool_results.append({"name": tool_name, "tool_call_id": tool_id, "content": tool_content})
+                            yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": tool_content}
+                            continue
+
                     print(f"[MCP] tool_start {tool_name} args={tool_args}")
                     yield {"type": "tool_start", "name": tool_name, "id": tool_id, "args": tool_args}
                     try:
                         tool_content = ""
-                        executor = tool_executors.get(tool_name)
                         if executor:
                             if executor["type"] == "jinx":
                                 jinx_obj = executor["jinx"]
@@ -6534,6 +6572,156 @@ def interrupt_stream():
         del app.mcp_clients[mcp_state_key]
 
     return jsonify({"success": True, "message": f"Interruption for stream {stream_id_to_cancel} registered."})
+
+
+def _build_command_key(tool_name: str, arguments: dict) -> str:
+    """Build a hierarchical command key for permission matching."""
+    cmd_key = tool_name
+    if tool_name == "sh" and arguments.get("bash_command"):
+        parts = arguments["bash_command"].strip().split()
+        if parts:
+            cmd_key = f"sh:{parts[0]}"
+            if len(parts) > 1 and not parts[1].startswith("-"):
+                cmd_key = f"sh:{parts[0]} {parts[1]}"
+    elif tool_name == "python" and arguments.get("code"):
+        cmd_key = "python"
+    elif tool_name == "edit_file" and arguments.get("filepath"):
+        cmd_key = f"edit_file:{os.path.basename(arguments['filepath'])}"
+    elif tool_name == "delegate" and arguments.get("target"):
+        cmd_key = f"delegate:{arguments['target']}"
+    return cmd_key
+
+
+def _match_permission(cmd_key: str, rules: dict) -> Optional[str]:
+    """Find the most specific matching permission rule."""
+    if cmd_key in rules:
+        return rules[cmd_key]
+    best_match = None
+    best_len = 0
+    for rule_key in rules:
+        if cmd_key.startswith(rule_key):
+            nxt = cmd_key[len(rule_key):len(rule_key)+1]
+            if nxt in ("", ":", " ") and len(rule_key) > best_len:
+                best_len = len(rule_key)
+                best_match = rules[rule_key]
+    return best_match
+
+
+def _load_permission_file(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f) or {}
+        rules = data.get("rules", data) if isinstance(data, dict) else {}
+        return {k: str(v) for k, v in rules.items()}
+    except Exception:
+        return {}
+
+
+def _permission_rules_for_team(team_object):
+    rules = _load_permission_file(os.path.expanduser("~/.npcsh/npc_team/permissions.yaml"))
+    if team_object and getattr(team_object, "team_path", None):
+        global_path = os.path.expanduser("~/.npcsh/npc_team")
+        if os.path.abspath(team_object.team_path) != os.path.abspath(global_path):
+            workspace_path = os.path.join(team_object.team_path, "permissions.yaml")
+            if os.path.exists(workspace_path):
+                rules.update(_load_permission_file(workspace_path))
+    return rules
+
+
+def _check_tool_permission(tool_name, arguments, executor, session_grants, team_object):
+    """Return 'allow', 'deny', or 'ask' for a tool call."""
+    cmd_key = _build_command_key(tool_name, arguments)
+
+    # Session grants first.
+    session_decision = _match_permission(cmd_key, session_grants)
+    if session_decision:
+        return session_decision if session_decision != "session" else "allow"
+
+    # Jinx own metadata.
+    if executor and executor.get("type") == "jinx" and executor.get("jinx"):
+        jinx_perm = executor["jinx"].check_permission()
+        if jinx_perm != "ask":
+            return jinx_perm
+
+    # Workspace/global rules.
+    rules = _permission_rules_for_team(team_object)
+    rule = _match_permission(cmd_key, rules)
+    if rule:
+        return "allow" if rule == "auto" else rule
+
+    # Safe defaults.
+    if tool_name in ("chat", "help", "stop"):
+        return "allow"
+
+    return "ask"
+
+
+def _apply_permission_decision(decision, tool_name, arguments, executor, session_grants, team_object):
+    """Apply user's decision and persist if always/never. Returns True if allowed."""
+    cmd_key = _build_command_key(tool_name, arguments)
+    allowed = str(decision).startswith("Yes")
+
+    if "session" in decision.lower():
+        session_grants[cmd_key] = "session"
+    elif "always" in decision.lower():
+        session_grants[cmd_key] = "auto"
+        if executor and executor.get("type") == "jinx" and executor.get("jinx"):
+            executor["jinx"].set_permission("allow")
+        else:
+            _save_permission(cmd_key, "auto", team_object)
+    elif "never" in decision.lower():
+        if executor and executor.get("type") == "jinx" and executor.get("jinx"):
+            executor["jinx"].set_permission("deny")
+        else:
+            _save_permission(cmd_key, "deny", team_object)
+
+    return allowed
+
+
+def _save_permission(key: str, level: str, team_object):
+    team_dir = getattr(team_object, "team_path", None)
+    if team_dir:
+        global_path = os.path.expanduser("~/.npcsh/npc_team")
+        if os.path.abspath(team_dir) == os.path.abspath(global_path):
+            team_dir = None
+    dir_path = team_dir if team_dir else os.path.expanduser("~/.npcsh/npc_team")
+    os.makedirs(dir_path, exist_ok=True)
+    perm_path = os.path.join(dir_path, "permissions.yaml")
+    existing = _load_permission_file(perm_path)
+    existing[key] = level
+    with open(perm_path, "w") as f:
+        yaml.dump({"rules": existing}, f, default_flow_style=False)
+
+
+def _wait_for_permission_response(request_id, timeout=120):
+    event = threading.Event()
+    with permission_lock:
+        permission_requests[request_id] = {"event": event, "decision": None}
+    ready = event.wait(timeout=timeout)
+    with permission_lock:
+        entry = permission_requests.pop(request_id, None)
+    if not ready or not entry:
+        return None
+    return entry.get("decision")
+
+
+@app.route("/api/permission_response", methods=["POST"])
+def permission_response():
+    data = request.json or {}
+    request_id = data.get("request_id")
+    decision = data.get("decision")
+    if not request_id:
+        return jsonify({"error": "request_id is required"}), 400
+    with permission_lock:
+        entry = permission_requests.get(request_id)
+        if entry is None:
+            return jsonify({"error": "unknown request_id"}), 404
+        entry["decision"] = decision
+        entry["event"].set()
+    return jsonify({"success": True})
+
 
 @app.after_request
 def after_request(response):

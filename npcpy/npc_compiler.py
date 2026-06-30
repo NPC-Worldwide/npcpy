@@ -416,6 +416,24 @@ class Jinx:
         self.steps = jinx_data.get("steps", [])
         self.file_context = jinx_data.get("file_context", [])
         self._source_path = jinx_data.get("_source_path", None)
+        self.permissions = jinx_data.get("permissions", {})
+        if not isinstance(self.permissions, dict):
+            self.permissions = {}
+        if "default" not in self.permissions:
+            self.permissions["default"] = "ask"
+
+    def set_permission(self, level: str):
+        """Persist a permission level to this jinx's metadata and source file."""
+        self.permissions["default"] = level
+        if self._source_path:
+            self.save(os.path.dirname(self._source_path))
+
+    def check_permission(self) -> str:
+        """Return this jinx's default permission level: allow, deny, or ask."""
+        level = self.permissions.get("default", "ask")
+        if level not in ("allow", "deny", "ask"):
+            return "ask"
+        return level
 
     def to_tool_def(self) -> Dict[str, Any]:
         """Convert this Jinx to an OpenAI-style tool definition."""
@@ -782,7 +800,9 @@ class Jinx:
         
         if self.npc:
             result["npc"] = self.npc
-            
+
+        result["permissions"] = self.permissions
+
         return result
 
     def save(self, directory):
