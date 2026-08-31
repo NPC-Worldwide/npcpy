@@ -31,12 +31,6 @@ except OSError:
 
 
 def _require_ollama() -> None:
-    """Raise a clear ImportError when the optional ``ollama`` package is absent.
-
-    Called at each entry point into the ollama provider so that users get a
-    descriptive error instead of a bare ``NameError: name 'ollama' is not
-    defined`` at an arbitrary call site.
-    """
     if not HAS_OLLAMA:
         raise ImportError(
             "The 'ollama' package is required for the ollama provider. "
@@ -53,15 +47,6 @@ except OSError:
     pass
 
 def sanitize_messages(messages: list) -> list:
-    """Remove orphaned tool_use and tool_result blocks from message history.
-
-    Checks EVERY assistant message with tool_calls (not just the last one)
-    to ensure Anthropic never sees a tool_use without a matching tool_result.
-    For mid-history orphans, the tool_calls key is removed (keeping text content).
-    For tail orphans, the assistant message is stripped entirely.
-    Also merges consecutive same-role messages and ensures the conversation
-    doesn't end with an assistant message (Anthropic rejects that).
-    """
     if not messages:
         return messages
 
@@ -140,7 +125,6 @@ def sanitize_messages(messages: list) -> list:
 
 
 def calculate_cost(model: str, input_tokens: int, output_tokens: int, provider: str = None) -> float:
-    """Calculate cost in USD for a response using litellm's model cost database."""
     if not model or input_tokens < 0 or output_tokens < 0:
         return 0.0
 
@@ -159,7 +143,6 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int, provider: 
     except Exception:
         pass
 
-    # Try with provider prefix (e.g. openai/gpt-4o)
     try:
         resolved_provider = provider or lookup_provider(model)
         if resolved_provider:
@@ -173,13 +156,6 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int, provider: 
     return 0.0
 
 def get_model_context_window(model: str, provider: str = None) -> int:
-    """Get the context window size (max input tokens) for a model.
-
-    Uses litellm's model info database. Falls back to provider-specific
-    queries (e.g. ollama show) when litellm doesn't have the model.
-
-    Returns 0 if the context window cannot be determined.
-    """
     if not model:
         return 0
 
@@ -224,9 +200,6 @@ def get_model_context_window(model: str, provider: str = None) -> int:
 
 
 def handle_streaming_json(api_params):
-    """
-    Handles streaming responses when JSON format is requested from LiteLLM.
-    """
     json_buffer = ""
     stream = completion(**api_params)
     for chunk in stream:
@@ -1432,8 +1405,6 @@ Do not include any additional markdown formatting or leading ```json tags in you
     return result
 
 
-# ── QLLM-PAM local provider (self-contained) ──────────────────────────────────
-
 _QLLM_IM_START = "<|im_start|>"
 _QLLM_IM_END = "<|im_end|>"
 _QLLM_THINK_START = " " + "<think>"
@@ -1452,7 +1423,6 @@ def _download_qllm_from_hf(repo_id: str) -> str:
 
 
 def _resolve_qllm_checkpoint(model: str) -> tuple:
-    # Hugging Face repo id (e.g. owner/name)
     if "/" in model and not os.path.exists(model):
         model_dir = _download_qllm_from_hf(model)
         pt_files = sorted(f for f in os.listdir(model_dir) if f.endswith(".pt"))
@@ -1492,8 +1462,6 @@ def _get_qllm_device(device_pref: str = None):
         return torch.device("mps")
     return torch.device("cpu")
 
-
-# ── Self-contained QLLM-PAM V11 model ──────────────────────────────────────────
 
 class _QllmConfig:
     def __init__(self, **kwargs):
@@ -2612,9 +2580,6 @@ def get_litellm_response(
     if provider is None:
         raise ValueError("No provider specified. Please set a provider in your NPC configuration or team settings.")
 
-    # LiteLLM routes many providers (e.g. OpenRouter) by the model prefix.
-    # e.g. `moonshotai/kimi-k3` is unresolvable, but `openrouter/moonshotai/kimi-k3` works.
-    # Use a lowercase provider slug for the prefix because LiteLLM expects that.
     normalized_model = model.lower()
     normalized_provider = provider.lower().replace(" ", "")
     if "api_base" in api_params and normalized_provider == "openai":
