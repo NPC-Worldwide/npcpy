@@ -2,14 +2,15 @@
 
 import os
 import re
+import traceback
 from pathlib import Path
-
-import pytest
 
 
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 SKIP_LONG = os.environ.get("NPC_README_SKIP_LONG", "0").lower() in ("1", "true", "yes")
+SKIP_MEDIA = os.environ.get("NPC_README_SKIP_MEDIA", os.environ.get("NPC_README_SKIP_LONG", "0")).lower() in ("1", "true", "yes")
 LONG_INDICES = {5, 23, 24}
+MEDIA_INDICES = {14}
 
 
 def _load_blocks():
@@ -47,11 +48,22 @@ def _build_tests():
 
     def test_readme_examples():
         namespace = {}
+        failures = []
         for idx, code in valid_blocks:
             if SKIP_LONG and idx in LONG_INDICES:
                 print(f"skipping long example {idx}")
                 continue
-            exec(code, namespace)
+            if SKIP_MEDIA and idx in MEDIA_INDICES:
+                print(f"skipping media example {idx}")
+                continue
+            try:
+                exec(code, namespace)
+                print(f"example {idx}: OK")
+            except Exception as e:
+                msg = f"example {idx}: {type(e).__name__}: {e}\n{traceback.format_exc()}"
+                print(msg)
+                failures.append(msg)
+        assert not failures, "\n".join(failures)
 
     globals()["test_readme_examples"] = test_readme_examples
     return len(valid_blocks)
