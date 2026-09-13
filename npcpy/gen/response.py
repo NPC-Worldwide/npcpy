@@ -490,6 +490,21 @@ def get_ollama_response(
             elif isinstance(messages[-1]["content"], str):
                 messages[-1]["content"] += "\n" + json_instruction
 
+    if isinstance(format, type) and issubclass(format, BaseModel) and not stream:
+        schema = format.model_json_schema()
+        schema_instruction = f"""Return your response as valid JSON matching this schema:
+            {json.dumps(schema, indent=2)}
+
+            Do not include any markdown formatting or leading ```json tags. Begin directly with the opening """ + "{" + """."""
+        if messages and messages[-1]["role"] == "user":
+            if isinstance(messages[-1]["content"], list):
+                messages[-1]["content"].append({
+                    "type": "text",
+                    "text": schema_instruction
+                })
+            elif isinstance(messages[-1]["content"], str):
+                messages[-1]["content"] += "\n" + schema_instruction
+
     if format == "yaml" and not stream:
         yaml_instruction = """Return your response as valid YAML. Do not include ```yaml markdown tags.
             For multi-line strings like code, use the literal block scalar (|) syntax:
@@ -600,7 +615,7 @@ def get_ollama_response(
             assistant_msg["tool_calls"] = message['tool_calls']
         result["messages"].append(assistant_msg)
 
-        if format == "json":
+        if (isinstance(format, type) and issubclass(format, BaseModel)) or format == "json":
             try:
                 if isinstance(response_content, str):
                     if response_content.startswith("```json"):

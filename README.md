@@ -820,7 +820,7 @@ Maintain a population of KG variants that evolve independently. Each individual 
 ```python
 from npcpy.memory.kg_population import SememolutionPopulation
 
-pop = SememolutionPopulation(population_size=100, sample_size=10)
+pop = SememolutionPopulation(model='qwen3.5:2b', provider='ollama', population_size=100, sample_size=10)
 pop.initialize()
 
 pop.assimilate_text("""

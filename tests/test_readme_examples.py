@@ -1,5 +1,6 @@
 """Run README.md Python examples as pytest tests."""
 
+import os
 import re
 from pathlib import Path
 
@@ -7,11 +8,8 @@ import pytest
 
 
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
-
-
-def _execute_block(code):
-    namespace = {}
-    exec(code, namespace)
+SKIP_LONG = os.environ.get("NPC_README_SKIP_LONG", "0").lower() in ("1", "true", "yes")
+LONG_INDICES = {5, 23, 24}
 
 
 def _load_blocks():
@@ -25,7 +23,7 @@ def _load_blocks():
 def _normalize(code):
     code = re.sub(
         r"model\s*=\s*['\"][^'\"]+['\"]",
-        "model='kimi-k2.7-code:cloud'",
+        "model='kimi-k2.6:cloud'",
         code,
     )
     code = re.sub(
@@ -38,23 +36,25 @@ def _normalize(code):
 
 def _build_tests():
     blocks = _load_blocks()
-    count = 0
+    valid_blocks = []
     for idx, block in enumerate(blocks, 1):
         code = _normalize(block)
         try:
             compile(code, f"<readme_example_{idx}>", "exec")
         except SyntaxError:
             continue
+        valid_blocks.append((idx, code))
 
-        def make_test(captured_code=code, captured_index=idx):
-            def test_readme_example():
-                _execute_block(captured_code)
-            test_readme_example.__name__ = f"test_readme_example_{captured_index}"
-            return test_readme_example
+    def test_readme_examples():
+        namespace = {}
+        for idx, code in valid_blocks:
+            if SKIP_LONG and idx in LONG_INDICES:
+                print(f"skipping long example {idx}")
+                continue
+            exec(code, namespace)
 
-        count += 1
-        globals()[f"test_readme_example_{idx}"] = make_test()
-    return count
+    globals()["test_readme_examples"] = test_readme_examples
+    return len(valid_blocks)
 
 
 README_EXAMPLE_COUNT = _build_tests()
