@@ -24,7 +24,7 @@ def _load_blocks():
 def _normalize(code):
     code = re.sub(
         r"model\s*=\s*['\"][^'\"]+['\"]",
-        "model='kimi-k2.6:cloud'",
+        "model='kimi-k2.7-code:cloud'",
         code,
     )
     code = re.sub(
