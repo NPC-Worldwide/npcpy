@@ -9,7 +9,7 @@ from pathlib import Path
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 SKIP_LONG = os.environ.get("NPC_README_SKIP_LONG", "0").lower() in ("1", "true", "yes")
 SKIP_MEDIA = os.environ.get("NPC_README_SKIP_MEDIA", os.environ.get("NPC_README_SKIP_LONG", "0")).lower() in ("1", "true", "yes")
-LONG_INDICES = {5, 23, 24}
+LONG_INDICES = {5, 22, 23, 24}
 MEDIA_INDICES = {14}
 
 

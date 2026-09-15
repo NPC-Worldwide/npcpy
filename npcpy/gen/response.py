@@ -2392,6 +2392,7 @@ def get_litellm_response(
         "tool_calls": [],
         "tool_results":[],
     }
+    orcarouter_mode = False
     if provider == "ollama":
         return get_ollama_response(
             prompt, 
@@ -2514,6 +2515,7 @@ def get_litellm_response(
     elif provider in ('orcarouter', 'orca'):
         api_url = api_url or os.environ.get("ORCAROUTER_API_URL") or "https://api.orcarouter.ai/v1"
         api_key = api_key or os.environ.get("ORCAROUTER_API_KEY")
+        orcarouter_mode = True
         provider = "openai"
         if 'timeout' not in kwargs:
             kwargs['timeout'] = 300
@@ -2654,7 +2656,7 @@ def get_litellm_response(
 
     if isinstance(format, type) and issubclass(format, BaseModel):
         api_params["response_format"] = format
-    if isinstance(model, str):
+    if isinstance(model, str) and not orcarouter_mode:
         if (model.startswith("orcarouter/") or model.startswith("orca/")) and model.count("/") > 1:
             model = model.split("/", 1)[1]
     if model is None:
@@ -2667,7 +2669,9 @@ def get_litellm_response(
     # Use a lowercase provider slug for the prefix because LiteLLM expects that.
     normalized_model = model.lower()
     normalized_provider = provider.lower().replace(" ", "")
-    if "api_base" in api_params and normalized_provider == "openai":
+    if orcarouter_mode:
+        api_params["model"] = model
+    elif "api_base" in api_params and normalized_provider == "openai":
         api_params["model"] = f"openai/{model}"
     elif "/" not in model or model.startswith("/"):
         api_params["model"] = f"{normalized_provider}/{model}"

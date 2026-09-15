@@ -1029,7 +1029,7 @@ The `model` value can be a Hugging Face repo id (downloaded and cached automatic
 pip install npcpy              # base
 pip install npcpy[lite]        # + API provider libraries
 pip install npcpy[local]       # + ollama, diffusers, transformers, airllm
-pip install npcpy[yap]         # + TTS/STT
+pip install npcpy[tts]         # + TTS/STT
 pip install npcpy[all]         # everything
 ```
 
@@ -1066,16 +1066,23 @@ Full documentation, guides, and API reference at [npcpy.readthedocs.io](https://
 
 ## Links
 
+- **[NPC Shell](https://github.com/npc-worldwide/npcsh)** — Command-line shell for interacting with NPCs 
 - **[Incognide](https://github.com/npc-worldwide/incognide)** — Desktop environment with AI chat, browser, file viewers, code editor, terminal, knowledge graphs, team management, and more ([download](https://enpisi.com/incognide))
-- **[NPC Shell](https://github.com/npc-worldwide/npcsh)** — Command-line shell for interacting with NPCs
-
+- [incognidium](https://github.com/npc-worldwide/incognidium) - a rust-native web browser with an NPC Team focused on developing and testing the incognidium browser against Firefox and Chromium.
+-
+### Use the NPC team data layer organization in other languages:
+- [npcrs](https://github.com/npc-worldwide/npcsh) - rust port of npcpy
+- [nql](https://github.com/npc-worldwide/nql) - SQL-native framework for running agents inside of databases that support LLMs like Google BigQuery, Snowflake, and Databricks. 
+- [npcts](https://github.com/npc-worldwide/npcts) - typescript library for NPC data layer
+- [npcd](https://github.com/npc-worldwide/npcd) - rust port of npcd
+- 
 
 ## Research
 
 - A Quantum Semantic Framework for natural language processing: [arxiv](https://arxiv.org/abs/2506.10077), accepted at [QNLP 2025](https://qnlp.ai)
 - TinyTim: A Family of Language Models for Divergent Generation [arxiv](https://arxiv.org/abs/2508.11607), accepted at NeurIPS 2025 Creative AI Track
 - The production of meaning in the processing of natural language: [arxiv](https://arxiv.org/abs/2603.20381), accepted at [QNLP 2026](https://qnlp.ai)
-- ALARA for Agents: Least-Privilege Context Engineering Through Portable Composable Multi-Agent Teams: [arxiv](https://arxiv.org/abs/2603.20380), accepted at [HAXD 2026](https://intelligent-systems.net/haxd2026/)
+- Herding CATs: ALARA for Agent Harness Engineering in Portable Composable Multi-Agent Teams - [arxiv](https://arxiv.org/abs/2603.20380), accepted at [HAXD 2026](https://intelligent-systems.net/haxd2026/)
 
 Has your research benefited from npcpy? Let us know!
 

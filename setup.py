@@ -91,7 +91,7 @@ setup(
     extras_require={
         "lite": api_requirements,
         "local": local_requirements,
-        "yap": voice_requirements,
+        "tts": voice_requirements,
         "all": api_requirements + local_requirements + voice_requirements,
     },
     entry_points={
