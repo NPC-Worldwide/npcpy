@@ -329,6 +329,8 @@ kg, sleep_report = kg_sleep_process(kg, model="gemma3:4b", provider="ollama")
 kg, dream_report = kg_dream_process(kg, model="gemma3:4b", provider="ollama", num_seeds=3)
 
 print(f"KG has {len(kg['facts'])} facts and {len(kg['concepts'])} concepts")
+assert len(kg['facts']) > 0, "KG extraction returned no facts"
+assert len(kg['concepts']) > 0, "KG extraction returned no concepts"
 ```
 
 ### Flask Serving for NPC Teams
