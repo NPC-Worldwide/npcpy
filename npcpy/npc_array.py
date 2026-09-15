@@ -711,6 +711,9 @@ class LazyResult:
 
     def consensus(self, axis: int = 0, model: str = None) -> 'LazyResult':
         """Shorthand for reduce('consensus', axis)"""
+        if model is None and self._specs:
+            first = self._specs[0]
+            model = first.config.get("model") if first.model_type == "npc" else first.model_ref
         return self.reduce('consensus', axis=axis, model=model)
 
     def variance(self) -> 'LazyResult':
@@ -1076,6 +1079,7 @@ class GraphExecutor:
         elif method == "concat":
             reduced = self._reduce_concat(data, axis)
         elif method == "consensus":
+            node.params.setdefault("provider", specs[0].provider if specs else None)
             reduced = self._reduce_consensus(data, axis, node.params)
         elif method == "best":
             scores = node.params.get("scores", [])
@@ -1114,13 +1118,14 @@ class GraphExecutor:
         from npcpy.llm_funcs import get_llm_response
 
         model = params.get("model")
+        provider = params.get("provider")
         if not model:
             raise ValueError("No model specified for consensus reduction.")
 
         def consensus_fn(arr):
             perspectives = "\n".join(f"- {x}" for x in arr)
             prompt = f"Given these different perspectives:\n{perspectives}\n\nProvide a consensus synthesis:"
-            response = get_llm_response(prompt, model=model)
+            response = get_llm_response(prompt, model=model, provider=provider)
             return response.get("response", "")
 
         return np.apply_along_axis(consensus_fn, axis, data)
