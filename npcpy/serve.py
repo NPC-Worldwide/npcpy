@@ -4976,12 +4976,13 @@ def stream():
             tool_args['tool_map'] = npc_object.tool_map
         if 'tools' in tool_args and tool_args['tools']:
             tool_args['tool_choice'] = {"type": "auto"}
-    api_url = None
+    api_url = data.get('api_url') or None
+    api_key = data.get('api_key') or None
     if npc_object is not None:
         try:
-            api_url = npc_object.api_url if npc_object.api_url else None
+            api_url = api_url or (npc_object.api_url if npc_object.api_url else None)
         except AttributeError:
-            api_url = None
+            pass
     thinking_kwargs = {}
     if disable_thinking:
         if provider in ('ollama',):
@@ -5001,7 +5002,8 @@ def stream():
             model=model,
             provider=provider,
             npc=npc_object,
-            api_url = api_url,
+            api_url=api_url,
+            api_key=api_key,
             team=team_object,
             stream=True,
             attachments=attachment_paths_for_llm if attachment_paths_for_llm else None,
@@ -5201,6 +5203,8 @@ def stream():
                         tools=tools_for_llm,
                         stream=True,
                         team=team_object,
+                        api_url=api_url,
+                        api_key=api_key,
                         context=agent_context if iteration == 1 else None,
                         **(params or {}),
                         **thinking_kwargs,

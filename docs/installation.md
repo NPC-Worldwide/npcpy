@@ -28,7 +28,7 @@ pip install npcpy[lite]
 # if you want the full local package set up (ollama, diffusers, transformers, airllm, etc.)
 pip install npcpy[local]
 # if you want to use tts/stt
-pip install npcpy[yap]
+pip install npcpy[tts]
 # if you want everything:
 pip install npcpy[all]
 ```
@@ -56,7 +56,7 @@ pip install npcpy[lite]
 # if you want the full local package set up (ollama, diffusers, transformers, airllm, etc.)
 pip install npcpy[local]
 # if you want to use tts/stt
-pip install npcpy[yap]
+pip install npcpy[tts]
 # if you want everything:
 pip install npcpy[all]
 
@@ -77,7 +77,7 @@ pip install npcpy[lite]
 # if you want the full local package set up (ollama, diffusers, transformers, airllm, etc.)
 pip install npcpy[local]
 # if you want to use tts/stt
-pip install npcpy[yap]
+pip install npcpy[tts]
 # if you want everything:
 pip install npcpy[all]
 

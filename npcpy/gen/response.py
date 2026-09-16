@@ -490,6 +490,21 @@ def get_ollama_response(
             elif isinstance(messages[-1]["content"], str):
                 messages[-1]["content"] += "\n" + json_instruction
 
+    if isinstance(format, type) and issubclass(format, BaseModel) and not stream:
+        schema = format.model_json_schema()
+        schema_instruction = f"""Return your response as valid JSON matching this schema:
+            {json.dumps(schema, indent=2)}
+
+            Do not include any markdown formatting or leading ```json tags. Begin directly with the opening """ + "{" + """."""
+        if messages and messages[-1]["role"] == "user":
+            if isinstance(messages[-1]["content"], list):
+                messages[-1]["content"].append({
+                    "type": "text",
+                    "text": schema_instruction
+                })
+            elif isinstance(messages[-1]["content"], str):
+                messages[-1]["content"] += "\n" + schema_instruction
+
     if format == "yaml" and not stream:
         yaml_instruction = """Return your response as valid YAML. Do not include ```yaml markdown tags.
             For multi-line strings like code, use the literal block scalar (|) syntax:
@@ -600,7 +615,7 @@ def get_ollama_response(
             assistant_msg["tool_calls"] = message['tool_calls']
         result["messages"].append(assistant_msg)
 
-        if format == "json":
+        if (isinstance(format, type) and issubclass(format, BaseModel)) or format == "json":
             try:
                 if isinstance(response_content, str):
                     if response_content.startswith("```json"):
@@ -2377,6 +2392,7 @@ def get_litellm_response(
         "tool_calls": [],
         "tool_results":[],
     }
+    orcarouter_mode = False
     if provider == "ollama":
         return get_ollama_response(
             prompt, 
@@ -2499,6 +2515,7 @@ def get_litellm_response(
     elif provider in ('orcarouter', 'orca'):
         api_url = api_url or os.environ.get("ORCAROUTER_API_URL") or "https://api.orcarouter.ai/v1"
         api_key = api_key or os.environ.get("ORCAROUTER_API_KEY")
+        orcarouter_mode = True
         provider = "openai"
         if 'timeout' not in kwargs:
             kwargs['timeout'] = 300
@@ -2639,7 +2656,7 @@ def get_litellm_response(
 
     if isinstance(format, type) and issubclass(format, BaseModel):
         api_params["response_format"] = format
-    if isinstance(model, str):
+    if isinstance(model, str) and not orcarouter_mode:
         if (model.startswith("orcarouter/") or model.startswith("orca/")) and model.count("/") > 1:
             model = model.split("/", 1)[1]
     if model is None:
@@ -2652,7 +2669,10 @@ def get_litellm_response(
     # Use a lowercase provider slug for the prefix because LiteLLM expects that.
     normalized_model = model.lower()
     normalized_provider = provider.lower().replace(" ", "")
-    if "api_base" in api_params and normalized_provider == "openai":
+    if orcarouter_mode:
+        api_params["model"] = model
+        api_params["custom_llm_provider"] = "openai"
+    elif "api_base" in api_params and normalized_provider == "openai":
         api_params["model"] = f"openai/{model}"
     elif "/" not in model or model.startswith("/"):
         api_params["model"] = f"{normalized_provider}/{model}"

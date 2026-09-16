@@ -85,13 +85,13 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="2.1.18",
+    version="2.1.19",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
         "lite": api_requirements,
         "local": local_requirements,
-        "yap": voice_requirements,
+        "tts": voice_requirements,
         "all": api_requirements + local_requirements + voice_requirements,
     },
     entry_points={

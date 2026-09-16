@@ -1,0 +1,21 @@
+jinx_name: natural
+description: Render the provided prompt template with Jinja context and send it to the active NPC's LLM. The rendered text becomes the user prompt; the LLM response is placed in context['output'].
+inputs:
+  - prompt
+  - system: ""
+steps:
+  - name: render_and_send
+    engine: python
+    code: |
+      from jinja2 import Template
+      tpl = Template({{ prompt | tojson }})
+      rendered = tpl.render(context)
+      system_msg = {{ system | tojson }}
+      messages = []
+      if system_msg:
+          messages.append({"role": "system", "content": system_msg})
+      response = npc.get_llm_response(rendered, messages=messages)
+      if isinstance(response, dict):
+          output = response.get("response", response)
+      else:
+          output = response
