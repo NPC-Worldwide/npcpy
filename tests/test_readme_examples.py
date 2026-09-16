@@ -11,6 +11,8 @@ SKIP_LONG = os.environ.get("NPC_README_SKIP_LONG", "0").lower() in ("1", "true",
 SKIP_MEDIA = os.environ.get("NPC_README_SKIP_MEDIA", os.environ.get("NPC_README_SKIP_LONG", "0")).lower() in ("1", "true", "yes")
 LONG_INDICES = {5, 22, 23, 24}
 MEDIA_INDICES = {14}
+TEST_MODEL = os.environ.get("NPC_README_TEST_MODEL", "kimi-k2.7-code:cloud")
+TEST_PROVIDER = os.environ.get("NPC_README_TEST_PROVIDER", "ollama")
 
 
 def _load_blocks():
@@ -24,12 +26,12 @@ def _load_blocks():
 def _normalize(code):
     code = re.sub(
         r"model\s*=\s*['\"][^'\"]+['\"]",
-        "model='kimi-k2.7-code:cloud'",
+        f"model='{TEST_MODEL}'",
         code,
     )
     code = re.sub(
         r"provider\s*=\s*['\"][^'\"]+['\"]",
-        "provider='ollama'",
+        f"provider='{TEST_PROVIDER}'",
         code,
     )
     return code

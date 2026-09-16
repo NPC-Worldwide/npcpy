@@ -457,7 +457,7 @@ print(result['output'])
 ```python
 from npcpy import NPC, Team
 
-team = Team(team_path='./npc_team')
+team = Team(team_path='examples/npc_team')
 result = team.orchestrate("Analyze the latest sales data and draft a report")
 print(result['output'])
 ```
@@ -736,7 +736,7 @@ You can also pass a list directly to `jinx.execute()`:
 ```python
 from npcpy.npc_compiler import Jinx
 
-jinx = Jinx(jinx_path='npc_team/jinxes/analyze.jinx')
+jinx = Jinx(jinx_path='examples/npc_team/jinxes/analyze.jinx')
 results = jinx.execute({'topic': 'rate limiting'}, npc=npcs)  # list → parallel NPCArray run
 ```
 

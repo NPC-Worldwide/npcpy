@@ -2671,6 +2671,7 @@ def get_litellm_response(
     normalized_provider = provider.lower().replace(" ", "")
     if orcarouter_mode:
         api_params["model"] = model
+        api_params["custom_llm_provider"] = "openai"
     elif "api_base" in api_params and normalized_provider == "openai":
         api_params["model"] = f"openai/{model}"
     elif "/" not in model or model.startswith("/"):

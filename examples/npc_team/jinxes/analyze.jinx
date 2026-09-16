@@ -1,0 +1,11 @@
+#!/usr/bin/env npc
+jinx_name: analyze
+description: Analyze a topic and return key points.
+inputs:
+  - topic
+steps:
+  - name: summarize
+    engine: natural
+    prompt: |
+      Analyze {{ topic }} and return the most important points as a concise summary.
+      Keep it under 200 words.
