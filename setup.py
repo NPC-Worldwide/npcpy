@@ -76,23 +76,29 @@ voice_requirements = [
     "pyaudio",
     "gtts",
     "playsound==1.2.2",
-    "pygame", 
+    "pygame",
     "faster_whisper",
     "pyttsx3",
+]
+
+system1_requirements = [
+    "sentence_transformers",
+    "scikit-learn",
 ]
 
 extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="2.1.19",
+    version="2.1.20",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
         "lite": api_requirements,
         "local": local_requirements,
         "tts": voice_requirements,
-        "all": api_requirements + local_requirements + voice_requirements,
+        "system1": system1_requirements,
+        "all": api_requirements + local_requirements + voice_requirements + system1_requirements,
     },
     entry_points={
         "console_scripts": [

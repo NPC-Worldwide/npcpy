@@ -58,6 +58,14 @@ from npcpy.memory.knowledge_graph import (
     find_similar_facts_chroma,
 )
 from npcpy.gen.response import calculate_cost
+from npcpy.ft.system1 import (
+    choice as system1_choice,
+    noul as system1_noul,
+    score as system1_score,
+    predict as system1_predict,
+    load_system1,
+    System1Predictor,
+)
 try:
     import litellm
 except Exception:
@@ -6801,6 +6809,78 @@ def track_activity():
     except Exception as e:
         print(f"Error tracking activity: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+@app.route('/api/system1/predict', methods=['POST'])
+def system1_predict_endpoint():
+    try:
+        data = request.json or {}
+        state = data.get('state')
+        questions = data.get('questions')
+        model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
+        if not questions:
+            return jsonify({'error': 'questions required'}), 400
+        predictor = None
+        if model_path:
+            predictor = load_system1(model_path)
+        result = system1_predict(state, questions, predictor=predictor)
+        return jsonify(result.to_dict())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/system1/choice', methods=['POST'])
+def system1_choice_endpoint():
+    try:
+        data = request.json or {}
+        state = data.get('state')
+        instructions = data.get('instructions')
+        criteria = data.get('criteria')
+        model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
+        if not instructions or not criteria:
+            return jsonify({'error': 'instructions and criteria required'}), 400
+        predictor = load_system1(model_path) if model_path else None
+        result = system1_choice(state, instructions, criteria, predictor=predictor)
+        return jsonify(result.to_dict())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/system1/noul', methods=['POST'])
+def system1_noul_endpoint():
+    try:
+        data = request.json or {}
+        state = data.get('state')
+        instructions = data.get('instructions')
+        model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
+        if not instructions:
+            return jsonify({'error': 'instructions required'}), 400
+        predictor = load_system1(model_path) if model_path else None
+        result = system1_noul(state, instructions, predictor=predictor)
+        return jsonify(result.to_dict())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/system1/score', methods=['POST'])
+def system1_score_endpoint():
+    try:
+        data = request.json or {}
+        state = data.get('state')
+        instructions = data.get('instructions')
+        criteria = data.get('criteria')
+        model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
+        if not instructions or not criteria:
+            return jsonify({'error': 'instructions and criteria required'}), 400
+        predictor = load_system1(model_path) if model_path else None
+        result = system1_score(state, instructions, criteria, predictor=predictor)
+        return jsonify(result.to_dict())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 def start_flask_server(
     port=5337,
     host="127.0.0.1",
