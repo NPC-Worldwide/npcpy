@@ -169,7 +169,8 @@ def search_perplexity(
 
     
     headers = {"Authorization": f"Bearer {api_key}", 
-               "Content-Type": "application/json"}
+               "Content-Type": "application/json",
+               "X-Pplx-Integration": "npcpy"}
 
     response = requests.post(url,
                              json=payload,
