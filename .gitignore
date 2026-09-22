@@ -58,3 +58,5 @@ tournament.md
 test_data/*
 **/.knowledge.yaml
 **/.npcsh_global
+system1_*/
+decision_models/

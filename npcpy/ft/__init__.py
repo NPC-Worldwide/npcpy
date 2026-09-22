@@ -55,6 +55,37 @@ def __getattr__(name):
             download_from_hub,
         )
         return locals()[name]
+    if name in (
+        "System1Config",
+        "System1Example",
+        "System1Predictor",
+        "System1Result",
+        "ChoiceResult",
+        "NoulResult",
+        "ScoreResult",
+        "train_system1",
+        "load_system1",
+        "choice",
+        "noul",
+        "score",
+        "predict",
+    ):
+        from .system1 import (
+            System1Config,
+            System1Example,
+            System1Predictor,
+            System1Result,
+            ChoiceResult,
+            NoulResult,
+            ScoreResult,
+            train_system1,
+            load_system1,
+            choice,
+            noul,
+            score,
+            predict,
+        )
+        return locals()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -72,4 +103,17 @@ __all__ = [
     "convert_to_mlx",
     "upload_to_hub",
     "download_from_hub",
+    "System1Config",
+    "System1Example",
+    "System1Predictor",
+    "System1Result",
+    "ChoiceResult",
+    "NoulResult",
+    "ScoreResult",
+    "train_system1",
+    "load_system1",
+    "choice",
+    "noul",
+    "score",
+    "predict",
 ]
