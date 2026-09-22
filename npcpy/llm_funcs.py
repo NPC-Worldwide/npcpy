@@ -188,6 +188,9 @@ def resolve_model_provider(
         a_url = a_url or os.environ.get("MINIMAX_API_URL") or "https://api.minimax.io/v1"
         p = "anthropic" if a_url.rstrip("/").endswith("/anthropic") else "openai"
         a_key = a_key or os.environ.get("MINIMAX_API_KEY")
+    if p in ("orcarouter", "orca"):
+        a_url = a_url or os.environ.get("ORCAROUTER_API_URL") or "https://api.orcarouter.ai/v1"
+        a_key = a_key or os.environ.get("ORCAROUTER_API_KEY")
     return m, p, a_url, a_key
 
 
@@ -1482,12 +1485,12 @@ def get_facts(content_text,
             full_context = str(context)
 
     instruction = f"""
-    Extract substantive, self-contained domain facts from the following content.
+    Extract substantive, self-contained factual statements from the following content.
 
-    A valid fact is a rich statement that captures non-obvious technical knowledge,
-    including the context needed to understand what system or domain it pertains to.
-    Facts should preserve nuance: uncertainty, conditions, trade-offs, and causal
-    relationships. They should NOT be shallow one-liners like "X is Y".
+    A valid fact is any concrete, declarative claim asserted by the source text. It may be about
+    people, places, events, objects, states of affairs, relationships, technical systems, or any other
+    propositional content. Facts should preserve nuance: uncertainty, conditions, trade-offs, and
+    causal relationships. They should NOT be shallow one-liners like "X is Y".
 
     {rules}
 
@@ -1511,22 +1514,40 @@ def get_facts(content_text,
       "facts": [
         {
           "statement": "In the transformer model being trained, gradient checkpointing was initially missing from cross-attention layers, causing out-of-memory errors on 40GB A100 GPUs at batch size 64",
-          "source_text": "the gradient checkpointing wasn't being applied to the cross-attention layers",
+          "source_text": "We were seeing OOMs during training on the 40GB A100s when batch size hit 64. Turns out the gradient checkpointing wasn't being applied to the cross-attention layers.",
           "type": "explicit"
         },
         {
           "statement": "Applying gradient checkpointing to cross-attention layers increased feasible batch size from 64 to 96 on the same 40GB A100 hardware without OOM errors",
-          "source_text": "Once we wrapped those in checkpoint() too, we could push to batch size 96 without issues",
+          "source_text": "Once we wrapped those in checkpoint() too, we could push to batch size 96 without issues.",
           "type": "inferred"
         }
       ]
     }
 
-    Input: "Can you open the knowledge graph editor? I want to see if the nodes show up."
+    Input: "Marie Curie was the first woman to win a Nobel Prize. She shared the 1903 Nobel Prize in
+    Physics with Pierre Curie and Henri Becquerel for their work on radioactivity. In 1911 she won
+    the Nobel Prize in Chemistry for the discovery of radium and polonium."
 
     Output:
     {
-      "facts": []
+      "facts": [
+        {
+          "statement": "Marie Curie was the first female Nobel laureate",
+          "source_text": "Marie Curie was the first woman to win a Nobel Prize.",
+          "type": "explicit"
+        },
+        {
+          "statement": "Marie Curie received the 1903 Nobel Prize in Physics jointly with Pierre Curie and Henri Becquerel for research on radioactivity",
+          "source_text": "She shared the 1903 Nobel Prize in Physics with Pierre Curie and Henri Becquerel for their work on radioactivity.",
+          "type": "explicit"
+        },
+        {
+          "statement": "Marie Curie won a second Nobel Prize in 1911, in Chemistry, for discovering radium and polonium",
+          "source_text": "In 1911 she won the Nobel Prize in Chemistry for the discovery of radium and polonium.",
+          "type": "explicit"
+        }
+      ]
     }
 
     Input: "Hello! How are you today? I hope the weather is nice."
@@ -1537,7 +1558,7 @@ def get_facts(content_text,
     }
     """
 
-    json_fmt = '{"facts": [{"statement": "rich self-contained domain claim with full contextual specificity", "source_text": "relevant excerpt", "type": "explicit or inferred"}]}'
+    json_fmt = '{"facts": [{"statement": "rich self-contained factual claim with full contextual specificity", "source_text": "complete source clause or sentence", "type": "explicit or inferred"}]}'
 
     prompt = instruction + examples + json_fmt
 

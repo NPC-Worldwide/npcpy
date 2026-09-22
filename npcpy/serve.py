@@ -13,6 +13,7 @@ import queue
 import uuid
 import sys
 import traceback
+import types
 import glob
 import re
 import time
@@ -57,6 +58,10 @@ from npcpy.memory.knowledge_graph import (
     find_similar_facts_chroma,
 )
 from npcpy.gen.response import calculate_cost
+try:
+    import litellm
+except Exception:
+    litellm = None
 from npcpy.memory.search import execute_rag_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
@@ -837,7 +842,7 @@ def embed_kg_facts():
         for i in range(0, len(statements), batch_size):
             batch = statements[i:i + batch_size]
             try:
-                embeddings = get_embeddings(batch)
+                embeddings = get_embeddings(batch, "nomic-embed-text", "ollama")
             except Exception as e:
                 print(f"Failed to get embeddings for batch {i}: {e}")
                 continue
@@ -883,7 +888,7 @@ def search_kg_semantic():
         if not chroma_db_path:
             return jsonify({"error": "CHROMA_DB_PATH not configured", "facts": [], "query": q}), 500
         try:
-            query_embedding = get_embeddings([q])[0]
+            query_embedding = get_embeddings([q], "nomic-embed-text", "ollama")[0]
         except Exception as e:
             return jsonify({
                 "error": f"Failed to generate embedding: {str(e)}",
@@ -4971,12 +4976,13 @@ def stream():
             tool_args['tool_map'] = npc_object.tool_map
         if 'tools' in tool_args and tool_args['tools']:
             tool_args['tool_choice'] = {"type": "auto"}
-    api_url = None
+    api_url = data.get('api_url') or None
+    api_key = data.get('api_key') or None
     if npc_object is not None:
         try:
-            api_url = npc_object.api_url if npc_object.api_url else None
+            api_url = api_url or (npc_object.api_url if npc_object.api_url else None)
         except AttributeError:
-            api_url = None
+            pass
     thinking_kwargs = {}
     if disable_thinking:
         if provider in ('ollama',):
@@ -4996,7 +5002,8 @@ def stream():
             model=model,
             provider=provider,
             npc=npc_object,
-            api_url = api_url,
+            api_url=api_url,
+            api_key=api_key,
             team=team_object,
             stream=True,
             attachments=attachment_paths_for_llm if attachment_paths_for_llm else None,
@@ -5173,12 +5180,12 @@ def stream():
                 print(f"[MCP] iteration {iteration}/{max_agent_iterations} prompt len={len(prompt)}")
                 print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
                 agent_context = f'''The user's working directory is {current_path}
-IMPORTANT AGENT BEHAVIOR:
-- If a tool call fails or returns an error, DO NOT give up. Try alternative approaches.
-- If a file is not found, search for it using different paths or patterns.
-- If one method doesn't work, try another method to accomplish the task.
-- Keep working on the task until it is complete or you have exhausted all reasonable options.
-- When you encounter errors, explain what went wrong and what you're trying next.'''
+                    IMPORTANT AGENT BEHAVIOR:
+                    - If a tool call fails or returns an error, DO NOT give up. Try alternative approaches.
+                    - If a file is not found, search for it using different paths or patterns.
+                    - If one method doesn't work, try another method to accomplish the task.
+                    - Keep working on the task until it is complete or you have exhausted all reasonable options.
+                    - When you encounter errors, explain what went wrong and what you're trying next.'''
                 print(f"[MCP DEBUG] Messages for LLM (iteration {iteration}): {json.dumps(messages, indent=2, default=str)[:3000]}")
                 call_prompt = prompt if iteration == 1 else ""
                 with cancellation_lock:
@@ -5196,6 +5203,8 @@ IMPORTANT AGENT BEHAVIOR:
                         tools=tools_for_llm,
                         stream=True,
                         team=team_object,
+                        api_url=api_url,
+                        api_key=api_key,
                         context=agent_context if iteration == 1 else None,
                         **(params or {}),
                         **thinking_kwargs,
@@ -5306,8 +5315,11 @@ IMPORTANT AGENT BEHAVIOR:
                                         collected_tool_calls[idx]["function"]["name"] = fn.name
                                     if getattr(fn, "arguments", None):
                                         collected_tool_calls[idx]["function"]["arguments"] += fn.arguments
-                if not collected_tool_calls:
-                    if last_response_chunk is not None:
+                if last_response_chunk is not None:
+                    if isinstance(last_response_chunk, dict) and last_response_chunk.get("type") == "usage":
+                        total_input_tokens += last_response_chunk.get("input_tokens", 0) or 0
+                        total_output_tokens += last_response_chunk.get("output_tokens", 0) or 0
+                    else:
                         chunk_usage = getattr(last_response_chunk, 'usage', None)
                         if chunk_usage is None and isinstance(last_response_chunk, dict):
                             chunk_usage = last_response_chunk.get('usage')
@@ -5323,6 +5335,11 @@ IMPORTANT AGENT BEHAVIOR:
                         if eval_count:
                             total_output_tokens += eval_count
 
+                if total_input_tokens or total_output_tokens:
+                    mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider)
+                    yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
+
+                if not collected_tool_calls:
                     if tools_executed and iteration < 10:
                         print("[MCP] no tool calls after prior tools; re-prompting to continue")
                         messages.append({"role": "assistant", "content": collected_content})
@@ -5435,9 +5452,20 @@ IMPORTANT AGENT BEHAVIOR:
                                         input_values=tool_args if isinstance(tool_args, dict) else {},
                                         npc=npc_object
                                     )
-                                    content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
+                                    raw_output = jinx_ctx.get('output') if isinstance(jinx_ctx, dict) else jinx_ctx
+                                    events = []
+                                    content_parts = []
+                                    if hasattr(raw_output, "__iter__") and isinstance(raw_output, types.GeneratorType):
+                                        for event in raw_output:
+                                            events.append(event)
+                                            if isinstance(event, dict) and event.get("type") == "content_delta":
+                                                delta = event.get('choices', [{}])[0].get('delta', {})
+                                                content_parts.append(delta.get('content', ""))
+                                        content = "".join(content_parts)
+                                    else:
+                                        content = str(raw_output) if raw_output is not None else ""
                                     stop = isinstance(jinx_ctx, dict) and jinx_ctx.get('stop_requested')
-                                    return {"content": content, "stop_requested": stop}
+                                    return {"content": content, "stop_requested": stop, "events": events}
                                 elif executor["type"] == "mcp":
                                     tool_func = executor["tool_func"]
                                     print(f"[MCP] Calling tool_func for {tool_name}")
@@ -5469,6 +5497,8 @@ IMPORTANT AGENT BEHAVIOR:
                             else:
                                 value = exec_result.get("value", {})
                                 tool_content = value.get("content", "")
+                                for event in value.get("events", []):
+                                    yield event
                                 if value.get("stop_requested"):
                                     stop_requested = True
                                     print(f"[MCP] stop_requested set by jinx '{tool_name}'")
@@ -5512,9 +5542,6 @@ IMPORTANT AGENT BEHAVIOR:
                     break
                 tool_results_for_db = tool_results
                 prompt = ""
-            mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider) if total_input_tokens or total_output_tokens else 0
-            if total_input_tokens or total_output_tokens:
-                yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
             return
 
         def _cancel_stream():
@@ -5550,6 +5577,35 @@ IMPORTANT AGENT BEHAVIOR:
         tool_call_data = {"id": None, "function_name": None, "arguments": ""}
         total_input_tokens = 0
         total_output_tokens = 0
+
+        def estimate_tokens():
+            if not litellm:
+                return 0, 0
+            try:
+                # Build the prompt messages sent to the LLM so input tokens reflect the full context.
+                input_messages = []
+                for m in (messages or []):
+                    content = m.get('content')
+                    if isinstance(content, list):
+                        text_parts = [part.get('text', '') for part in content if isinstance(part, dict) and part.get('type') == 'text']
+                        content = '\n'.join(text_parts)
+                    if content:
+                        input_messages.append({'role': m.get('role', 'user'), 'content': str(content)})
+                # Include the latest user prompt if it isn't already in messages.
+                if commandstr and (not input_messages or input_messages[-1].get('content') != commandstr):
+                    input_messages.append({'role': 'user', 'content': commandstr})
+                input_tokens = litellm.token_counter(model=f"{provider}/{model}" if provider and '/' not in model else model, messages=input_messages) if input_messages else 0
+            except Exception as e:
+                print(f"[TOKEN_ESTIMATE] input failed: {e}")
+                input_tokens = 0
+            output_text = ''.join(complete_response)
+            try:
+                output_tokens = litellm.token_counter(model=f"{provider}/{model}" if provider and '/' not in model else model, text=output_text) if output_text else 0
+            except Exception as e:
+                print(f"[TOKEN_ESTIMATE] output failed: {e}")
+                output_tokens = 0
+            return input_tokens, output_tokens
+
         try:
             if hasattr(stream_response, "__iter__") and not isinstance(stream_response, (dict, str)):
                 for chunk in stream_response:

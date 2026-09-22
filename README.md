@@ -15,7 +15,7 @@
 ```bash
 pip install npcpy
 ```
-[![MCP Toplist](https://mcptoplist.com/badge/mcp.so%2Fnpcpy%2FNPC-Worldwide.svg)](https://mcptoplist.com/server/mcp.so%2Fnpcpy%2FNPC-Worldwide)
+
 
 ## Quick Examples
 
@@ -48,16 +48,17 @@ The mountain peaks themselves are the fortress we guard. Without the full libera
 ```python
 from npcpy import get_llm_response
 
-
 response = get_llm_response("Who was the celtic god that helped cuchulainn in his time of need as the forces of medb descended upon the men of ulster?", model='gemma4:31b', provider='ollama')
 print(response['response'])
 ```
 ```
 Cú Chulainn was primarily aided by his divine father, the god Lugh, and his foster-father, the warrior-god Fergus mac Róich, as well as the magical support of his teacher Scáthach.
 ```
+
+Try out almost 200 different models from 15 different providers with OrcaRouter using our [referral link](https://www.orcarouter.ai/ref/ref_900cb60d234853be6842)!
+
 ```python
-# try ollama's cloud models
-alicanto_test = get_llm_response('what does alicanto the bird show travelers in the night?', model='minimax-m2.7:cloud', provider='ollama',)
+alicanto_test = get_llm_response('what does alicanto the bird show travelers in the night?', model='google/gemini-3.8-flash', provider='orcarouter')
 
 print(alicanto_test['response'])
 ```
@@ -69,6 +70,7 @@ The bird **shows the way to hidden water (and sometimes to buried silver or gold
 
 ### Agent with tools
 The `Agent` class in `npcpy` comes with a set of default tools (sh, python, edit_file, web_search, etc.)
+
 
 ```python
 from npcpy import Agent
@@ -327,6 +329,8 @@ kg, sleep_report = kg_sleep_process(kg, model="gemma3:4b", provider="ollama")
 kg, dream_report = kg_dream_process(kg, model="gemma3:4b", provider="ollama", num_seeds=3)
 
 print(f"KG has {len(kg['facts'])} facts and {len(kg['concepts'])} concepts")
+assert len(kg['facts']) > 0, "KG extraction returned no facts"
+assert len(kg['concepts']) > 0, "KG extraction returned no concepts"
 ```
 
 ### Flask Serving for NPC Teams
@@ -453,7 +457,7 @@ print(result['output'])
 ```python
 from npcpy import NPC, Team
 
-team = Team(team_path='./npc_team')
+team = Team(team_path='examples/npc_team')
 result = team.orchestrate("Analyze the latest sales data and draft a report")
 print(result['output'])
 ```
@@ -732,7 +736,7 @@ You can also pass a list directly to `jinx.execute()`:
 ```python
 from npcpy.npc_compiler import Jinx
 
-jinx = Jinx(jinx_path='npc_team/jinxes/analyze.jinx')
+jinx = Jinx(jinx_path='examples/npc_team/jinxes/analyze.jinx')
 results = jinx.execute({'topic': 'rate limiting'}, npc=npcs)  # list → parallel NPCArray run
 ```
 
@@ -818,7 +822,7 @@ Maintain a population of KG variants that evolve independently. Each individual 
 ```python
 from npcpy.memory.kg_population import SememolutionPopulation
 
-pop = SememolutionPopulation(population_size=100, sample_size=10)
+pop = SememolutionPopulation(model='qwen3.5:2b', provider='ollama', population_size=100, sample_size=10)
 pop.initialize()
 
 pop.assimilate_text("""
@@ -1025,7 +1029,7 @@ The `model` value can be a Hugging Face repo id (downloaded and cached automatic
 pip install npcpy              # base
 pip install npcpy[lite]        # + API provider libraries
 pip install npcpy[local]       # + ollama, diffusers, transformers, airllm
-pip install npcpy[yap]         # + TTS/STT
+pip install npcpy[tts]         # + TTS/STT
 pip install npcpy[all]         # everything
 ```
 
@@ -1062,16 +1066,23 @@ Full documentation, guides, and API reference at [npcpy.readthedocs.io](https://
 
 ## Links
 
+- **[NPC Shell](https://github.com/npc-worldwide/npcsh)** — Command-line shell for interacting with NPCs 
 - **[Incognide](https://github.com/npc-worldwide/incognide)** — Desktop environment with AI chat, browser, file viewers, code editor, terminal, knowledge graphs, team management, and more ([download](https://enpisi.com/incognide))
-- **[NPC Shell](https://github.com/npc-worldwide/npcsh)** — Command-line shell for interacting with NPCs
-
+- [incognidium](https://github.com/npc-worldwide/incognidium) - a rust-native web browser with an NPC Team focused on developing and testing the incognidium browser against Firefox and Chromium.
+-
+### Use the NPC team data layer organization in other languages:
+- [npcrs](https://github.com/npc-worldwide/npcsh) - rust port of npcpy
+- [nql](https://github.com/npc-worldwide/nql) - SQL-native framework for running agents inside of databases that support LLMs like Google BigQuery, Snowflake, and Databricks. 
+- [npcts](https://github.com/npc-worldwide/npcts) - typescript library for NPC data layer
+- [npcd](https://github.com/npc-worldwide/npcd) - rust port of npcd
+- 
 
 ## Research
 
 - A Quantum Semantic Framework for natural language processing: [arxiv](https://arxiv.org/abs/2506.10077), accepted at [QNLP 2025](https://qnlp.ai)
 - TinyTim: A Family of Language Models for Divergent Generation [arxiv](https://arxiv.org/abs/2508.11607), accepted at NeurIPS 2025 Creative AI Track
 - The production of meaning in the processing of natural language: [arxiv](https://arxiv.org/abs/2603.20381), accepted at [QNLP 2026](https://qnlp.ai)
-- ALARA for Agents: Least-Privilege Context Engineering Through Portable Composable Multi-Agent Teams: [arxiv](https://arxiv.org/abs/2603.20380), accepted at [HAXD 2026](https://intelligent-systems.net/haxd2026/)
+- Herding CATs: ALARA for Agent Harness Engineering in Portable Composable Multi-Agent Teams - [arxiv](https://arxiv.org/abs/2603.20380), accepted at [HAXD 2026](https://intelligent-systems.net/haxd2026/)
 
 Has your research benefited from npcpy? Let us know!
 
