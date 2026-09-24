@@ -703,6 +703,15 @@ class Jinx:
             "NPCArray": NPCArray,
             "infer_matrix": infer_matrix,
             "ensemble_vote": ensemble_vote,
+            "choice": npy.ft.system1.choice,
+            "noul": npy.ft.system1.noul,
+            "score": npy.ft.system1.score,
+            "predict_system1": npy.ft.system1.predict,
+            "train_system1": npy.ft.system1.train_system1,
+            "load_system1": npy.ft.system1.load_system1,
+            "System1Config": npy.ft.system1.System1Config,
+            "System1Example": npy.ft.system1.System1Example,
+            "System1Predictor": npy.ft.system1.System1Predictor,
         }
         
         if extra_globals:
