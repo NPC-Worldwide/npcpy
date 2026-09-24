@@ -66,6 +66,17 @@ from npcpy.ft.system1 import (
     load_system1,
     System1Predictor,
 )
+from npcpy.gen.decision import (
+    DecisionQuestion,
+    DecisionRouter,
+    DecisionSystem1,
+    decision_choice,
+    decision_noul,
+    decision_score,
+    decision_predict,
+    decision_route,
+    load_decision_model,
+)
 try:
     import litellm
 except Exception:
@@ -6876,6 +6887,97 @@ def system1_score_endpoint():
         predictor = load_system1(model_path) if model_path else None
         result = system1_score(state, instructions, criteria, predictor=predictor)
         return jsonify(result.to_dict())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/decision/predict', methods=['POST'])
+def decision_predict_endpoint():
+    try:
+        data = request.json or {}
+        state = data.get('state')
+        raw_questions = data.get('questions', [])
+        model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
+        questions = [DecisionQuestion(**q) for q in raw_questions]
+        result = decision_predict(state, questions, model_path=model_path)
+        return jsonify(result.to_dict())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/decision/choice', methods=['POST'])
+def decision_choice_endpoint():
+    try:
+        data = request.json or {}
+        state = data.get('state')
+        instructions = data.get('instructions')
+        criteria = data.get('criteria')
+        model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
+        if not instructions or not criteria:
+            return jsonify({'error': 'instructions and criteria required'}), 400
+        result = decision_choice(state, instructions, criteria, model_path=model_path)
+        return jsonify(result.to_dict())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/decision/noul', methods=['POST'])
+def decision_noul_endpoint():
+    try:
+        data = request.json or {}
+        state = data.get('state')
+        instructions = data.get('instructions')
+        model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
+        if not instructions:
+            return jsonify({'error': 'instructions required'}), 400
+        result = decision_noul(state, instructions, model_path=model_path)
+        return jsonify(result.to_dict())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/decision/score', methods=['POST'])
+def decision_score_endpoint():
+    try:
+        data = request.json or {}
+        state = data.get('state')
+        instructions = data.get('instructions')
+        criteria = data.get('criteria')
+        model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
+        if not instructions or not criteria:
+            return jsonify({'error': 'instructions and criteria required'}), 400
+        result = decision_score(state, instructions, criteria, model_path=model_path)
+        return jsonify(result.to_dict())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/decision/route', methods=['POST'])
+def decision_route_endpoint():
+    try:
+        data = request.json or {}
+        state = data.get('state')
+        instructions = data.get('instructions')
+        tiers = data.get('tiers')
+        criteria = data.get('criteria')
+        threshold = data.get('threshold')
+        model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
+        if not instructions or not tiers:
+            return jsonify({'error': 'instructions and tiers required'}), 400
+        result = decision_route(
+            state,
+            instructions,
+            tiers,
+            criteria=criteria,
+            threshold=threshold,
+            model_path=model_path,
+        )
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
