@@ -5,9 +5,9 @@ try:
     from torch.utils.data import DataLoader, Dataset as TorchDataset
 
     TORCH_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     torch = None
-    nn = None    
+    nn = None
     F = None
     DataLoader = None
     TorchDataset = None
