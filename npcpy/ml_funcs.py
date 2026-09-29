@@ -37,7 +37,7 @@ try:
     import torch
     import torch.nn as nn
     _torch_available = True
-except ImportError:
+except (ImportError, OSError):
     pass
 
 try:
