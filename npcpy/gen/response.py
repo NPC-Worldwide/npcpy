@@ -15,7 +15,7 @@ try:
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
-except ImportError:
+except (ImportError, OSError):
     torch = nn = F = None
 
 try:
@@ -222,13 +222,13 @@ def get_model_context_window(model: str, provider: str = None) -> int:
         try:
             client = ollama.Client()
             info = client.show(model)
-            params = info.get("model_info", {})
+            params = info.get("modelinfo") or info.get("model_info") or {}
             for key, val in params.items():
                 if "context_length" in key:
                     return int(val)
         except Exception:
             pass
-        return int(os.environ.get("OLLAMA_NUM_CTX", 32768))
+        return 0
 
     return 0
 

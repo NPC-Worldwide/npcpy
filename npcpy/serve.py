@@ -104,6 +104,7 @@ from npcpy.llm_funcs import (
     get_llm_response, check_llm_command
 )
 from npcpy.gen.embeddings import get_embeddings
+from npcpy.gen.response import get_model_context_window
 from termcolor import cprint
 from npcpy.tools import auto_tools
 from npcpy.streaming import (
@@ -1984,10 +1985,16 @@ def get_models():
         if not m or (m, p) in seen:
             return
         seen.add((m, p))
+        try:
+            context_window = get_model_context_window(m, p)
+        except Exception:
+            context_window = 0
+        context_window = int(context_window) if isinstance(context_window, (int, float)) and context_window > 0 else 0
         formatted_models.append({
             "value": m,
             "provider": p,
             "display_name": f"{m} | {p}",
+            "context_window": context_window,
         })
     def _resolve_providers(providers_list, scan_path):
         if not providers_list:
@@ -2070,6 +2077,7 @@ def get_available_models():
                 "value": model_name,
                 "provider": model_provider,
                 "display_name": f"{model_name} | {model_provider}",
+                "context_window": _context_window_for(model_name, model_provider),
             })
         return jsonify({"models": models, "error": None})
     except Exception as e:
@@ -6048,6 +6056,52 @@ def extract_facts_preview():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/conversation/compress", methods=["POST"])
+def compress_conversation():
+    """Condense a list of messages using breathe()."""
+    try:
+        data = request.json or {}
+        messages = data.get("messages", [])
+        model = data.get("model")
+        provider = data.get("provider")
+        npc_name = data.get("npc")
+        current_path = data.get("currentPath")
+        context = data.get("context")
+
+        if not messages:
+            return jsonify({"error": "messages are required"}), 400
+
+        print(f"[COMPRESSION] Summarizing {len(messages)} messages (model={model}, provider={provider}, npc={npc_name})")
+        if context:
+            print(f"[COMPRESSION] Instructions: {context[:200]}{'...' if len(context) > 200 else ''}")
+
+        npc_object = None
+        if npc_name and current_path:
+            try:
+                from npcpy.npc_compiler import load_npcs
+                npcs = load_npcs(current_path)
+                npc_object = npcs.get(npc_name)
+            except Exception:
+                pass
+
+        result = breathe(
+            messages=messages,
+            model=model,
+            provider=provider,
+            npc=npc_object,
+            context=context,
+        )
+        output = result.get("output") or (result.get("messages") or [{}])[0].get("content") or ""
+        print(f"[COMPRESSION] Summary returned ({len(output)} chars):")
+        print(output)
+        return jsonify(result)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/knowledge/extract-and-store", methods=["POST"])
 def extract_and_store_facts():
     """Extract facts from conversation text and store as pending memories."""
