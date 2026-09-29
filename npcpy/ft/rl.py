@@ -8,7 +8,7 @@ import os
 import pandas as pd
 try:
     import torch
-except ImportError:
+except (ImportError, OSError):
     torch = None
 
 try:
