@@ -42,11 +42,34 @@ except Exception:
 
 import numpy as np
 
+
+def _default_device() -> str:
+    """Pick the best available accelerator, falling back to CPU.
+
+    Probes CUDA, then Apple MPS, then CPU. This only chooses the *default*;
+    an explicit ``device`` passed by the caller is always honoured.
+    """
+    if not TORCH_AVAILABLE:
+        return "cpu"
+    try:
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    try:
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
 @dataclass
 class EmbeddingConfig:
     base_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     output_model_path: str = "models/embedding"
-    device: str = "cpu"
+    device: str = field(default_factory=_default_device)
     embedding_dim: int = 384
     num_train_epochs: int = 10
     batch_size: int = 16
@@ -66,6 +89,7 @@ class EmbeddingConfig:
     num_hidden_layers: int = 6
     num_attention_heads: int = 6
     intermediate_size: int = 1536
+    trust_remote_code: bool = False
 
 @dataclass
 class HilbertConfig:
@@ -94,6 +118,7 @@ class HilbertConfig:
     num_hidden_layers: int = 6
     num_attention_heads: int = 6
     intermediate_size: int = 1536
+    trust_remote_code: bool = False
 
 def _mean_pooling(hidden_states, attention_mask):
     mask = attention_mask.unsqueeze(-1).float()
@@ -201,7 +226,10 @@ def _load_base_model(config, tokenizer):
         base = _create_foundation_model(config)
         base.resize_token_embeddings(len(tokenizer))
     else:
-        base = AutoModel.from_pretrained(config.base_model_name)
+        base = AutoModel.from_pretrained(
+            config.base_model_name,
+            trust_remote_code=config.trust_remote_code,
+        )
     return base
 
 def run_embedding_sft_torch(
@@ -218,7 +246,9 @@ def run_embedding_sft_torch(
 
     os.makedirs(config.output_model_path, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.base_model_name, trust_remote_code=config.trust_remote_code
+    )
     base = _load_base_model(config, tokenizer)
 
     device = torch.device(config.device if config.device != "mlx" else "cpu")
@@ -308,7 +338,9 @@ def run_embedding_sft_mlx(
 
     os.makedirs(config.output_model_path, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.base_model_name, trust_remote_code=config.trust_remote_code
+    )
     base = _load_base_model(config, tokenizer)
     base.eval()
 
@@ -387,7 +419,9 @@ def run_hilbert_embedding_sft_torch(
 
     os.makedirs(config.output_model_path, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.base_model_name, trust_remote_code=config.trust_remote_code
+    )
     base = _load_base_model(config, tokenizer)
 
     device = torch.device(config.device if config.device != "mlx" else "cpu")
@@ -484,7 +518,9 @@ def run_hilbert_embedding_sft_mlx(
 
     os.makedirs(config.output_model_path, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.base_model_name, trust_remote_code=config.trust_remote_code
+    )
     base = _load_base_model(config, tokenizer)
     base.eval()
 
