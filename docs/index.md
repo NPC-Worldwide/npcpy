@@ -27,6 +27,7 @@ Welcome to `npcpy`, the python library for the NPC Toolkit and the home of the c
 - **[Image, Audio & Video](guides/image-audio-video.md)** - Generation with Ollama, diffusers, OpenAI, Gemini
 - **[Knowledge Graphs](guides/knowledge-graphs.md)** - Build and evolve knowledge graphs from text
 - **[Fine-Tuning & Evolution](guides/fine-tuning.md)** - SFT, RL, diffusion, genetic algorithms
+- **[System One Decisions](guides/system-one.md)** - Fast choice/yes-no/scoring decisions via local models or Ollama
 - **[Serving & Deployment](guides/serving.md)** - Flask server and REST API
 - **[ML Functions](guides/ml-funcs.md)** - Scikit-learn grid search, ensemble prediction
 - **[Building Applications](guides/building-applications.md)** - Database persistence, memory, NPCSQL, desktop automation, triggers

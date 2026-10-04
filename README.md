@@ -81,7 +81,6 @@ print(agent.run("Find all Python files over 500 lines in this repo and list them
 The following Python files contain more than 500 lines:
  - `./npcpy/npc_sysenv.py` (1486 lines)
  - `./npcpy/memory/knowledge_graph.py` (1449 lines)
- - `./npcpy/memory/kg_vis.py` (767 lines)
  - `./npcpy/memory/kg_population.py` (618 lines)
 ...
 ```

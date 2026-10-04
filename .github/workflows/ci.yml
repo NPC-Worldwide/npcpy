@@ -87,6 +87,11 @@ jobs:
         run: |
           pytest tests/test_genetic_evolver.py tests/test_diff.py tests/test_memory_processor.py tests/test_browser.py -v --tb=short --timeout=60
 
+      - name: Run System One decision tests (mock Ollama)
+        run: |
+          # Uses a mock Ollama server, so no models or API keys are needed.
+          pytest tests/test_gen_systemone.py tests/test_gen_decision_systemone.py -v --tb=short --timeout=120
+
   # =============================================================================
   # Flask Server Tests - Test API endpoints
   # =============================================================================
@@ -110,7 +115,7 @@ jobs:
 
       - name: Run Flask server tests
         run: |
-          pytest tests/test_serve.py -v --tb=short --timeout=120 || true
+          pytest tests/test_serve.py tests/test_serve_systemone.py -v --tb=short --timeout=120 || true
         continue-on-error: true
 
   # =============================================================================

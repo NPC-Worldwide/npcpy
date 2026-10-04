@@ -56,6 +56,18 @@ from .gen.decision import (
     decision_route,
 )
 
+from .gen.systemone import (
+    OllamaSystem1Config,
+    OllamaSystem1Client,
+    OllamaSystem1Error,
+    systemone,
+    parse_answers,
+    load_ollama_system1,
+    available as systemone_available,
+    require_available as require_systemone,
+    list_models as list_systemone_models,
+)
+
 from .db import ensure_engine, normalize_path_for_db, deep_to_dict, CustomJSONEncoder
 
 from .memory.knowledge_graph import kg_initial, kg_evolve_incremental, kg_search_facts

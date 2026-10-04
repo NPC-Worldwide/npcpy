@@ -112,9 +112,13 @@ class ScoreResult:
     score: float
     probabilities: Dict[str, float]
     confidence: float
+    legend: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"score": self.score, "probabilities": self.probabilities, "confidence": self.confidence}
+        payload = {"score": self.score, "probabilities": self.probabilities, "confidence": self.confidence}
+        if self.legend is not None:
+            payload["legend"] = self.legend
+        return payload
 
 
 @dataclass
