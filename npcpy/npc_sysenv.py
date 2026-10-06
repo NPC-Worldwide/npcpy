@@ -181,14 +181,25 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
             logging.info(f"litellm not available for model listing: {e}")
             litellm = None
 
+        try:
+            litellm.utils.refresh_model_cost_map()
+        except Exception:
+            pass
+
         for provider, (env_var, attr_name) in provider_model_attrs.items():
             if env_var not in env_vars and not os.environ.get(env_var):
                 continue
             if litellm is None:
                 continue
             try:
+                cost_map_models = []
+                if hasattr(litellm, 'model_cost') and isinstance(litellm.model_cost, dict):
+                    cost_map_models = [
+                        name for name, info in litellm.model_cost.items()
+                        if isinstance(info, dict) and info.get('litellm_provider') == provider
+                    ]
                 litellm_models = getattr(litellm, attr_name, None) or set() if attr_name else set()
-                model_set = litellm_models | _PROVIDER_FALLBACK_MODELS.get(provider, set())
+                model_set = set(cost_map_models) | litellm_models | _PROVIDER_FALLBACK_MODELS.get(provider, set())
                 if not model_set:
                     continue
                 for model_id in model_set:

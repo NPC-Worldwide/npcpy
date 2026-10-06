@@ -66,6 +66,7 @@ from npcpy.ft.system1 import (
     load_system1,
     System1Predictor,
 )
+from npcpy.gen.systemone import load_ollama_system1
 from npcpy.gen.decision import (
     DecisionQuestion,
     DecisionRouter,
@@ -76,6 +77,7 @@ from npcpy.gen.decision import (
     decision_predict,
     decision_route,
     load_decision_model,
+    _resolve_backend,
 )
 try:
     import litellm
@@ -1929,8 +1931,6 @@ def execute_jinx():
             i += 1
     input_values = extract_jinx_inputs(fixed_args, jinx)
     print(f'Executing jinx with input_values: {input_values}', file=sys.stderr)
-    if npc_object and hasattr(npc_object, 'jinxes_dict'):
-        all_jinxes.update(npc_object.jinxes_dict)
     if conversation_id not in app.jinx_conversation_contexts:
         app.jinx_conversation_contexts[conversation_id] = {}
     jinx_local_context = app.jinx_conversation_contexts[conversation_id]
@@ -1968,6 +1968,9 @@ def execute_jinx():
         return Response(final_output_string, mimetype="text/html")
     else:
         return Response(final_output_string, mimetype="text/plain")
+_context_window_cache: dict = {}
+
+
 @app.route("/api/models", methods=["GET"])
 def get_models():
     """
@@ -1985,11 +1988,15 @@ def get_models():
         if not m or (m, p) in seen:
             return
         seen.add((m, p))
-        try:
-            context_window = get_model_context_window(m, p)
-        except Exception:
-            context_window = 0
-        context_window = int(context_window) if isinstance(context_window, (int, float)) and context_window > 0 else 0
+        if (m, p) in _context_window_cache:
+            context_window = _context_window_cache[(m, p)]
+        else:
+            try:
+                context_window = get_model_context_window(m, p)
+            except Exception:
+                context_window = 0
+            context_window = int(context_window) if isinstance(context_window, (int, float)) and context_window > 0 else 0
+            _context_window_cache[(m, p)] = context_window
         formatted_models.append({
             "value": m,
             "provider": p,
@@ -2073,11 +2080,18 @@ def get_available_models():
             if key in seen:
                 continue
             seen.add(key)
+            if key not in _context_window_cache:
+                try:
+                    cw = get_model_context_window(model_name, model_provider)
+                    cw = int(cw) if isinstance(cw, (int, float)) and cw > 0 else 0
+                except Exception:
+                    cw = 0
+                _context_window_cache[key] = cw
             models.append({
                 "value": model_name,
                 "provider": model_provider,
                 "display_name": f"{model_name} | {model_provider}",
-                "context_window": _context_window_for(model_name, model_provider),
+                "context_window": _context_window_cache[key],
             })
         return jsonify({"models": models, "error": None})
     except Exception as e:
@@ -6874,18 +6888,27 @@ def track_activity():
     except Exception as e:
         print(f"Error tracking activity: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _system1_predictor_from_request(data):
+    """Select the local-trained or Ollama System One predictor for a request."""
+    model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
+    if model_path:
+        return load_system1(model_path)
+    if _resolve_backend(data.get('backend')) == 'ollama':
+        return load_ollama_system1(model=data.get('model'), base_url=data.get('base_url'))
+    return None
+
+
 @app.route('/api/system1/predict', methods=['POST'])
 def system1_predict_endpoint():
     try:
         data = request.json or {}
         state = data.get('state')
         questions = data.get('questions')
-        model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
         if not questions:
             return jsonify({'error': 'questions required'}), 400
-        predictor = None
-        if model_path:
-            predictor = load_system1(model_path)
+        predictor = _system1_predictor_from_request(data)
         result = system1_predict(state, questions, predictor=predictor)
         return jsonify(result.to_dict())
     except Exception as e:
@@ -6900,10 +6923,9 @@ def system1_choice_endpoint():
         state = data.get('state')
         instructions = data.get('instructions')
         criteria = data.get('criteria')
-        model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
         if not instructions or not criteria:
             return jsonify({'error': 'instructions and criteria required'}), 400
-        predictor = load_system1(model_path) if model_path else None
+        predictor = _system1_predictor_from_request(data)
         result = system1_choice(state, instructions, criteria, predictor=predictor)
         return jsonify(result.to_dict())
     except Exception as e:
@@ -6917,10 +6939,9 @@ def system1_noul_endpoint():
         data = request.json or {}
         state = data.get('state')
         instructions = data.get('instructions')
-        model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
         if not instructions:
             return jsonify({'error': 'instructions required'}), 400
-        predictor = load_system1(model_path) if model_path else None
+        predictor = _system1_predictor_from_request(data)
         result = system1_noul(state, instructions, predictor=predictor)
         return jsonify(result.to_dict())
     except Exception as e:
@@ -6935,10 +6956,9 @@ def system1_score_endpoint():
         state = data.get('state')
         instructions = data.get('instructions')
         criteria = data.get('criteria')
-        model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
         if not instructions or not criteria:
             return jsonify({'error': 'instructions and criteria required'}), 400
-        predictor = load_system1(model_path) if model_path else None
+        predictor = _system1_predictor_from_request(data)
         result = system1_score(state, instructions, criteria, predictor=predictor)
         return jsonify(result.to_dict())
     except Exception as e:
@@ -6954,7 +6974,10 @@ def decision_predict_endpoint():
         raw_questions = data.get('questions', [])
         model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
         questions = [DecisionQuestion(**q) for q in raw_questions]
-        result = decision_predict(state, questions, model_path=model_path)
+        result = decision_predict(
+            state, questions, model_path=model_path,
+            backend=data.get('backend'), model=data.get('model'), base_url=data.get('base_url'),
+        )
         return jsonify(result.to_dict())
     except Exception as e:
         traceback.print_exc()
@@ -6971,7 +6994,10 @@ def decision_choice_endpoint():
         model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
         if not instructions or not criteria:
             return jsonify({'error': 'instructions and criteria required'}), 400
-        result = decision_choice(state, instructions, criteria, model_path=model_path)
+        result = decision_choice(
+            state, instructions, criteria, model_path=model_path,
+            backend=data.get('backend'), model=data.get('model'), base_url=data.get('base_url'),
+        )
         return jsonify(result.to_dict())
     except Exception as e:
         traceback.print_exc()
@@ -6987,7 +7013,10 @@ def decision_noul_endpoint():
         model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
         if not instructions:
             return jsonify({'error': 'instructions required'}), 400
-        result = decision_noul(state, instructions, model_path=model_path)
+        result = decision_noul(
+            state, instructions, model_path=model_path,
+            backend=data.get('backend'), model=data.get('model'), base_url=data.get('base_url'),
+        )
         return jsonify(result.to_dict())
     except Exception as e:
         traceback.print_exc()
@@ -7004,7 +7033,10 @@ def decision_score_endpoint():
         model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
         if not instructions or not criteria:
             return jsonify({'error': 'instructions and criteria required'}), 400
-        result = decision_score(state, instructions, criteria, model_path=model_path)
+        result = decision_score(
+            state, instructions, criteria, model_path=model_path,
+            backend=data.get('backend'), model=data.get('model'), base_url=data.get('base_url'),
+        )
         return jsonify(result.to_dict())
     except Exception as e:
         traceback.print_exc()

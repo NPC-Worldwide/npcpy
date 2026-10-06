@@ -228,6 +228,14 @@ def get_model_context_window(model: str, provider: str = None) -> int:
                     return int(val)
         except Exception:
             pass
+        env_ctx = os.environ.get("OLLAMA_NUM_CTX")
+        if env_ctx:
+            try:
+                env_val = int(env_ctx)
+                if env_val > 0:
+                    return env_val
+            except ValueError:
+                pass
         return 0
 
     return 0

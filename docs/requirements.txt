@@ -17,7 +17,7 @@ matplotlib
 mkdocs
 mkdocstrings
 mkdocstrings-python
-pymdown-extensions
+pymdown-extensions>=12.1
 chroptiks
 pyvis
 nltk

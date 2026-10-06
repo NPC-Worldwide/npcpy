@@ -45,6 +45,7 @@ nav:
     - Image, Audio & Video: guides/image-audio-video.md
     - Knowledge Graphs: guides/knowledge-graphs.md
     - Fine-Tuning & Evolution: guides/fine-tuning.md
+    - System One Decisions: guides/system-one.md
     - Serving & Deployment: guides/serving.md
     - ML Functions: guides/ml-funcs.md
     - Building Applications: guides/building-applications.md
@@ -55,6 +56,7 @@ nav:
     - NPCArray: api/npc_array.md
     - ML Functions: api/ml_funcs.md
     - Generation: api/gen.md
+    - System One: api/system1.md
     - Knowledge Graph: api/knowledge_graph.md
     - Data Loading: api/data.md
     - Memory & Search: api/memory.md

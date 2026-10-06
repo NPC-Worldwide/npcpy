@@ -20,6 +20,12 @@ from npcpy.ft.system1 import (
     score as _system1_score,
     train_system1,
 )
+from npcpy.gen.systemone import (
+    DEFAULT_MODEL as DEFAULT_OLLAMA_DECISION_MODEL,
+    OllamaSystem1Client,
+    OllamaSystem1Config,
+    load_ollama_system1,
+)
 
 
 @dataclass
@@ -52,6 +58,34 @@ def _state_to_text(state: Union[str, Dict[str, Any], List[Any]]) -> str:
     if isinstance(state, str):
         return state
     return json.dumps(state, ensure_ascii=False, default=str)
+
+
+_OLLAMA_BACKEND_ALIASES = {"ollama", "systemone", "system_one", "system-1", "jev"}
+_LOCAL_BACKEND_ALIASES = {"local", "sklearn", "train", "local_embeddings", "embedded"}
+
+
+def _resolve_backend(backend: Optional[str]) -> str:
+    """Resolve the decision backend, falling back to ``NPCPY_SYSTEM1_BACKEND``."""
+    if backend is None:
+        backend = os.environ.get("NPCPY_SYSTEM1_BACKEND", "local")
+    key = str(backend).strip().lower()
+    if key in _OLLAMA_BACKEND_ALIASES:
+        return "ollama"
+    if key in _LOCAL_BACKEND_ALIASES:
+        return "local"
+    raise ValueError(
+        f"Unknown decision backend: {backend!r}. Expected 'local' or 'ollama'."
+    )
+
+
+def _default_ollama_config(
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> OllamaSystem1Config:
+    return OllamaSystem1Config(
+        model=model or os.environ.get("NPCPY_SYSTEM1_OLLAMA_MODEL") or DEFAULT_OLLAMA_DECISION_MODEL,
+        base_url=base_url,
+    )
 
 
 def _examples_from_records(
@@ -141,18 +175,51 @@ def load_decision_examples(
 
 
 class DecisionSystem1:
+    """System One decision helper.
+
+    ``backend="local"`` (default) trains a small classifier over embeddings
+    (see :mod:`npcpy.ft.system1`). ``backend="ollama"`` delegates to a local
+    Ollama System One model (``/v1/systemone``, Ollama >= 0.35.0), which needs
+    no training.
+    """
+
     def __init__(
         self,
         model_path: Optional[str] = None,
         config: Optional[System1Config] = None,
+        backend: Optional[str] = None,
+        ollama_model: Optional[str] = None,
+        ollama_base_url: Optional[str] = None,
+        ollama_config: Optional[OllamaSystem1Config] = None,
     ):
+        self.backend = _resolve_backend(backend)
         self.config = config or System1Config()
-        self.predictor: Optional[System1Predictor] = None
+        self.predictor: Optional[Any] = None
         self.model_path: Optional[str] = None
-        if model_path is not None:
+        self.ollama_config: Optional[OllamaSystem1Config] = None
+        if self.backend == "ollama":
+            self.ollama_config = ollama_config or _default_ollama_config(
+                model=ollama_model, base_url=ollama_base_url
+            )
+            self.predictor = OllamaSystem1Client(self.ollama_config)
+        elif model_path is not None:
             self.load(model_path)
 
+    @classmethod
+    def from_ollama(
+        cls,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        **kwargs,
+    ) -> "DecisionSystem1":
+        """Build a decision helper backed by a local Ollama decision model."""
+        return cls(backend="ollama", ollama_model=model, ollama_base_url=base_url, **kwargs)
+
     def load(self, path: str) -> "DecisionSystem1":
+        if self.backend == "ollama":
+            raise ValueError(
+                f"The Ollama backend does not load local model paths; set ollama_model and run `ollama pull <model>` instead."
+            )
         self.predictor = load_system1(path)
         self.model_path = path
         return self
@@ -162,6 +229,10 @@ class DecisionSystem1:
         examples: Union[List[System1Example], List[Dict[str, Any]]],
         output_dir: Optional[str] = None,
     ) -> str:
+        if self.backend == "ollama":
+            raise ValueError(
+                f"The Ollama System One backend is pre-trained; no training is required. Pull a decision model with `ollama pull nimble`."
+            )
         if examples and isinstance(examples[0], dict):
             examples = _examples_from_records(examples)
         config = self.config
@@ -265,7 +336,8 @@ class DecisionSystem1:
         return batch
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
+            "backend": self.backend,
             "model_path": self.model_path,
             "config": {
                 "encoder_name": self.config.encoder_name,
@@ -274,6 +346,12 @@ class DecisionSystem1:
                 "device": self.config.device,
             },
         }
+        if self.ollama_config is not None:
+            payload["ollama"] = {
+                "model": self.ollama_config.model,
+                "base_url": self.ollama_config.resolved_base_url(),
+            }
+        return payload
 
 
 def train_decision_model(
@@ -296,11 +374,13 @@ def train_decision_model(
 
 
 def load_decision_model(path: str) -> DecisionSystem1:
-    return DecisionSystem1().load(path)
+    return DecisionSystem1(backend="local").load(path)
 
 
 _default_decision_model: Optional[DecisionSystem1] = None
 _default_decision_model_path: Optional[str] = None
+_default_ollama_client: Optional[OllamaSystem1Client] = None
+_default_ollama_key: Optional[tuple] = None
 
 
 def _get_default_decision_model() -> Optional[DecisionSystem1]:
@@ -312,18 +392,43 @@ def _get_default_decision_model() -> Optional[DecisionSystem1]:
     return _default_decision_model
 
 
+def _get_ollama_client(
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> OllamaSystem1Client:
+    global _default_ollama_client, _default_ollama_key
+    if model is not None or base_url is not None:
+        return load_ollama_system1(model=model, base_url=base_url)
+    key = (
+        os.environ.get("NPCPY_SYSTEM1_OLLAMA_MODEL"),
+        os.environ.get("NPCPY_OLLAMA_BASE_URL"),
+        os.environ.get("OLLAMA_HOST"),
+    )
+    if _default_ollama_client is None or key != _default_ollama_key:
+        _default_ollama_client = load_ollama_system1()
+        _default_ollama_key = key
+    return _default_ollama_client
+
+
 def decision_choice(
     state: Union[str, Dict[str, Any]],
     instructions: str,
     criteria: Dict[str, str],
     model_path: Optional[str] = None,
     question_name: str = "default",
+    backend: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> ChoiceResult:
     if model_path is not None:
         return load_decision_model(model_path).choice(state, instructions, criteria, question_name=question_name)
-    model = _get_default_decision_model()
-    if model is not None:
-        return model.choice(state, instructions, criteria, question_name=question_name)
+    if _resolve_backend(backend) == "ollama":
+        return _get_ollama_client(model, base_url).choice(
+            state, instructions, criteria, question_name=question_name
+        )
+    default_model = _get_default_decision_model()
+    if default_model is not None:
+        return default_model.choice(state, instructions, criteria, question_name=question_name)
     return _system1_choice(state, instructions, criteria)
 
 
@@ -333,12 +438,19 @@ def decision_score(
     criteria: List[str],
     model_path: Optional[str] = None,
     question_name: str = "default",
+    backend: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> ScoreResult:
     if model_path is not None:
         return load_decision_model(model_path).score(state, instructions, criteria, question_name=question_name)
-    model = _get_default_decision_model()
-    if model is not None:
-        return model.score(state, instructions, criteria, question_name=question_name)
+    if _resolve_backend(backend) == "ollama":
+        return _get_ollama_client(model, base_url).score(
+            state, instructions, criteria, question_name=question_name
+        )
+    default_model = _get_default_decision_model()
+    if default_model is not None:
+        return default_model.score(state, instructions, criteria, question_name=question_name)
     return _system1_score(state, instructions, criteria)
 
 
@@ -347,30 +459,62 @@ def decision_noul(
     instructions: str,
     model_path: Optional[str] = None,
     question_name: str = "default",
+    backend: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> NoulResult:
     if model_path is not None:
         return load_decision_model(model_path).noul(state, instructions, question_name=question_name)
-    model = _get_default_decision_model()
-    if model is not None:
-        return model.noul(state, instructions, question_name=question_name)
+    if _resolve_backend(backend) == "ollama":
+        return _get_ollama_client(model, base_url).noul(
+            state, instructions, question_name=question_name
+        )
+    default_model = _get_default_decision_model()
+    if default_model is not None:
+        return default_model.noul(state, instructions, question_name=question_name)
     return _system1_noul(state, instructions)
+
+
+def _questions_payload(questions: List[DecisionQuestion]) -> Dict[str, Dict[str, Any]]:
+    payload = {q.name: {"type": q.type, "instructions": q.instructions} for q in questions}
+    for q in questions:
+        if q.criteria is not None:
+            payload[q.name]["criteria"] = q.criteria
+    return payload
 
 
 def decision_predict(
     state: Union[str, Dict[str, Any]],
     questions: List[DecisionQuestion],
     model_path: Optional[str] = None,
+    backend: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> System1Result:
     if model_path is not None:
         return load_decision_model(model_path).decide(state, questions)
-    model = _get_default_decision_model()
-    if model is not None:
-        return model.decide(state, questions)
-    payload = {q.name: {"type": q.type, "instructions": q.instructions} for q in questions}
-    for q in questions:
-        if q.criteria is not None:
-            payload[q.name]["criteria"] = q.criteria
-    return _system1_predict(state, payload)
+    if _resolve_backend(backend) == "ollama":
+        return _get_ollama_client(model, base_url).predict(state, _questions_payload(questions))
+    default_model = _get_default_decision_model()
+    if default_model is not None:
+        return default_model.decide(state, questions)
+    return _system1_predict(state, _questions_payload(questions))
+
+
+def _route_result(
+    result: ChoiceResult,
+    router: DecisionRouter,
+    threshold: Optional[float],
+) -> Dict[str, Any]:
+    selected = result.choice
+    if threshold is not None and result.confidence < threshold:
+        selected = router.tiers[-1]
+    return {
+        "tier": selected,
+        "confidence": result.confidence,
+        "probabilities": result.probabilities,
+        "tiers": router.tiers,
+    }
 
 
 def _route_with_fallback(
@@ -379,39 +523,26 @@ def _route_with_fallback(
     router: DecisionRouter,
     threshold: Optional[float],
     question_name: str,
-    predictor: Optional[System1Predictor],
+    predictor: Optional[Any],
 ) -> Dict[str, Any]:
-    criteria_keys = set(str(k) for k in router.criteria.keys())
     if predictor is not None:
+        if isinstance(predictor, OllamaSystem1Client):
+            result = predictor.choice(
+                state, instructions, router.criteria, question_name=question_name
+            )
+            return _route_result(result, router, threshold)
+        label_maps = getattr(predictor, "label_maps", {}) or {}
+        criteria_keys = set(str(k) for k in router.criteria.keys())
         try:
             resolved = predictor._resolve_question_name(question_name)
         except Exception:
             resolved = None
-        labels = set(predictor.label_maps.get(resolved, [])) if resolved else set()
+        labels = set(label_maps.get(resolved, [])) if resolved else set()
         if resolved and criteria_keys.issubset(labels):
             result = predictor.choice(state, instructions, router.criteria, question_name=question_name)
-            selected = result.choice
-            confidence = result.confidence
-            probabilities = result.probabilities
-            if threshold is not None and confidence < threshold:
-                selected = router.tiers[-1]
-            return {
-                "tier": selected,
-                "confidence": confidence,
-                "probabilities": probabilities,
-                "tiers": router.tiers,
-            }
+            return _route_result(result, router, threshold)
     fallback = _system1_choice(state, instructions, router.criteria)
-    selected = fallback.choice
-    confidence = fallback.confidence
-    if threshold is not None and confidence < threshold:
-        selected = router.tiers[-1]
-    return {
-        "tier": selected,
-        "confidence": confidence,
-        "probabilities": fallback.probabilities,
-        "tiers": router.tiers,
-    }
+    return _route_result(fallback, router, threshold)
 
 
 def decision_route(
@@ -422,15 +553,20 @@ def decision_route(
     threshold: Optional[float] = None,
     model_path: Optional[str] = None,
     question_name: str = "default",
+    backend: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     router = DecisionRouter(tiers=tiers, criteria=criteria)
-    predictor: Optional[System1Predictor] = None
-    if model_path is not None:
+    predictor: Optional[Any] = None
+    if _resolve_backend(backend) == "ollama":
+        predictor = _get_ollama_client(model, base_url)
+    elif model_path is not None:
         predictor = load_decision_model(model_path).predictor
     else:
-        model = _get_default_decision_model()
-        if model is not None:
-            predictor = model.predictor
+        default_model = _get_default_decision_model()
+        if default_model is not None:
+            predictor = default_model.predictor
     return _route_with_fallback(
         state, instructions, router, threshold, question_name, predictor
     )

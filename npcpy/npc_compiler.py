@@ -712,6 +712,19 @@ class Jinx:
             "System1Config": npy.ft.system1.System1Config,
             "System1Example": npy.ft.system1.System1Example,
             "System1Predictor": npy.ft.system1.System1Predictor,
+            "systemone": npy.gen.systemone.systemone,
+            "load_ollama_system1": npy.gen.systemone.load_ollama_system1,
+            "OllamaSystem1Client": npy.gen.systemone.OllamaSystem1Client,
+            "OllamaSystem1Config": npy.gen.systemone.OllamaSystem1Config,
+            "systemone_available": npy.gen.systemone.available,
+            "decision_choice": npy.gen.decision.decision_choice,
+            "decision_score": npy.gen.decision.decision_score,
+            "decision_noul": npy.gen.decision.decision_noul,
+            "decision_predict": npy.gen.decision.decision_predict,
+            "decision_route": npy.gen.decision.decision_route,
+            "DecisionSystem1": npy.gen.decision.DecisionSystem1,
+            "DecisionQuestion": npy.gen.decision.DecisionQuestion,
+            "DecisionRouter": npy.gen.decision.DecisionRouter,
         }
         
         if extra_globals:

@@ -1,3 +1,11 @@
+from .systemone import (
+    OllamaSystem1Client,
+    OllamaSystem1Config,
+    OllamaSystem1Error,
+    load_ollama_system1,
+    available as systemone_available,
+    require_available as require_systemone,
+)
 from .decision import (
     DecisionQuestion,
     DecisionRouter,
@@ -14,6 +22,12 @@ from .decision import (
 )
 
 __all__ = [
+    "OllamaSystem1Client",
+    "OllamaSystem1Config",
+    "OllamaSystem1Error",
+    "load_ollama_system1",
+    "systemone_available",
+    "require_systemone",
     "DecisionQuestion",
     "DecisionRouter",
     "DecisionSystem1",
