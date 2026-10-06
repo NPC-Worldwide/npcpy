@@ -8,12 +8,15 @@ class TestEmbeddingConfig:
     """Test EmbeddingConfig and HilbertConfig dataclasses."""
 
     def test_embedding_config_defaults(self):
-        from npcpy.ft.embeddings import EmbeddingConfig
+        from npcpy.ft.embeddings import EmbeddingConfig, _default_device
 
         config = EmbeddingConfig()
         assert config.base_model_name == "sentence-transformers/all-MiniLM-L6-v2"
         assert config.output_model_path == "models/embedding"
-        assert config.device == "cpu"
+        # device is auto-detected (cuda -> mps -> cpu) unless explicitly set
+        assert config.device == _default_device()
+        assert config.device in {"cuda", "mps", "cpu"}
+        assert config.trust_remote_code is False
         assert config.embedding_dim == 384
         assert config.num_train_epochs == 10
         assert config.batch_size == 16
@@ -457,6 +460,27 @@ class TestEncodeTextsBatching:
             encode_texts(self._texts(3), model, projector, tokenizer,
                          device="cpu", batch_size=bad)
 
+    def test_single_text_is_one_forward_pass(self, stubs):
+        from npcpy.ft.embeddings import encode_texts
+
+        model, projector, tokenizer = stubs
+        embeddings = encode_texts(self._texts(1), model, projector, tokenizer,
+                                  device="cpu", max_length=32, batch_size=8)
+
+        assert model.forward_batch_sizes == [1]
+        assert len(embeddings) == 1
+        assert len(embeddings[0]) == self.DIM
+
+    def test_exactly_divisible_length_has_no_partial_batch(self, stubs):
+        from npcpy.ft.embeddings import encode_texts
+
+        model, projector, tokenizer = stubs
+        embeddings = encode_texts(self._texts(6), model, projector, tokenizer,
+                                  device="cpu", max_length=32, batch_size=3)
+
+        assert model.forward_batch_sizes == [3, 3]
+        assert len(embeddings) == 6
+
     def test_evaluate_embeddings_threads_batch_size_through(self, stubs):
         from npcpy.ft.embeddings import evaluate_embeddings
 
@@ -473,3 +497,170 @@ class TestEncodeTextsBatching:
         assert model.forward_batch_sizes == [2, 2, 2, 2, 2, 2]
         assert set(metrics) == {"mrr", "recall@1", "recall@5"}
         assert 0.0 <= metrics["mrr"] <= 1.0
+
+
+class TestDefaultDevice:
+    """``_default_device()`` probes CUDA -> MPS -> CPU and must never raise."""
+
+    @staticmethod
+    def _fake_torch(cuda_ok, mps_ok=None, mps_present=True, cuda_raises=False):
+        from types import SimpleNamespace
+
+        def is_available():
+            if cuda_raises:
+                raise RuntimeError("no CUDA driver")
+            return cuda_ok
+
+        backends = SimpleNamespace()
+        if mps_present:
+            backends.mps = SimpleNamespace(is_available=lambda: bool(mps_ok))
+        return SimpleNamespace(
+            cuda=SimpleNamespace(is_available=is_available), backends=backends
+        )
+
+    def _with_device(self, monkeypatch, **kwargs):
+        from npcpy.ft import embeddings
+
+        monkeypatch.setattr(embeddings, "TORCH_AVAILABLE", True)
+        monkeypatch.setattr(embeddings, "torch", self._fake_torch(**kwargs))
+        return embeddings
+
+    def test_prefers_cuda(self, monkeypatch):
+        assert self._with_device(monkeypatch, cuda_ok=True)._default_device() == "cuda"
+
+    def test_uses_mps_when_cuda_absent(self, monkeypatch):
+        embeddings = self._with_device(monkeypatch, cuda_ok=False, mps_ok=True)
+        assert embeddings._default_device() == "mps"
+
+    def test_cpu_when_mps_unavailable(self, monkeypatch):
+        embeddings = self._with_device(monkeypatch, cuda_ok=False, mps_ok=False)
+        assert embeddings._default_device() == "cpu"
+
+    def test_cpu_when_mps_backend_missing(self, monkeypatch):
+        embeddings = self._with_device(monkeypatch, cuda_ok=False, mps_present=False)
+        assert embeddings._default_device() == "cpu"
+
+    def test_cpu_when_torch_missing(self, monkeypatch):
+        from npcpy.ft import embeddings
+
+        monkeypatch.setattr(embeddings, "TORCH_AVAILABLE", False)
+        monkeypatch.setattr(embeddings, "torch", None)
+        assert embeddings._default_device() == "cpu"
+
+    def test_probe_failure_falls_through_to_mps(self, monkeypatch):
+        embeddings = self._with_device(
+            monkeypatch, cuda_ok=False, cuda_raises=True, mps_ok=True
+        )
+        assert embeddings._default_device() == "mps"
+
+    def test_default_is_not_hardcoded_cpu(self, monkeypatch):
+        """Regression: the default used to be the literal ``"cpu"``."""
+        embeddings = self._with_device(monkeypatch, cuda_ok=False, mps_ok=True)
+        assert embeddings.EmbeddingConfig().device == "mps"
+
+    def test_explicit_device_always_wins(self):
+        from npcpy.ft.embeddings import EmbeddingConfig
+
+        assert EmbeddingConfig(device="cpu").device == "cpu"
+        assert EmbeddingConfig(device="cuda:1").device == "cuda:1"
+        assert EmbeddingConfig(device="mlx").device == "mlx"
+
+
+class _TokenizerStop(Exception):
+    """Sentinel raised by the stub tokenizer to end an entry point early."""
+
+
+class TestTrustRemoteCodeForwarding:
+    """``trust_remote_code`` must reach every AutoModel/AutoTokenizer load site."""
+
+    def test_configs_default_to_false(self):
+        from npcpy.ft.embeddings import EmbeddingConfig, HilbertConfig
+
+        assert EmbeddingConfig().trust_remote_code is False
+        assert HilbertConfig().trust_remote_code is False
+
+    def test_config_accepts_explicit_value(self):
+        from npcpy.ft.embeddings import EmbeddingConfig, HilbertConfig
+
+        assert EmbeddingConfig(trust_remote_code=True).trust_remote_code is True
+        assert HilbertConfig(trust_remote_code=True).trust_remote_code is True
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_auto_model_receives_flag(self, monkeypatch, flag):
+        from npcpy.ft import embeddings
+
+        calls = []
+
+        class StubAutoModel:
+            @staticmethod
+            def from_pretrained(name, **kwargs):
+                calls.append((name, kwargs))
+                return "BASE"
+
+        monkeypatch.setattr(embeddings, "AutoModel", StubAutoModel)
+
+        cfg = embeddings.EmbeddingConfig(
+            base_model_name="acme/remote-model", trust_remote_code=flag
+        )
+        assert embeddings._load_base_model(cfg, tokenizer=None) == "BASE"
+        assert calls == [("acme/remote-model", {"trust_remote_code": flag})]
+
+    @pytest.fixture
+    def stub_tokenizer(self, monkeypatch):
+        """Record the load call, then abort before any heavyweight work."""
+        from types import SimpleNamespace
+
+        from npcpy.ft import embeddings
+
+        calls = []
+
+        def fake_from_pretrained(name, **kwargs):
+            calls.append({"name": name, "kwargs": kwargs})
+            raise _TokenizerStop()
+
+        monkeypatch.setattr(
+            embeddings, "AutoTokenizer", SimpleNamespace(from_pretrained=fake_from_pretrained)
+        )
+        return calls
+
+    @pytest.mark.parametrize(
+        "entry,config_cls",
+        [
+            ("run_embedding_sft_torch", "EmbeddingConfig"),
+            ("run_embedding_sft_mlx", "EmbeddingConfig"),
+            ("run_hilbert_embedding_sft_torch", "HilbertConfig"),
+            ("run_hilbert_embedding_sft_mlx", "HilbertConfig"),
+        ],
+    )
+    def test_tokenizer_receives_flag(
+        self, entry, config_cls, stub_tokenizer, tmp_path, monkeypatch
+    ):
+        from npcpy.ft import embeddings
+
+        # Stub out the backend guard so only the tokenizer load is exercised.
+        if entry.endswith("_mlx"):
+            monkeypatch.setattr(embeddings, "MLX_AVAILABLE", True)
+        else:
+            monkeypatch.setattr(embeddings, "TORCH_AVAILABLE", True)
+
+        config = getattr(embeddings, config_cls)(
+            base_model_name="acme/remote-model",
+            output_model_path=str(tmp_path / "out"),
+            trust_remote_code=True,
+        )
+
+        with pytest.raises(_TokenizerStop):
+            getattr(embeddings, entry)(["a"], ["b"], config=config)
+
+        assert stub_tokenizer == [
+            {"name": "acme/remote-model", "kwargs": {"trust_remote_code": True}}
+        ]
+
+    def test_local_model_reload_is_left_alone(self, monkeypatch, tmp_path):
+        """``load_embedding_model`` reads a local dir and takes no config."""
+        import inspect
+
+        from npcpy.ft import embeddings
+
+        params = inspect.signature(embeddings.load_embedding_model).parameters
+        assert list(params) == ["model_path", "device"]
