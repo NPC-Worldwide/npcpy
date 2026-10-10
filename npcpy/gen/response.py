@@ -2496,6 +2496,10 @@ def get_litellm_response(
         provider = "openai"
         if 'timeout' not in kwargs:
             kwargs['timeout'] = 300
+    elif provider in ('atlascloud', 'atlas'):
+        api_url = api_url or os.environ.get("ATLASCLOUD_API_URL") or "https://api.atlascloud.ai/v1"
+        api_key = api_key or os.environ.get("ATLASCLOUD_API_KEY")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:
