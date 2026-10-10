@@ -322,3 +322,79 @@ class TestMiniMaxRouting:
             "/anthropic/v1/messages",
         ]
 
+
+
+class TestAtlasCloudRouting:
+    """Test Atlas Cloud provider resolution and request routing."""
+
+    def test_resolve_defaults(self, monkeypatch):
+        monkeypatch.delenv("ATLASCLOUD_API_URL", raising=False)
+        monkeypatch.setenv("ATLASCLOUD_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(model="deepseek-ai/deepseek-v4-flash", provider="atlascloud")
+        assert (m, p) == ("deepseek-ai/deepseek-v4-flash", "atlascloud")
+        assert url == "https://api.atlascloud.ai/v1"
+        assert key == "test-key"
+
+    def test_resolve_alias_and_env_url_override(self, monkeypatch):
+        monkeypatch.setenv("ATLASCLOUD_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("ATLASCLOUD_API_KEY", "env-key")
+        _, p, url, key = resolve_model_provider(model="zai-org/glm-5.2", provider="atlas")
+        assert p == "atlas"
+        assert url == "https://example.test/v1"
+        assert key == "env-key"
+
+    def test_explicit_arguments_win(self, monkeypatch):
+        monkeypatch.setenv("ATLASCLOUD_API_KEY", "env-key")
+        _, _, url, key = resolve_model_provider(
+            model="zai-org/glm-5.2", provider="atlascloud",
+            api_url="https://other.test/v1", api_key="arg-key",
+        )
+        assert url == "https://other.test/v1"
+        assert key == "arg-key"
+
+    def test_request_uses_gateway_url_key_and_model_id(self, monkeypatch):
+        """The request goes to <base>/chat/completions with the Atlas key and the unmodified lab-prefixed model ID."""
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                self.server.captured.append((self.path, self.headers.get("Authorization"), body.get("model")))
+                payload = {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": body.get("model"),
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }
+                data = json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CaptureHandler)
+        server.captured = []
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            monkeypatch.setenv("ATLASCLOUD_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+            monkeypatch.setenv("ATLASCLOUD_API_KEY", "atlas-test-key")
+            result = get_llm_response(
+                "Hello", model="deepseek-ai/deepseek-v4-flash", provider="atlascloud"
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert result["response"] == "ok"
+        assert server.captured == [
+            ("/v1/chat/completions", "Bearer atlas-test-key", "deepseek-ai/deepseek-v4-flash")
+        ]
