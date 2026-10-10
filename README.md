@@ -614,6 +614,8 @@ forenpc: assistant
 mcp_servers:
   - url: https://search.parallel.ai/mcp
     transport: streamable-http
+    headers:
+      User-Agent: npcpy
     tools:
       - web_search
       - web_fetch
