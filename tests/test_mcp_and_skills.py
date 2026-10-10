@@ -130,16 +130,18 @@ class TestMCPClientNPC:
         """Replace MCP transports and sessions with hermetic async fakes."""
         from npcpy import serve
 
-        calls = {"sse": [], "streamable-http": [], "session_args": []}
+        calls = {"sse": [], "streamable-http": [], "session_args": [], "headers": []}
 
         @asynccontextmanager
-        async def sse_client(url):
+        async def sse_client(url, headers=None):
             calls["sse"].append(url)
+            calls["headers"].append(headers)
             yield ("sse-read", "sse-write")
 
         @asynccontextmanager
-        async def streamablehttp_client(url):
+        async def streamablehttp_client(url, headers=None):
             calls["streamable-http"].append(url)
+            calls["headers"].append(headers)
             yield ("http-read", "http-write", lambda: "session-id")
 
         class FakeClientSession:
@@ -194,10 +196,12 @@ class TestMCPClientNPC:
         asyncio.run(self._connect_and_close(client, {
             "url": "https://search.parallel.ai/mcp",
             "transport": "streamable-http",
+            "headers": {"User-Agent": "npcpy"},
         }))
 
         assert remote_mcp_fakes["sse"] == []
         assert remote_mcp_fakes["streamable-http"] == ["https://search.parallel.ai/mcp"]
+        assert remote_mcp_fakes["headers"] == [{"User-Agent": "npcpy"}]
         assert remote_mcp_fakes["session_args"] == [("http-read", "http-write")]
 
     def test_remote_url_rejects_unknown_transport(self, remote_mcp_fakes):

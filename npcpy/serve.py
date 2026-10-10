@@ -262,16 +262,17 @@ class MCPClientNPC:
             if not isinstance(transport, str):
                 raise ValueError("MCP remote transport must be 'sse' or 'streamable-http'")
             transport = transport.strip().lower()
+            headers = server_spec.get("headers")
 
             if transport == "sse":
                 from mcp.client.sse import sse_client
                 self._log(f"Connecting to SSE server: {url}")
-                sse_transport = await self._exit_stack.enter_async_context(sse_client(url))
+                sse_transport = await self._exit_stack.enter_async_context(sse_client(url, headers=headers))
                 self.session = await self._exit_stack.enter_async_context(ClientSession(*sse_transport))
             elif transport == "streamable-http":
                 from mcp.client.streamable_http import streamablehttp_client
                 self._log(f"Connecting to Streamable HTTP server: {url}")
-                http_transport = await self._exit_stack.enter_async_context(streamablehttp_client(url))
+                http_transport = await self._exit_stack.enter_async_context(streamablehttp_client(url, headers=headers))
                 read_stream, write_stream, *_ = http_transport
                 self.session = await self._exit_stack.enter_async_context(
                     ClientSession(read_stream, write_stream)
