@@ -1229,7 +1229,7 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
     for i, arg in enumerate(args):
         if i in used_args:
             continue
-            
+
         if arg in flag_mapping:
             if i + 1 < len(args) and not args[i + 1].startswith('-'):
                 input_name = flag_mapping[arg]
@@ -1258,14 +1258,14 @@ def extract_jinx_inputs(args: List[str], jinx: Jinx) -> Dict[str, Any]:
                 jinx_input_names.append(input_)
             elif isinstance(input_, dict):
                 jinx_input_names.append(list(input_.keys())[0])
-        
+
         if len(jinx_input_names) == 1 and unused_args:
             inputs[jinx_input_names[0]] = ' '.join(unused_args).strip()
         else:
             for i, arg in enumerate(unused_args):
                 if i < len(jinx_input_names):
                     input_name = jinx_input_names[i]
-                    if input_name not in inputs: 
+                    if input_name not in inputs:
                         inputs[input_name] = arg
 
     for input_ in jinx.inputs:
@@ -2740,13 +2740,23 @@ class Team:
             """Return a local filesystem path to a team root (directory containing
             a jinxes/ folder), fetching from GitHub if needed. Caches under
             ~/.cache/npc_teams/. Looks recursively for a directory named
-            npc_team inside the cloned repo."""
+            npc_team inside the cloned repo.
+
+            Behavior:
+              - If ``ref`` is given, that exact version is cloned once and never
+                auto-updated. The user controls updates by changing ``ref``.
+              - If ``ref`` is omitted, the default branch is tracked as ``latest``.
+                The cache is only refreshed when the upstream HEAD actually
+                changed, and checks are throttled by
+                ``NPCPY_EXTERNAL_TEAM_CHECK_INTERVAL_SECONDS`` (default 3600)."""
             if path:
                 expanded = os.path.expanduser(path)
                 return expanded if os.path.isdir(expanded) else None
 
             if not repo:
                 return None
+
+            import subprocess as _sp
 
             cache_root = os.path.expanduser('~/.cache/npc_teams')
             os.makedirs(cache_root, exist_ok=True)
@@ -2755,14 +2765,80 @@ class Team:
                 slug = f"{slug}@{ref}"
             clone_dir = os.path.join(cache_root, slug)
 
-            if not os.path.isdir(clone_dir):
-                import subprocess as _sp
+            check_interval_seconds = 3600
+            try:
+                check_interval_seconds = int(os.environ.get('NPCPY_EXTERNAL_TEAM_CHECK_INTERVAL_SECONDS', check_interval_seconds))
+            except ValueError:
+                pass
+            force_refresh = os.environ.get('NPCPY_REFRESH_EXTERNAL_TEAMS') == '1'
+
+            def _git(args, cwd=clone_dir):
+                return _sp.run(['git', '-C', cwd] + args, check=True, capture_output=True, text=True)
+
+            def _clone():
                 url = f"https://github.com/{repo}.git"
                 cmd = ['git', 'clone', '--depth', '1']
                 if ref:
                     cmd += ['--branch', ref]
                 cmd += [url, clone_dir]
                 _sp.run(cmd, check=True, capture_output=True)
+
+            def _read_head():
+                head_path = os.path.join(clone_dir, '.git', 'HEAD')
+                try:
+                    with open(head_path) as f:
+                        head = f.read().strip()
+                    if head.startswith('ref: refs/heads/'):
+                        return _git(['rev-parse', head.split('ref: ')[1]]).stdout.strip()
+                    return head
+                except Exception:
+                    return None
+
+            def _remote_head():
+                try:
+                    branch = ref or _git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.strip() or 'HEAD'
+                    remote = f"refs/heads/{branch}:refs/remotes/origin/{branch}"
+                    result = _git(['ls-remote', '--heads', 'origin', branch])
+                    for line in result.stdout.splitlines():
+                        parts = line.split()
+                        if len(parts) == 2 and parts[1] == f"refs/heads/{branch}":
+                            return parts[0]
+                except Exception as e:
+                    logger.warning("Could not check remote HEAD for %s: %s", repo, e)
+                return None
+
+            def _last_check_age():
+                try:
+                    fetch_head = os.path.join(clone_dir, '.git', 'FETCH_HEAD')
+                    if os.path.exists(fetch_head):
+                        return time.time() - os.path.getmtime(fetch_head)
+                except OSError:
+                    pass
+                return float('inf')
+
+            def _refresh():
+                try:
+                    branch = ref or _git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.strip() or 'main'
+                    _git(['fetch', '--depth', '1', 'origin', branch])
+                    _git(['reset', '--hard', f'origin/{branch}'])
+                    logger.info("Refreshed cached external team %s", repo)
+                except Exception as e:
+                    logger.warning("Failed to refresh cached team %s: %s. Re-cloning.", repo, e)
+                    try:
+                        shutil.rmtree(clone_dir)
+                    except Exception:
+                        pass
+                    _clone()
+
+            if not os.path.isdir(clone_dir):
+                _clone()
+            elif ref and not force_refresh:
+                pass
+            elif force_refresh or _last_check_age() > check_interval_seconds:
+                current = _read_head()
+                remote = _remote_head()
+                if force_refresh or remote is None or current != remote:
+                    _refresh()
 
             for root, dirs, _ in os.walk(clone_dir):
                 dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', '.venv', 'venv', 'dist')]

@@ -5490,9 +5490,21 @@ def stream():
                             def _execute_tool():
                                 if executor["type"] == "jinx":
                                     jinx_obj = executor["jinx"]
+                                    state = ServeState(
+                                        npc=npc_object,
+                                        team=team_object,
+                                        conversation_id=conversation_id,
+                                        chat_model=model,
+                                        chat_provider=provider,
+                                        current_path=current_path or os.getcwd(),
+                                    )
                                     jinx_ctx = jinx_obj.execute(
                                         input_values=tool_args if isinstance(tool_args, dict) else {},
-                                        npc=npc_object
+                                        npc=npc_object,
+                                        messages=[],
+                                        extra_globals={
+                                            'state': state,
+                                        }
                                     )
                                     raw_output = jinx_ctx.get('output') if isinstance(jinx_ctx, dict) else jinx_ctx
                                     events = []
