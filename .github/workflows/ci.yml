@@ -61,7 +61,7 @@ jobs:
       - name: Run core unit tests
         run: |
           # Run tests that don't require LLM or heavy dependencies
-          pytest tests/test_tools.py tests/test_npc_sysenv.py -v --tb=short --timeout=60
+          pytest tests/test_tools.py tests/test_npc_sysenv.py tests/test_api_route.py -v --tb=short --timeout=60
 
       - name: Run ML function tests
         run: |

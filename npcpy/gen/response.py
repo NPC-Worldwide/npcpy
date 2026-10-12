@@ -2500,6 +2500,12 @@ def get_litellm_response(
         api_url = api_url or os.environ.get("ATLASCLOUD_API_URL") or "https://api.atlascloud.ai/v1"
         api_key = api_key or os.environ.get("ATLASCLOUD_API_KEY")
         provider = "openai"
+    elif provider in ('api-route', 'api_route'):
+        api_url = api_url or os.environ.get("API_ROUTE_API_URL") or "https://global.api-route.com/v1"
+        api_key = api_key or os.environ.get("API_ROUTE_API_KEY")
+        if not api_key:
+            raise ValueError("API Route requires API_ROUTE_API_KEY or an explicit api_key.")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:
