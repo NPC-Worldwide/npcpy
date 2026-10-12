@@ -197,6 +197,7 @@ AirLLM loads and processes model layers sequentially, allowing you to run models
 | `openai` | `gpt-4o`, `gpt-4o-mini` | Requires `OPENAI_API_KEY` |
 | `openai` | `orcarouter/auto` | [OrcaRouter](https://www.orcarouter.ai) gateway: set `api_url` to `https://api.orcarouter.ai/v1` with a `sk-orca-` key |
 | `atlascloud` | `deepseek-ai/deepseek-v4-flash` | [Atlas Cloud](https://www.atlascloud.ai) OpenAI-compatible gateway; requires `ATLASCLOUD_API_KEY` |
+| `api-route` (alias `api_route`) | `gpt-6.1-sol` | [API Route](https://api-route.com) OpenAI-compatible gateway; requires `API_ROUTE_API_KEY`, optional `API_ROUTE_API_URL` override |
 | `anthropic` | `claude-sonnet-4` | Requires `ANTHROPIC_API_KEY` |
 | `gemini` | `gemini-2.0-flash` | Requires `GEMINI_API_KEY` |
 | `deepseek` | `deepseek-chat`, `deepseek-reasoner` | Requires `DEEPSEEK_API_KEY` |

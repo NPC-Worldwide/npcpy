@@ -1014,6 +1014,17 @@ response = get_llm_response("Say hello in one short sentence.", model="deepseek-
 print(response["response"])
 ```
 
+### API Route
+
+Set `API_ROUTE_API_KEY` and use `provider="api-route"` with an exact model ID from your account's authenticated `GET /v1/models` response, for example `gpt-6.1-sol`. [API Route](https://api-route.com) uses the OpenAI-compatible Base URL `https://global.api-route.com/v1`; set `API_ROUTE_API_URL` to override it. The alias `api_route` is also accepted. Explicit `api_url` and `api_key` arguments take precedence.
+
+```python
+from npcpy import get_llm_response
+
+response = get_llm_response("Say hello in one short sentence.", model="gpt-6.1-sol", provider="api-route")
+print(response["response"])
+```
+
 ### QLLM-PAM (local, attention-free)
 
 `npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).
