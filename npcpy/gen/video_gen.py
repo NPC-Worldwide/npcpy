@@ -1,3 +1,77 @@
+def generate_video_minimax(
+    prompt: str,
+    model: str = "MiniMax-H3",
+    output_path: str = "",
+    api_key: str = "",
+    base_url: str = "https://api.minimax.io",
+    resolution: str = "2K",
+    duration: int = 6,
+    ratio: str = "adaptive",
+    poll_interval: float = 5.0,
+    timeout: float = 900.0,
+):
+    """Generate a MiniMax H3 video and wait for its asynchronous result."""
+    import os
+    import time
+    import requests
+
+    token = api_key or os.environ.get("MINIMAX_API_KEY") or os.environ.get("MINIMAX_API_TOKEN")
+    if not token:
+        raise ValueError("A MiniMax API key is required")
+    if not prompt or not prompt.strip():
+        raise ValueError("prompt must not be empty")
+    if not 4 <= int(duration) <= 15:
+        raise ValueError("duration must be between 4 and 15 seconds")
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "content": [{"type": "text", "text": prompt}],
+        "resolution": resolution,
+        "duration": int(duration),
+        "ratio": ratio,
+    }
+    response = requests.post(
+        f"{base_url.rstrip('/')}/v2/video_generation",
+        headers=headers,
+        json=payload,
+        timeout=60,
+    )
+    response.raise_for_status()
+    task_id = response.json().get("task_id")
+    if not task_id:
+        raise RuntimeError("MiniMax video generation response did not include task_id")
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status_response = requests.get(
+            f"{base_url.rstrip('/')}/v2/query/video_generation/{task_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=60,
+        )
+        status_response.raise_for_status()
+        task = status_response.json().get("task", status_response.json())
+        status = str(task.get("status", "")).lower()
+        if status in {"success", "succeeded", "completed", "finished"}:
+            content = task.get("content") or {}
+            video_url = content.get("url") or task.get("video_url")
+            if not video_url:
+                raise RuntimeError("MiniMax completed task did not include a video URL")
+            if not output_path:
+                from npcpy.npc_sysenv import get_videos_dir
+                os.makedirs(get_videos_dir(), exist_ok=True)
+                output_path = os.path.join(get_videos_dir(), "minimax_h3.mp4")
+            video_response = requests.get(video_url, timeout=120)
+            video_response.raise_for_status()
+            with open(output_path, "wb") as output_file:
+                output_file.write(video_response.content)
+            return output_path
+        if status in {"failed", "failure", "error", "cancelled", "canceled"}:
+            raise RuntimeError(task.get("error") or f"MiniMax video generation failed with status {status}")
+        time.sleep(poll_interval)
+    raise TimeoutError("Timed out waiting for MiniMax video generation")
+
+
 def generate_video_diffusers(
     prompt,
     model,

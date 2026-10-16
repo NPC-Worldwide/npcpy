@@ -20,7 +20,7 @@ from npcpy.npc_sysenv import (
 
 from npcpy.gen.response import get_litellm_response
 from npcpy.gen.image_gen import generate_image
-from npcpy.gen.video_gen import generate_video_diffusers, generate_video_veo3
+from npcpy.gen.video_gen import generate_video_diffusers, generate_video_veo3, generate_video_minimax
 
 from datetime import datetime 
 
@@ -94,6 +94,7 @@ def gen_video(
     width=256,
     negative_prompt="",
     messages: list = None,
+    api_key: str = None,
 ):
     """
     Function Description:
@@ -109,6 +110,15 @@ def gen_video(
         dict: Response with output path and messages.
     """
     
+    if provider == "minimax":
+        output_path = generate_video_minimax(
+            prompt=prompt,
+            model=model or "MiniMax-H3",
+            output_path=output_path,
+            api_key=api_key,
+        )
+        return {"output": f"Video generated at {output_path}", "messages": messages}
+
     if provider == "gemini":
         
         try:
