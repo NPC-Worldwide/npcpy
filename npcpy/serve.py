@@ -272,9 +272,17 @@ class MCPClientNPC:
                 sse_transport = await self._exit_stack.enter_async_context(sse_client(url, headers=headers))
                 self.session = await self._exit_stack.enter_async_context(ClientSession(*sse_transport))
             elif transport == "streamable-http":
-                from mcp.client.streamable_http import streamablehttp_client
                 self._log(f"Connecting to Streamable HTTP server: {url}")
-                http_transport = await self._exit_stack.enter_async_context(streamablehttp_client(url, headers=headers))
+                try:
+                    from mcp.client.streamable_http import streamablehttp_client
+                    http_context = streamablehttp_client(url, headers=headers)
+                except ImportError:
+                    # mcp 2.x renamed the client; headers now go on the HTTP client
+                    from mcp.client.streamable_http import streamable_http_client
+                    from mcp.shared._httpx_utils import create_mcp_http_client
+                    http_client = await self._exit_stack.enter_async_context(create_mcp_http_client(headers=headers))
+                    http_context = streamable_http_client(url, http_client=http_client)
+                http_transport = await self._exit_stack.enter_async_context(http_context)
                 read_stream, write_stream, *_ = http_transport
                 self.session = await self._exit_stack.enter_async_context(
                     ClientSession(read_stream, write_stream)
@@ -329,7 +337,7 @@ class MCPClientNPC:
                     "function": {
                         "name": mcp_tool.name,
                         "description": mcp_tool.description or f"MCP tool: {mcp_tool.name}",
-                        "parameters": getattr(mcp_tool, "inputSchema", {"type": "object", "properties": {}})
+                        "parameters": getattr(mcp_tool, "inputSchema", None) or getattr(mcp_tool, "input_schema", {"type": "object", "properties": {}})
                     }
                 }
                 self.available_tools_llm.append(tool_def)
