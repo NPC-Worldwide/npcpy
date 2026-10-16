@@ -621,6 +621,26 @@ mcp_servers:
       - web_fetch
 ```
 
+[Cohesivity](https://cohesivity.ai?ref=gh-npcpy) MCP gives NPCs an on-the-fly
+backend (hosting, Postgres, storage, auth, email, AI APIs) without requiring an
+account or API key:
+
+```yaml
+forenpc: assistant
+mcp_servers:
+  - url: https://cohesivity.ai/mcp
+    transport: streamable-http
+    headers:
+      User-Agent: npcpy
+    tools:
+      - create_tenant
+      - claim_tenant
+      - tenant_status
+      - provision_resource
+      - give_feedback
+      - get_cohesivity_documentation
+```
+
 Remote URLs continue to use SSE when `transport` is omitted.
 
 </details>
