@@ -207,6 +207,9 @@ def resolve_model_provider(
     if p in ("api-route", "api_route"):
         a_url = a_url or os.environ.get("API_ROUTE_API_URL") or "https://global.api-route.com/v1"
         a_key = a_key or os.environ.get("API_ROUTE_API_KEY")
+    if p == "cheaperinference":
+        a_url = a_url or os.environ.get("CHEAPER_INFERENCE_API_URL") or "https://api.cheaperinference.com/v1"
+        a_key = a_key or os.environ.get("CHEAPER_INFERENCE_API_KEY")
     return m, p, a_url, a_key
 
 
