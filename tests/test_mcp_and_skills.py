@@ -204,6 +204,48 @@ class TestMCPClientNPC:
         assert remote_mcp_fakes["headers"] == [{"User-Agent": "npcpy"}]
         assert remote_mcp_fakes["session_args"] == [("http-read", "http-write")]
 
+    def test_remote_url_supports_mcp_2_streamable_http(self, remote_mcp_fakes, monkeypatch):
+        """mcp 2.x names the client streamable_http_client and takes headers on the HTTP client."""
+        from npcpy.serve import MCPClientNPC
+
+        calls = {"client_headers": [], "http_client": []}
+
+        class FakeHTTPClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        def create_mcp_http_client(headers=None):
+            calls["client_headers"].append(headers)
+            return FakeHTTPClient()
+
+        @asynccontextmanager
+        async def streamable_http_client(url, http_client=None):
+            remote_mcp_fakes["streamable-http"].append(url)
+            calls["http_client"].append(http_client)
+            yield ("http-read", "http-write")
+
+        streamable_module = types.ModuleType("mcp.client.streamable_http")
+        streamable_module.streamable_http_client = streamable_http_client
+        httpx_utils_module = types.ModuleType("mcp.shared._httpx_utils")
+        httpx_utils_module.create_mcp_http_client = create_mcp_http_client
+        monkeypatch.setitem(sys.modules, "mcp.client.streamable_http", streamable_module)
+        monkeypatch.setitem(sys.modules, "mcp.shared._httpx_utils", httpx_utils_module)
+
+        client = MCPClientNPC(debug=False)
+        asyncio.run(self._connect_and_close(client, {
+            "url": "https://search.parallel.ai/mcp",
+            "transport": "streamable-http",
+            "headers": {"User-Agent": "npcpy"},
+        }))
+
+        assert remote_mcp_fakes["streamable-http"] == ["https://search.parallel.ai/mcp"]
+        assert calls["client_headers"] == [{"User-Agent": "npcpy"}]
+        assert isinstance(calls["http_client"][0], FakeHTTPClient)
+        assert remote_mcp_fakes["session_args"] == [("http-read", "http-write")]
+
     def test_remote_url_rejects_unknown_transport(self, remote_mcp_fakes):
         """Unknown transport names fail before a remote connection is opened."""
         from npcpy.serve import MCPClientNPC

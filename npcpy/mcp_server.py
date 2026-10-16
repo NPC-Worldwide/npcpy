@@ -249,7 +249,11 @@ def _register_jinxes(mcp, state):
 
 def build_server(state: NPCServerState):
     """Build and return a FastMCP server from an NPCServerState."""
-    from mcp.server.fastmcp import FastMCP, Context
+    try:
+        from mcp.server.fastmcp import FastMCP, Context
+    except ImportError:
+        # mcp 2.x renamed FastMCP to MCPServer
+        from mcp.server.mcpserver import MCPServer as FastMCP, Context
 
     mcp = FastMCP("npcpy_mcp")
     state.mcp = mcp
