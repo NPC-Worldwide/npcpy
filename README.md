@@ -622,8 +622,8 @@ mcp_servers:
 ```
 
 [Cohesivity](https://cohesivity.ai?ref=gh-npcpy) MCP gives NPCs an on-the-fly
-backend (hosting, Postgres, storage, auth, email, AI APIs), also without an
-account or API key to start:
+backend (hosting, Postgres, storage, auth, email, AI APIs) without requiring an
+account or API key:
 
 ```yaml
 forenpc: assistant
