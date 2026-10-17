@@ -134,6 +134,35 @@ def search_brave(query: str, num_results: int = 5, api_key: str = None):
         print(f"Brave search failed: {e}")
     return []
 
+def search_serply(query: str, num_results: int = 5, api_key: str = None):
+    """Search Google results using the Serply API."""
+    if api_key is None:
+        api_key = os.environ.get('SERPLY_API_KEY')
+    if not api_key:
+        print("Serply API key not set")
+        return []
+
+    try:
+        response = requests.get(
+            'https://api.serply.io/v1/search/',
+            params={'q': query, 'num': num_results},
+            headers={'X-Api-Key': api_key, 'Accept': 'application/json', 'User-Agent': 'npcpy'},
+            timeout=30
+        )
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for r in data.get('results', [])[:num_results]:
+                results.append({
+                    'title': r.get('title', ''),
+                    'link': r.get('link', ''),
+                    'content': r.get('description', '')
+                })
+            return results
+    except Exception as e:
+        print(f"Serply search failed: {e}")
+    return []
+
 def search_perplexity(
     query: str,
     api_key: str = None,
@@ -244,6 +273,9 @@ def search_web(
 
     elif provider == 'brave':
         results = search_brave(query, num_results=num_results, api_key=api_key)
+
+    elif provider == 'serply':
+        results = search_serply(query, num_results=num_results, api_key=api_key)
 
     elif provider == 'google':
         if _google_search is None:
