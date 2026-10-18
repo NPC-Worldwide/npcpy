@@ -184,3 +184,52 @@ def test_search_web_content_parsing():
         
     except Exception as e:
         print(f"Content parsing test failed: {e}")
+
+
+def test_serply_search(monkeypatch):
+    """Test Serply search request and result mapping (mocked)"""
+    from unittest.mock import MagicMock, patch
+    from npcpy.data.web import search_serply
+
+    monkeypatch.setenv("SERPLY_API_KEY", "test-key")
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "results": [
+            {"title": "Python", "link": "https://www.python.org/", "description": "The official home of Python."},
+            {"title": "Docs", "link": "https://docs.python.org/3/", "description": "Python documentation."},
+        ]
+    }
+    with patch("npcpy.data.web.requests.get", return_value=response) as get:
+        results = search_serply("python", num_results=1)
+
+    assert results == [
+        {"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}
+    ]
+    args, kwargs = get.call_args
+    assert args[0] == "https://api.serply.io/v1/search/"
+    assert kwargs["params"] == {"q": "python", "num": 1}
+    assert kwargs["headers"]["X-Api-Key"] == "test-key"
+
+
+def test_serply_search_without_key(monkeypatch):
+    """Serply returns no results and makes no request without a key"""
+    from unittest.mock import patch
+    from npcpy.data.web import search_serply
+
+    monkeypatch.delenv("SERPLY_API_KEY", raising=False)
+    with patch("npcpy.data.web.requests.get") as get:
+        assert search_serply("python") == []
+    get.assert_not_called()
+
+
+def test_search_web_serply_provider():
+    """search_web routes provider='serply' and formats citations (mocked)"""
+    from unittest.mock import patch
+
+    hits = [{"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}]
+    with patch("npcpy.data.web.search_serply", return_value=hits) as serply:
+        content_str, link_str = search_web("python", num_results=3, provider="serply", api_key="k")
+
+    serply.assert_called_once_with("python", num_results=3, api_key="k")
+    assert "Citation: https://www.python.org/" in content_str
+    assert link_str.strip() == "https://www.python.org/"
