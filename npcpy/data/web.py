@@ -163,6 +163,42 @@ def search_serply(query: str, num_results: int = 5, api_key: str = None):
         print(f"Serply search failed: {e}")
     return []
 
+def search_keenable(query: str, num_results: int = 5, api_key: str = None):
+    """Search using the Keenable API. Works without a key; KEENABLE_API_KEY lifts rate limits."""
+    if api_key is None:
+        api_key = os.environ.get('KEENABLE_API_KEY')
+
+    headers = {'Accept': 'application/json', 'User-Agent': 'npcpy', 'X-Keenable-Title': 'npcpy'}
+    if api_key:
+        url = 'https://api.keenable.ai/v1/search'
+        headers['X-API-Key'] = api_key
+    else:
+        url = 'https://api.keenable.ai/v1/search/public'
+
+    try:
+        response = requests.post(
+            url,
+            json={'query': query, 'max_results': min(num_results, 50)},
+            headers=headers,
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for r in data.get('results', [])[:num_results]:
+                content = r.get('snippet') or r.get('description') or ''
+                results.append({
+                    'title': r.get('title', ''),
+                    'link': r.get('url', ''),
+                    'content': (
+                        content[:500] + "..." if len(content) > 500 else content
+                    ),
+                })
+            return results
+    except Exception as e:
+        print(f"Keenable search failed: {e}")
+    return []
+
 def search_perplexity(
     query: str,
     api_key: str = None,
@@ -276,6 +312,9 @@ def search_web(
 
     elif provider == 'serply':
         results = search_serply(query, num_results=num_results, api_key=api_key)
+
+    elif provider == 'keenable':
+        results = search_keenable(query, num_results=num_results, api_key=api_key)
 
     elif provider == 'google':
         if _google_search is None:
