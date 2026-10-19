@@ -1045,6 +1045,15 @@ response = get_llm_response("Say hello in one short sentence.", model="gpt-6.1-s
 print(response["response"])
 ```
 
+### Cheaper Inference
+
+Set `CHEAPER_INFERENCE_API_KEY` and use `provider="cheaperinference"` with any model ID from the [Cheaper Inference model list](https://cheaperinference.com/markets), for example `gpt-5.4-mini`, `claude-sonnet-5` or `glm-5.3`. Requests go to the OpenAI-compatible Base URL `https://api.cheaperinference.com/v1`; set `CHEAPER_INFERENCE_API_URL` to override it.
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="gpt-5.4-mini", provider="cheaperinference")
+print(response["response"])
+```
+
 ### QLLM-PAM (local, attention-free)
 
 `npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).

@@ -2506,6 +2506,10 @@ def get_litellm_response(
         if not api_key:
             raise ValueError("API Route requires API_ROUTE_API_KEY or an explicit api_key.")
         provider = "openai"
+    elif provider == 'cheaperinference':
+        api_url = api_url or os.environ.get("CHEAPER_INFERENCE_API_URL") or "https://api.cheaperinference.com/v1"
+        api_key = api_key or os.environ.get("CHEAPER_INFERENCE_API_KEY")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:
