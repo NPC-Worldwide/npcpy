@@ -233,3 +233,64 @@ def test_search_web_serply_provider():
     serply.assert_called_once_with("python", num_results=3, api_key="k")
     assert "Citation: https://www.python.org/" in content_str
     assert link_str.strip() == "https://www.python.org/"
+
+
+def test_keenable_search(monkeypatch):
+    """Test keyless Keenable search request and result mapping (mocked)"""
+    from unittest.mock import MagicMock, patch
+    from npcpy.data.web import search_keenable
+
+    monkeypatch.delenv("KEENABLE_API_KEY", raising=False)
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "results": [
+            {"title": "Python", "url": "https://www.python.org/", "description": "", "snippet": "x" * 600},
+            {"title": "Docs", "url": "https://docs.python.org/3/", "description": "", "snippet": "Python documentation."},
+        ]
+    }
+    with patch("npcpy.data.web.requests.post", return_value=response) as post:
+        results = search_keenable("python", num_results=1)
+
+    assert results == [
+        {"title": "Python", "link": "https://www.python.org/", "content": "x" * 500 + "..."}
+    ]
+    args, kwargs = post.call_args
+    assert args[0] == "https://api.keenable.ai/v1/search/public"
+    assert kwargs["json"] == {"query": "python", "max_results": 1}
+    assert kwargs["headers"]["X-Keenable-Title"] == "npcpy"
+    assert "X-API-Key" not in kwargs["headers"]
+
+
+def test_keenable_search_with_key(monkeypatch):
+    """Keenable uses the keyed endpoint when KEENABLE_API_KEY is set (mocked)"""
+    from unittest.mock import MagicMock, patch
+    from npcpy.data.web import search_keenable
+
+    monkeypatch.setenv("KEENABLE_API_KEY", "test-key")
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "results": [{"title": "Python", "url": "https://www.python.org/", "snippet": "The official home of Python."}]
+    }
+    with patch("npcpy.data.web.requests.post", return_value=response) as post:
+        results = search_keenable("python", num_results=100)
+
+    assert results == [
+        {"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}
+    ]
+    args, kwargs = post.call_args
+    assert args[0] == "https://api.keenable.ai/v1/search"
+    assert kwargs["json"] == {"query": "python", "max_results": 50}
+    assert kwargs["headers"]["X-API-Key"] == "test-key"
+
+
+def test_search_web_keenable_provider():
+    """search_web routes provider='keenable' and formats citations (mocked)"""
+    from unittest.mock import patch
+
+    hits = [{"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}]
+    with patch("npcpy.data.web.search_keenable", return_value=hits) as keenable:
+        content_str, link_str = search_web("python", num_results=3, provider="keenable", api_key="k")
+
+    keenable.assert_called_once_with("python", num_results=3, api_key="k")
+    assert "Citation: https://www.python.org/" in content_str
+    assert link_str.strip() == "https://www.python.org/"
