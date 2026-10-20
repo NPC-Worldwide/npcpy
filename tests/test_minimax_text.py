@@ -110,8 +110,11 @@ def test_anthropic_output_config(requests_sent):
 def test_m3_disabled_thinking(requests_sent, protocol):
     get_llm_response("Hello", model="MiniMax-M3", provider="minimax",
                      api_url=f"https://api.minimax.io/{protocol}",
-                     thinking={"type": "disabled"}, max_tokens=32)
+                     thinking={"type": "disabled"}, reasoning_effort="max",
+                     output_config={"effort": "xhigh"}, max_tokens=32)
     assert requests_sent[-1][1]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in requests_sent[-1][1]
+    assert "output_config" not in requests_sent[-1][1]
 
 
 @pytest.mark.parametrize("protocol", ["v1", "anthropic"])

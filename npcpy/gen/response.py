@@ -2697,9 +2697,9 @@ def get_litellm_response(
         extra_body = {}
         if "thinking" in kwargs:
             extra_body["thinking"] = kwargs["thinking"]
-        effort = kwargs.get("reasoning_effort")
+        effort = kwargs.get("reasoning_effort") if model == "MiniMax-M3.1-Flash" else None
         if provider == "anthropic":
-            if "output_config" in kwargs:
+            if model == "MiniMax-M3.1-Flash" and "output_config" in kwargs:
                 extra_body["output_config"] = kwargs["output_config"]
             elif effort is not None:
                 extra_body["output_config"] = {"effort": effort}
