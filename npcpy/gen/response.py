@@ -2516,6 +2516,10 @@ def get_litellm_response(
         api_url = api_url or os.environ.get("CHEAPER_INFERENCE_API_URL") or "https://api.cheaperinference.com/v1"
         api_key = api_key or os.environ.get("CHEAPER_INFERENCE_API_KEY")
         provider = "openai"
+    elif provider == 'opper':
+        api_url = api_url or os.environ.get("OPPER_API_URL") or "https://api.opper.ai/v3/compat"
+        api_key = api_key or os.environ.get("OPPER_API_KEY")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:
