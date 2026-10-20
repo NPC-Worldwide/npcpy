@@ -16,9 +16,9 @@ import json
 import requests
 ON_WINDOWS = platform.system() == "Windows"
 ON_MACOS = platform.system() == "Darwin"
-MINIMAX_MODELS = frozenset({"MiniMax-M3", "MiniMax-M2.7"})
+MINIMAX_MODELS = ("MiniMax-M3.1-Flash", "MiniMax-M3")
+_MINIMAX_LEGACY_MODELS = frozenset({"MiniMax-M2.7"})
 _PROVIDER_FALLBACK_MODELS = {
-    "minimax": {"MiniMax-M2.7"},
     "orcarouter": {"orcarouter/auto", "orcarouter/free", "orcarouter/fusion", "orcarouter/fusion-flash", "orcarouter/fusion-mini"},
 }
 
@@ -200,10 +200,41 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
                     ]
                 litellm_models = getattr(litellm, attr_name, None) or set() if attr_name else set()
                 model_set = set(cost_map_models) | litellm_models | _PROVIDER_FALLBACK_MODELS.get(provider, set())
+                def is_minimax_text(model_id):
+                    info = getattr(litellm, "model_cost", {}).get(model_id, {})
+                    if info.get("mode", "chat") not in ("chat", "completion"):
+                        return False
+                    name = model_id.rsplit("/", 1)[-1].lower()
+                    if any(tag in name for tag in ("speech", "tts", "music", "video", "image", "hailuo", "minimax-h")):
+                        return False
+                    return provider == "minimax" or "minimax" in model_id.lower()
+
+                if provider == "minimax":
+                    model_set = list(MINIMAX_MODELS) + sorted(
+                        model_id for model_id in model_set if not is_minimax_text(model_id)
+                    )
+                elif provider == "openrouter":
+                    # Keep the gateway namespace: it is part of the request model ID.
+                    model_set = sorted(
+                        model_id for model_id in model_set if not is_minimax_text(model_id)
+                    ) + [
+                        "minimax/minimax-m3.1-flash:free",
+                        "minimax/minimax-m3",
+                    ]
+                else:
+                    # Other gateways keep only M3 routes already present in their catalog.
+                    model_set = {
+                        model_id for model_id in model_set
+                        if not is_minimax_text(model_id)
+                        or model_id.rsplit("/", 1)[-1].lower() == "minimax-m3"
+                    }
                 if not model_set:
                     continue
                 for model_id in model_set:
-                    clean_id = model_id.split("/")[-1] if "/" in model_id else model_id
+                    if provider != "minimax" and is_minimax_text(model_id):
+                        clean_id = model_id
+                    else:
+                        clean_id = model_id.split("/")[-1] if "/" in model_id else model_id
                     available_models[clean_id] = provider
             except Exception as e:
                 logging.info(f"{provider.capitalize()} models not indexed: {e}")
@@ -1024,8 +1055,11 @@ def lookup_provider(model: str) -> str:
         if os.path.exists(adapter_config):
             return "lora"
 
-    if model in MINIMAX_MODELS:
+    if (model in MINIMAX_MODELS or model in _MINIMAX_LEGACY_MODELS
+            or re.match(r"^MiniMax-(?:M\d|Text-)", model)):
         return "minimax"
+    if model.startswith("minimax/"):
+        return "openrouter"
 
     if model == "deepseek-chat" or model == "deepseek-reasoner":
         return "deepseek"

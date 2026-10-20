@@ -68,7 +68,8 @@ class TestMiniMaxProvider:
         """Both target model IDs should be registered with MiniMax."""
         from npcpy.npc_sysenv import MINIMAX_MODELS, lookup_provider
 
-        assert MINIMAX_MODELS == frozenset({"MiniMax-M3", "MiniMax-M2.7"})
+        assert MINIMAX_MODELS == ("MiniMax-M3.1-Flash", "MiniMax-M3")
+        assert lookup_provider("MiniMax-M3.1-Flash") == "minimax"
         assert lookup_provider("MiniMax-M3") == "minimax"
         assert lookup_provider("MiniMax-M2.7") == "minimax"
 
