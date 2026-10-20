@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Union
 from pydantic import BaseModel
 from npcpy.data.image import compress_image
-from npcpy.npc_sysenv import get_system_message, lookup_provider, render_markdown
+from npcpy.npc_sysenv import get_system_message, lookup_provider, render_markdown, MINIMAX_MODELS
 import base64
 import json
 import os
@@ -2360,6 +2360,8 @@ def get_litellm_response(
     include_usage: bool = False,
     **kwargs,
 ) -> Dict[str, Any]:
+    if model is None and provider == "minimax":
+        model = MINIMAX_MODELS[0]
     if not model:
         raise ValueError("No model specified. Please set a model in your NPC configuration or team settings.")
     result = {
@@ -2489,6 +2491,10 @@ def get_litellm_response(
         api_key = api_key or "omlx"
         if 'timeout' not in kwargs:
             kwargs['timeout'] = 300
+    elif provider == 'minimax':
+        api_url = api_url or os.environ.get("MINIMAX_API_URL") or "https://api.minimax.io/v1"
+        api_key = api_key or os.environ.get("MINIMAX_API_KEY")
+        provider = "anthropic" if api_url.rstrip("/").endswith("/anthropic") else "openai"
     elif provider in ('orcarouter', 'orca'):
         api_url = api_url or os.environ.get("ORCAROUTER_API_URL") or "https://api.orcarouter.ai/v1"
         api_key = api_key or os.environ.get("ORCAROUTER_API_KEY")
@@ -2675,8 +2681,52 @@ def get_litellm_response(
     if tool_choice: 
         api_params["tool_choice"] = tool_choice
     
+    # Pass MiniMax reasoning fields through without LiteLLM's model-name heuristics.
+    minimax_direct = model in ("MiniMax-M3.1-Flash", "MiniMax-M3") and (
+        provider in ("openai", "anthropic") and api_url is not None
+    )
+    minimax_reasoning = {"thinking", "reasoning_effort", "output_config"}
+    if minimax_direct:
+        if model == "MiniMax-M3.1-Flash":
+            thinking = kwargs.get("thinking")
+            if thinking is not None and thinking.get("type") != "adaptive":
+                raise ValueError("MiniMax-M3.1-Flash supports adaptive thinking only")
+            effort = kwargs.get("output_config", {}).get("effort", kwargs.get("reasoning_effort"))
+            if effort is not None and effort not in ("low", "medium", "high", "xhigh", "max"):
+                raise ValueError("MiniMax-M3.1-Flash effort must be low, medium, high, xhigh, or max")
+        extra_body = {}
+        if "thinking" in kwargs:
+            extra_body["thinking"] = kwargs["thinking"]
+        effort = kwargs.get("reasoning_effort")
+        if provider == "anthropic":
+            if "output_config" in kwargs:
+                extra_body["output_config"] = kwargs["output_config"]
+            elif effort is not None:
+                extra_body["output_config"] = {"effort": effort}
+        elif effort is not None:
+            extra_body["reasoning_effort"] = effort
+        if extra_body and provider == "anthropic":
+            # LiteLLM validates Anthropic effort levels against its model catalog.
+            # Register only the verified direct Flash capabilities, preserving costs.
+            if model == "MiniMax-M3.1-Flash":
+                litellm.register_model({model: {
+                    **litellm.model_cost.get(model, {}),
+                    "litellm_provider": "anthropic", "mode": "chat",
+                    "supports_reasoning": True,
+                    "supports_adaptive_thinking": True,
+                    "supports_output_config": True,
+                    "supports_xhigh_reasoning_effort": True,
+                    "supports_max_reasoning_effort": True,
+                }})
+            api_params.update(extra_body)
+            api_params["allowed_openai_params"] = ["thinking"]
+        elif extra_body:
+            api_params["extra_body"] = extra_body
+
     if kwargs:
         for key, value in kwargs.items():
+            if minimax_direct and key in minimax_reasoning:
+                continue
             if key in [
                 "stop", "temperature", "top_p", "max_tokens", "max_completion_tokens",
                  "extra_headers", "parallel_tool_calls",

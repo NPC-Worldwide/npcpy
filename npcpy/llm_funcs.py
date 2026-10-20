@@ -15,7 +15,8 @@ from npcpy.npc_sysenv import (
     render_markdown,
     lookup_provider,
     request_user_input, 
-    get_system_message
+    get_system_message,
+    MINIMAX_MODELS,
 )
 
 from npcpy.gen.response import get_litellm_response
@@ -195,6 +196,8 @@ def resolve_model_provider(
     if a_key is None and team is not None and getattr(team, 'api_key', None) is not None:
         a_key = team.api_key
     if p == "minimax":
+        if m is None:
+            m = MINIMAX_MODELS[0]
         a_url = a_url or os.environ.get("MINIMAX_API_URL") or "https://api.minimax.io/v1"
         p = "anthropic" if a_url.rstrip("/").endswith("/anthropic") else "openai"
         a_key = a_key or os.environ.get("MINIMAX_API_KEY")
@@ -249,9 +252,8 @@ def get_llm_response(
     multi_sample = n_samples and n_samples > 1
 
     if not use_matrix and not multi_sample:
-        run_model, run_provider, run_api_url, run_api_key = resolve_model_provider(
-            npc=npc, team=team, model=base_model, provider=base_provider,
-            api_url=api_url, api_key=api_key, images=images, attachments=attachments,
+        run_model, run_provider, run_api_url, run_api_key = (
+            base_model, base_provider, base_api_url, base_api_key
         )
         tool_capable = bool(kwargs.get("tools"))
         system_message = get_system_message(npc, team, tool_capable=tool_capable) if npc is not None else "You are a helpful assistant."
@@ -317,8 +319,8 @@ def get_llm_response(
 
         run_model, run_provider, run_api_url, run_api_key = resolve_model_provider(
             npc=run_npc, team=run_team,
-            model=combo.get("model", base_model),
-            provider=combo.get("provider", base_provider),
+            model=combo.get("model", model),
+            provider=combo.get("provider", provider),
             api_url=api_url, api_key=api_key, images=images, attachments=attachments,
         )
 

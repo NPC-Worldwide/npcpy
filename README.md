@@ -1016,7 +1016,7 @@ Works with all major LLM providers through LiteLLM: `ollama`, `openai`, `anthrop
 
 ### MiniMax
 
-Set `MINIMAX_API_KEY` and use `provider="minimax"` with `MiniMax-M3` or `MiniMax-M2.7`. The optional `MINIMAX_API_URL` setting selects the region and compatible protocol; it defaults to the global OpenAI-compatible Base URL.
+Set `MINIMAX_API_KEY` and use `provider="minimax"`. When no model is configured, `MiniMax-M3.1-Flash` is the default; the model list offers it first, followed by `MiniMax-M3`. Explicit saved or custom model IDs remain supported, including legacy IDs. The optional `MINIMAX_API_URL` setting selects the region and compatible protocol; it defaults to the global OpenAI-compatible Base URL.
 
 | Region | OpenAI-compatible Base URL | Anthropic-compatible Base URL |
 | --- | --- | --- |
@@ -1024,6 +1024,8 @@ Set `MINIMAX_API_KEY` and use `provider="minimax"` with `MiniMax-M3` or `MiniMax
 | China | `https://api.minimaxi.com/v1` | `https://api.minimaxi.com/anthropic` |
 
 Use the Anthropic-compatible Base URL exactly as shown. The client appends `/v1/messages` when sending a request.
+
+For Flash, use adaptive thinking (`thinking={"type": "adaptive"}`) and an optional `reasoning_effort` of `low`, `medium`, `high`, `xhigh`, or `max`; Anthropic-compatible requests send this as `output_config.effort`. Flash does not support disabled thinking. M3 retains its existing thinking modes. OpenRouter lists `minimax/minimax-m3.1-flash:free` first and `minimax/minimax-m3` second, using their full gateway IDs.
 
 ### Atlas Cloud
 
