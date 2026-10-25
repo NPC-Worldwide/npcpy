@@ -1065,6 +1065,15 @@ response = get_llm_response("Say hello in one short sentence.", model="claude-so
 print(response["response"])
 ```
 
+### Runcrate
+
+Set `RUNCRATE_API_KEY` and use `provider="runcrate"` with any `vendor/model` ID from Runcrate's public model list (`GET https://api.runcrate.ai/v1/models`), for example `deepseek-ai/DeepSeek-V4.1-Flash` or `openai/gpt-oss-120b`. Requests go to the OpenAI-compatible Base URL `https://api.runcrate.ai/v1`; set `RUNCRATE_API_URL` to override it. Open models are free with your GitHub account; keys are created in the [Runcrate dashboard](https://www.runcrate.ai/dashboard/api-keys?utm_source=npcpy&utm_medium=directory&utm_campaign=gpu_pricing).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="deepseek-ai/DeepSeek-V4.1-Flash", provider="runcrate")
+print(response["response"])
+```
+
 ### QLLM-PAM (local, attention-free)
 
 `npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).

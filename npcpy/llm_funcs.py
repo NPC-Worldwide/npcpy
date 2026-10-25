@@ -216,6 +216,9 @@ def resolve_model_provider(
     if p == "opper":
         a_url = a_url or os.environ.get("OPPER_API_URL") or "https://api.opper.ai/v3/compat"
         a_key = a_key or os.environ.get("OPPER_API_KEY")
+    if p == "runcrate":
+        a_url = a_url or os.environ.get("RUNCRATE_API_URL") or "https://api.runcrate.ai/v1"
+        a_key = a_key or os.environ.get("RUNCRATE_API_KEY")
     return m, p, a_url, a_key
 
 

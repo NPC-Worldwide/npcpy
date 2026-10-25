@@ -2520,6 +2520,10 @@ def get_litellm_response(
         api_url = api_url or os.environ.get("OPPER_API_URL") or "https://api.opper.ai/v3/compat"
         api_key = api_key or os.environ.get("OPPER_API_KEY")
         provider = "openai"
+    elif provider == 'runcrate':
+        api_url = api_url or os.environ.get("RUNCRATE_API_URL") or "https://api.runcrate.ai/v1"
+        api_key = api_key or os.environ.get("RUNCRATE_API_KEY")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:

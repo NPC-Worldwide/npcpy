@@ -199,6 +199,7 @@ AirLLM loads and processes model layers sequentially, allowing you to run models
 | `atlascloud` | `deepseek-ai/deepseek-v4-flash` | [Atlas Cloud](https://www.atlascloud.ai) OpenAI-compatible gateway; requires `ATLASCLOUD_API_KEY` |
 | `api-route` (alias `api_route`) | `gpt-6.1-sol` | [API Route](https://api-route.com) OpenAI-compatible gateway; requires `API_ROUTE_API_KEY`, optional `API_ROUTE_API_URL` override |
 | `cheaperinference` | `gpt-5.4-mini` | [Cheaper Inference](https://cheaperinference.com) OpenAI-compatible gateway; requires `CHEAPER_INFERENCE_API_KEY` |
+| `runcrate` | `deepseek-ai/DeepSeek-V4.1-Flash` | [Runcrate](https://www.runcrate.ai/?utm_source=npcpy&utm_medium=directory&utm_campaign=gpu_pricing) OpenAI-compatible API for open models; requires `RUNCRATE_API_KEY`, optional `RUNCRATE_API_URL` override |
 | `opper` | `claude-sonnet-4-6` | [Opper](https://opper.ai) EU-hosted OpenAI-compatible gateway; requires `OPPER_API_KEY`, optional `OPPER_API_URL` override |
 | `anthropic` | `claude-sonnet-4` | Requires `ANTHROPIC_API_KEY` |
 | `gemini` | `gemini-2.0-flash` | Requires `GEMINI_API_KEY` |
