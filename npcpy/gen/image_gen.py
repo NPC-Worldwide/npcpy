@@ -137,7 +137,7 @@ def generate_image_diffusers(
 
 def openai_image_gen(
     prompt: str,
-    model: str = "dall-e-2",
+    model: str = "gpt-image-2.5-sunburst",
     attachments: Union[List[Union[str, bytes, Image.Image]], None] = None,
     height: int = 1024,
     width: int = 1024,
@@ -451,7 +451,7 @@ def generate_image(
 
     if model is None and custom_model_path is None:
         if provider == "openai":
-            model = "dall-e-2"
+            model = "gpt-image-2.5-sunburst"
         elif provider == "diffusers":
             model = "runwayml/stable-diffusion-v1-5"
         elif provider == "gemini":
@@ -582,7 +582,7 @@ def edit_image(
     """
     if model is None:
         if provider == "openai":
-            model = "gpt-image-1"
+            model = "gpt-image-2.5-sunburst"
         elif provider == "gemini":
             model = "gemini-2.5-flash-image"
     
