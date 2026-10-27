@@ -641,6 +641,25 @@ mcp_servers:
       - get_cohesivity_documentation
 ```
 
+[deed.page](https://deed.page/docs) MCP lets an NPC publish the HTML or files it
+produces to a public `https://{slug}.deed.page/` URL without an account or API
+key. The first `publish_site` call returns an owner token; pass it as `token`
+to later `update_site` and `delete_site` calls. Published pages are public:
+
+```yaml
+forenpc: assistant
+mcp_servers:
+  - url: https://deed.page/mcp
+    transport: streamable-http
+    headers:
+      User-Agent: npcpy
+    tools:
+      - publish_site
+      - update_site
+      - get_site
+      - delete_site
+```
+
 Remote URLs continue to use SSE when `transport` is omitted.
 
 </details>
