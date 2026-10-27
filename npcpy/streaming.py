@@ -361,10 +361,34 @@ def execute_tool(tool_name: str, tool_args: dict, tool_id: str,
         })
 
 
+def _tool_call_slot(collected: list, tc_delta) -> int:
+    """Position in ``collected`` a streamed tool_call delta belongs to.
+
+    Most providers number their tool calls with ``index``. Some
+    OpenAI-compatible endpoints send ``index=None``: a delta then opens a new
+    call when it carries an id different from the last call's, or a name after
+    the last call already has one; any other delta continues the last call.
+    """
+    idx = getattr(tc_delta, 'index', None)
+    if idx is not None:
+        return idx
+    if not collected:
+        return 0
+    last = collected[-1]
+    new_id = getattr(tc_delta, 'id', None)
+    fn = getattr(tc_delta, 'function', None)
+    name = getattr(fn, 'name', None) if fn else None
+    if new_id and last['id'] and new_id != last['id']:
+        return len(collected)
+    if not new_id and name and last['function']['name']:
+        return len(collected)
+    return len(collected) - 1
+
+
 def _accumulate_tool_call_deltas(collected: list, deltas) -> list:
     """Merge streaming tool_call deltas into collected list."""
     for tc_delta in deltas:
-        idx = getattr(tc_delta, 'index', len(collected))
+        idx = _tool_call_slot(collected, tc_delta)
         while len(collected) <= idx:
             collected.append({
                 'id': '',
