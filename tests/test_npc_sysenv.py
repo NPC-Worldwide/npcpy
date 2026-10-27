@@ -227,5 +227,37 @@ class TestMLXDiscovery:
             shutil.rmtree(temp_dir)
 
 
+
+class TestTeamSyncStatus:
+    """Test npc_team git sync status reporting."""
+
+    def test_modified_file_names_are_complete(self):
+        """Unstaged changes keep the full file name, including the first entry."""
+        import subprocess
+        from npcpy.npc_sysenv import team_sync_status
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            def git(*args):
+                subprocess.run(["git", *args], cwd=temp_dir, check=True, capture_output=True)
+
+            git("init")
+            git("config", "user.email", "test@example.com")
+            git("config", "user.name", "Test")
+            for name in ("alpha.npc", "beta.npc"):
+                with open(os.path.join(temp_dir, name), "w") as f:
+                    f.write("name: test\n")
+            git("add", ".")
+            git("commit", "-m", "init")
+            for name in ("alpha.npc", "beta.npc"):
+                with open(os.path.join(temp_dir, name), "a") as f:
+                    f.write("primary_directive: changed\n")
+
+            result = team_sync_status(temp_dir)
+            assert sorted(result["modified"]) == ["alpha.npc", "beta.npc"]
+            assert result["status"] == "ahead"
+        finally:
+            shutil.rmtree(temp_dir)
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
