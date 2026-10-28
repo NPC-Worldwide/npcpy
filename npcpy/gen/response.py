@@ -548,14 +548,18 @@ def get_ollama_response(
             "temperature",
             "top_p",
             "top_k",
-            "max_tokens",
-            "max_completion_tokens",
             "extra_headers",
             "parallel_tool_calls",
             "response_format",
             "user",
         ]:
             options[key] = value
+
+    # Ollama only understands num_predict; max_tokens / max_completion_tokens
+    # in options are ignored and the response would run without a limit.
+    for key in ("max_tokens", "max_completion_tokens"):
+        if kwargs.get(key) is not None:
+            options["num_predict"] = kwargs[key]
 
     result = {
         "response": None,
