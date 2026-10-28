@@ -120,6 +120,7 @@ from npcpy.streaming import (
     execute_tool,
     create_chat_stream,
     create_tool_agent_stream,
+    accumulate_tool_call_deltas,
     create_jinx_stream,
 )
 import json
@@ -5349,22 +5350,7 @@ def stream():
                             }
                             yield chunk_data
                         if hasattr(delta, "tool_calls") and delta.tool_calls:
-                            for tool_call_delta in delta.tool_calls:
-                                idx = getattr(tool_call_delta, "index", 0)
-                                while len(collected_tool_calls) <= idx:
-                                    collected_tool_calls.append({
-                                        "id": "",
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""}
-                                    })
-                                if getattr(tool_call_delta, "id", None):
-                                    collected_tool_calls[idx]["id"] = tool_call_delta.id
-                                if hasattr(tool_call_delta, "function"):
-                                    fn = tool_call_delta.function
-                                    if getattr(fn, "name", None):
-                                        collected_tool_calls[idx]["function"]["name"] = fn.name
-                                    if getattr(fn, "arguments", None):
-                                        collected_tool_calls[idx]["function"]["arguments"] += fn.arguments
+                            accumulate_tool_call_deltas(collected_tool_calls, delta.tool_calls)
                 if last_response_chunk is not None:
                     if isinstance(last_response_chunk, dict) and last_response_chunk.get("type") == "usage":
                         total_input_tokens += last_response_chunk.get("input_tokens", 0) or 0

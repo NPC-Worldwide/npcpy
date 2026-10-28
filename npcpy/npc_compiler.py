@@ -4122,27 +4122,9 @@ class Agent(NPC):
             parse_stream_chunk,
             execute_tool,
             resolve_npc_tools,
+            accumulate_tool_call_deltas,
         )
         from npcpy.gen.response import calculate_cost
-
-        def accumulate_tool_call_deltas(collected, deltas):
-            for tc_delta in deltas:
-                idx = getattr(tc_delta, "index", len(collected))
-                while len(collected) <= idx:
-                    collected.append({
-                        "id": "",
-                        "type": "function",
-                        "function": {"name": "", "arguments": ""},
-                    })
-                if getattr(tc_delta, "id", None):
-                    collected[idx]["id"] = tc_delta.id
-                fn = getattr(tc_delta, "function", None)
-                if fn:
-                    if getattr(fn, "name", None):
-                        collected[idx]["function"]["name"] = fn.name
-                    if getattr(fn, "arguments", None):
-                        collected[idx]["function"]["arguments"] += fn.arguments
-            return collected
 
         tools_for_llm, tool_executors = resolve_npc_tools(
             self, mcp_clients_cache=mcp_clients_cache, selected_tools=selected_tools
