@@ -1093,6 +1093,15 @@ response = get_llm_response("Say hello in one short sentence.", model="deepseek-
 print(response["response"])
 ```
 
+### CloudGPU
+
+Set `CLOUDGPU_API_KEY` and use `provider="cloudgpu"` with a model ID from CloudGPU's model list (`GET https://cloudgpu.app/v1/models`), for example `deepseek-v4.1-flash`, `kimi-k2.7-code` or `glm-5.3-flash`. Requests go to the OpenAI-compatible base URL `https://cloudgpu.app/v1`; set `CLOUDGPU_API_URL` to override it. Keys are created in the CloudGPU console; see the [API docs](https://cloudgpu.app/api/docs?utm_source=github&utm_medium=referral&utm_campaign=202611_seg06_indiedev&utm_content=github_npcpy_provider).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="deepseek-v4.1-flash", provider="cloudgpu")
+print(response["response"])
+```
+
 ### QLLM-PAM (local, attention-free)
 
 `npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).

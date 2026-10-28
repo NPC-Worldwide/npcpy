@@ -624,3 +624,78 @@ class TestRuncrateRouting:
         assert server.captured == [
             ("/v1/chat/completions", "Bearer rc-test-key", model)
         ]
+
+
+class TestCloudGPURouting:
+    """Test CloudGPU provider resolution and request routing."""
+
+    def test_resolve_defaults(self, monkeypatch):
+        monkeypatch.delenv("CLOUDGPU_API_URL", raising=False)
+        monkeypatch.setenv("CLOUDGPU_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(model="deepseek-v4.1-flash", provider="cloudgpu")
+        assert (m, p) == ("deepseek-v4.1-flash", "cloudgpu")
+        assert url == "https://cloudgpu.app/v1"
+        assert key == "test-key"
+
+    def test_resolve_env_url_override(self, monkeypatch):
+        monkeypatch.setenv("CLOUDGPU_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("CLOUDGPU_API_KEY", "env-key")
+        _, p, url, key = resolve_model_provider(model="kimi-k2.7-code", provider="cloudgpu")
+        assert p == "cloudgpu"
+        assert url == "https://example.test/v1"
+        assert key == "env-key"
+
+    def test_explicit_arguments_win(self, monkeypatch):
+        monkeypatch.setenv("CLOUDGPU_API_KEY", "env-key")
+        _, _, url, key = resolve_model_provider(
+            model="kimi-k2.7-code", provider="cloudgpu",
+            api_url="https://other.test/v1", api_key="arg-key",
+        )
+        assert url == "https://other.test/v1"
+        assert key == "arg-key"
+
+    @pytest.mark.parametrize("model", ["deepseek-v4.1-flash", "kimi-k2.7-code"])
+    def test_request_uses_gateway_url_key_and_model_id(self, monkeypatch, model):
+        """The request goes to <base>/chat/completions with the CloudGPU key and the unmodified model ID."""
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                self.server.captured.append((self.path, self.headers.get("Authorization"), body.get("model")))
+                payload = {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": body.get("model"),
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }
+                data = json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CaptureHandler)
+        server.captured = []
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            monkeypatch.setenv("CLOUDGPU_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+            monkeypatch.setenv("CLOUDGPU_API_KEY", "cg-test-key")
+            result = get_llm_response("Hello", model=model, provider="cloudgpu")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert result["response"] == "ok"
+        assert server.captured == [
+            ("/v1/chat/completions", "Bearer cg-test-key", model)
+        ]
