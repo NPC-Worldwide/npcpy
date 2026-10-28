@@ -361,7 +361,7 @@ def execute_tool(tool_name: str, tool_args: dict, tool_id: str,
         })
 
 
-def _tool_call_slot(collected: list, tc_delta) -> int:
+def tool_call_slot(collected: list, tc_delta) -> int:
     """Position in ``collected`` a streamed tool_call delta belongs to.
 
     Most providers number their tool calls with ``index``. Some
@@ -385,10 +385,10 @@ def _tool_call_slot(collected: list, tc_delta) -> int:
     return len(collected) - 1
 
 
-def _accumulate_tool_call_deltas(collected: list, deltas) -> list:
+def accumulate_tool_call_deltas(collected: list, deltas) -> list:
     """Merge streaming tool_call deltas into collected list."""
     for tc_delta in deltas:
-        idx = _tool_call_slot(collected, tc_delta)
+        idx = tool_call_slot(collected, tc_delta)
         while len(collected) <= idx:
             collected.append({
                 'id': '',
@@ -585,7 +585,7 @@ def create_tool_agent_stream(config: StreamConfig,
                     yield StreamEvent('reasoning_delta', {'reasoning': reasoning, 'model': model})
 
                 if tc_deltas:
-                    _accumulate_tool_call_deltas(collected_tool_calls, tc_deltas)
+                    accumulate_tool_call_deltas(collected_tool_calls, tc_deltas)
 
                 chunk_usage = getattr(chunk, 'usage', None)
                 if chunk_usage is None and isinstance(chunk, dict):

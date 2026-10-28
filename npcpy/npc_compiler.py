@@ -4122,7 +4122,7 @@ class Agent(NPC):
             parse_stream_chunk,
             execute_tool,
             resolve_npc_tools,
-            _accumulate_tool_call_deltas,
+            accumulate_tool_call_deltas,
         )
         from npcpy.gen.response import calculate_cost
 
@@ -4195,7 +4195,7 @@ class Agent(NPC):
                             }],
                         }
                     if tc_deltas:
-                        _accumulate_tool_call_deltas(collected_tool_calls, tc_deltas)
+                        accumulate_tool_call_deltas(collected_tool_calls, tc_deltas)
 
                     chunk_usage = getattr(chunk, "usage", None)
                     if chunk_usage is None and isinstance(chunk, dict):
