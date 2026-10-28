@@ -87,7 +87,7 @@ Generate images with DALL-E 2, DALL-E 3, or GPT Image 1.
 ```python
 images = gen_image(
     "An oil painting of a cat wearing a top hat",
-    model="dall-e-2",
+    model="gpt-image-2.5-sunburst",
     provider="openai",
     height=1024,
     width=1024,
@@ -123,10 +123,10 @@ images = gen_image(
 Edit existing images by passing attachments. The attachments parameter accepts file paths, raw bytes, or PIL Image objects.
 
 ```python
-# OpenAI image editing with gpt-image-1
+# OpenAI image editing with gpt-image-2.5-sunburst
 images = gen_image(
     "Add a rainbow in the sky",
-    model="gpt-image-1",
+    model="gpt-image-2.5-sunburst",
     provider="openai",
     input_images=["photo.png"],
 )
@@ -149,7 +149,7 @@ edited = edit_image(
     prompt="Add a rainbow in the sky",
     image_path="photo.png",
     provider="openai",
-    model="gpt-image-1",
+    model="gpt-image-2.5-sunburst",
     save_path="edited.png",
 )
 ```
@@ -172,7 +172,7 @@ images = gen_image(
 Or save manually:
 
 ```python
-images = gen_image("A sunset", model="dall-e-2", provider="openai")
+images = gen_image("A sunset", model="gpt-image-2.5-sunburst", provider="openai")
 images[0].save("sunset.png")
 ```
 
