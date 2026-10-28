@@ -201,6 +201,7 @@ AirLLM loads and processes model layers sequentially, allowing you to run models
 | `cheaperinference` | `gpt-5.4-mini` | [Cheaper Inference](https://cheaperinference.com) OpenAI-compatible gateway; requires `CHEAPER_INFERENCE_API_KEY` |
 | `runcrate` | `deepseek-ai/DeepSeek-V4.1-Flash` | [Runcrate](https://www.runcrate.ai/?utm_source=npcpy&utm_medium=directory&utm_campaign=gpu_pricing) OpenAI-compatible API for open models; requires `RUNCRATE_API_KEY`, optional `RUNCRATE_API_URL` override |
 | `cloudgpu` | `deepseek-v4.1-flash` | [CloudGPU](https://cloudgpu.app/api/docs?utm_source=github&utm_medium=referral&utm_campaign=202611_seg06_indiedev&utm_content=github_npcpy_provider) OpenAI-compatible API for open models; requires `CLOUDGPU_API_KEY`, optional `CLOUDGPU_API_URL` override |
+| `obscurify` | `deepseek/deepseek-v4-flash` | [Obscurify.ai](https://obscurify.ai/?utm_source=npcpy) privacy-focused OpenAI-compatible API, 200+ models; requires `OBSCURIFY_API_KEY`, optional `OBSCURIFY_API_URL` override |
 | `opper` | `claude-sonnet-4-6` | [Opper](https://opper.ai) EU-hosted OpenAI-compatible gateway; requires `OPPER_API_KEY`, optional `OPPER_API_URL` override |
 | `anthropic` | `claude-sonnet-4` | Requires `ANTHROPIC_API_KEY` |
 | `gemini` | `gemini-2.0-flash` | Requires `GEMINI_API_KEY` |

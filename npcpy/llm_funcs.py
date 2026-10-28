@@ -222,6 +222,9 @@ def resolve_model_provider(
     if p == "cloudgpu":
         a_url = a_url or os.environ.get("CLOUDGPU_API_URL") or "https://cloudgpu.app/v1"
         a_key = a_key or os.environ.get("CLOUDGPU_API_KEY")
+    if p == "obscurify":
+        a_url = a_url or os.environ.get("OBSCURIFY_API_URL") or "https://obscurify.ai/v1"
+        a_key = a_key or os.environ.get("OBSCURIFY_API_KEY")
     return m, p, a_url, a_key
 
 
