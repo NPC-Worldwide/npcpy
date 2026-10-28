@@ -1117,7 +1117,7 @@ def _git(args, cwd, timeout=15):
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"git {args[0]} failed")
-    return result.stdout.strip()
+    return result.stdout.rstrip()
 
 def team_sync_status(team_path=None):
     """Get sync status for an npc_team directory."""
