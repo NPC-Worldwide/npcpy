@@ -699,3 +699,75 @@ class TestCloudGPURouting:
         assert server.captured == [
             ("/v1/chat/completions", "Bearer cg-test-key", model)
         ]
+
+
+class TestObscurifyRouting:
+    """Test Obscurify.ai provider resolution and request routing."""
+
+    def test_resolve_defaults(self, monkeypatch):
+        monkeypatch.delenv("OBSCURIFY_API_URL", raising=False)
+        monkeypatch.setenv("OBSCURIFY_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(model="deepseek/deepseek-v4-flash", provider="obscurify")
+        assert (m, p) == ("deepseek/deepseek-v4-flash", "obscurify")
+        assert url == "https://obscurify.ai/v1"
+        assert key == "test-key"
+
+    def test_resolve_env_url_override(self, monkeypatch):
+        monkeypatch.setenv("OBSCURIFY_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("OBSCURIFY_API_KEY", "env-key")
+        _, p, url, key = resolve_model_provider(model="z-ai/glm-5.3", provider="obscurify")
+        assert p == "obscurify"
+        assert url == "https://example.test/v1"
+        assert key == "env-key"
+
+    def test_explicit_arguments_win(self, monkeypatch):
+        monkeypatch.setenv("OBSCURIFY_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("OBSCURIFY_API_KEY", "env-key")
+        _, _, url, key = resolve_model_provider(
+            model="z-ai/glm-5.3", provider="obscurify",
+            api_url="https://other.test/v1", api_key="arg-key",
+        )
+        assert url == "https://other.test/v1"
+        assert key == "arg-key"
+
+    @pytest.mark.parametrize("model", ["deepseek/deepseek-v4-flash", "moonshotai/kimi-k2-0905"])
+    def test_request_keeps_vendor_prefixed_model_id(self, monkeypatch, model):
+        """The request hits <base>/chat/completions with the key and the vendor/model ID unchanged."""
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                self.server.seen.append((self.path, self.headers.get("Authorization"), body.get("model")))
+                data = json.dumps({
+                    "id": "chatcmpl-local",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": body.get("model"),
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.seen = []
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            monkeypatch.setenv("OBSCURIFY_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+            monkeypatch.setenv("OBSCURIFY_API_KEY", "obs-test-key")
+            result = get_llm_response("Hello", model=model, provider="obscurify")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert result["response"] == "ok"
+        assert server.seen == [("/v1/chat/completions", "Bearer obs-test-key", model)]

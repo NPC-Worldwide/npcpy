@@ -2528,6 +2528,10 @@ def get_litellm_response(
         api_url = api_url or os.environ.get("CLOUDGPU_API_URL") or "https://cloudgpu.app/v1"
         api_key = api_key or os.environ.get("CLOUDGPU_API_KEY")
         provider = "openai"
+    elif provider == 'obscurify':
+        api_url = api_url or os.environ.get("OBSCURIFY_API_URL") or "https://obscurify.ai/v1"
+        api_key = api_key or os.environ.get("OBSCURIFY_API_KEY")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:

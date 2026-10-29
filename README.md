@@ -1102,6 +1102,15 @@ response = get_llm_response("Say hello in one short sentence.", model="deepseek-
 print(response["response"])
 ```
 
+### Obscurify.ai
+
+Set `OBSCURIFY_API_KEY` and use `provider="obscurify"` with a model ID from the public model list (`GET https://obscurify.ai/v1/models`, no key needed), for example `deepseek/deepseek-v4-flash`, `moonshotai/kimi-k2-0905` or `z-ai/glm-5.3`. Requests go to the OpenAI-compatible base URL `https://obscurify.ai/v1`; set `OBSCURIFY_API_URL` to override it. Accounts are a random account number with no email; the key is under "Show API Key" on the [account page](https://obscurify.ai/account). See the [API docs](https://obscurify.ai/api-docs) or [obscurify.ai](https://obscurify.ai/?utm_source=npcpy).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="deepseek/deepseek-v4-flash", provider="obscurify")
+print(response["response"])
+```
+
 ### QLLM-PAM (local, attention-free)
 
 `npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).
