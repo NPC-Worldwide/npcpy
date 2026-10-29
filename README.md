@@ -1111,6 +1111,15 @@ response = get_llm_response("Say hello in one short sentence.", model="deepseek/
 print(response["response"])
 ```
 
+### cheapaimodel
+
+Set `CHEAPAIMODEL_API_KEY` and use `provider="cheapaimodel"` with a model ID from the [model list](https://cheapaimodel.ai/models), for example `deepseek-v4-1-flash`, `glm-5.3`, `kimi-k3` or `grok-4.7`. Requests go to the OpenAI-compatible base URL `https://api.cheapaimodel.ai/v1`; set `CHEAPAIMODEL_API_URL` to override it. Usage is billed per token from a prepaid USD balance; create a key in the [console](https://console.cheapaimodel.ai/keys). See the [docs](https://cheapaimodel.ai/docs) or [cheapaimodel.ai](https://cheapaimodel.ai/?utm_source=npcpy).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="deepseek-v4-1-flash", provider="cheapaimodel")
+print(response["response"])
+```
+
 ### QLLM-PAM (local, attention-free)
 
 `npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).
