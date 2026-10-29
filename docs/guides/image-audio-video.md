@@ -377,6 +377,48 @@ audio_bytes = text_to_speech(
 )
 ```
 
+### Ollama Speech (Phonon)
+
+Local speech models served by Ollama through its OpenAI-compatible
+`/v1/audio/speech` endpoint.
+
+> **Requirements:** Ollama >= 0.40.11 with a speech model pulled
+> (`ollama pull phonon`). As of Ollama 0.40.11, speech models are
+> **macOS (Apple Silicon) only** -- Windows and Linux support is
+> announced but not yet released.
+
+```python
+audio_bytes = text_to_speech(
+    "Hello from Ollama.",
+    engine="ollama",
+    voice="Zoey",                     # Zoey, Easton, Freya, Hadley, Hugh, ...
+    model="phonon",                   # or phonon:40m-fr / -de / -es / -pt / -multilingual
+    response_format="wav",            # "wav" (24 kHz mono) or "pcm" (raw 16-bit)
+)
+
+# Write to disk
+with open("speech.wav", "wb") as f:
+    f.write(audio_bytes)
+```
+
+The server URL comes from `api_url=`, then `OLLAMA_HOST`, then
+`http://localhost:11434`. `OLLAMA_API_KEY` is sent as a bearer token when set.
+
+Useful helpers:
+
+```python
+from npcpy.gen.audio_gen import (
+    get_ollama_voices,
+    get_ollama_speech_models,
+)
+
+get_ollama_voices()          # voice catalog (server-backed, static fallback)
+get_ollama_speech_models()   # known Phonon language variants
+```
+
+Licensing: `phonon` is Apache 2.0; the 40M language variants are
+CC BY-NC 4.0 (noncommercial use only).
+
 ### Discovering Available Engines and Voices
 
 ```python

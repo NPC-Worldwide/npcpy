@@ -139,22 +139,26 @@ def openai_image_gen(
     prompt: str,
     model: str = "gpt-image-2.5-sunburst",
     attachments: Union[List[Union[str, bytes, Image.Image]], None] = None,
-    height: int = 1024,
-    width: int = 1024,
+    height: Optional[int] = None,
+    width: Optional[int] = None,
     n_images: int = 1,
     api_key: Optional[str] = None,
 ):
-    """Generate or edit an image using the OpenAI API."""
+    """Generate or edit an image using the OpenAI API.
+
+    Dimensions are optional. When neither ``height`` nor ``width`` is given we
+    send ``size="auto"`` and let OpenAI pick. Do NOT default to 1024x1024:
+    some models (e.g. ``gpt-image-2.5-flare``) reject that exact size with a
+    misleading HTTP 403 "does not have access to model" error.
+    """
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key) if api_key else OpenAI()
 
-    if height is None:
-        height = 1024
-    if width is None:
-        width = 1024
-
-    size_str = f"{width}x{height}"
+    if height is None and width is None:
+        size_str = "auto"
+    else:
+        size_str = f"{width or 1024}x{height or 1024}"
 
     if attachments is not None:
         processed_images = []
@@ -316,7 +320,14 @@ def gemini_image_gen(
                 collected_images.append(Image.open(BytesIO(generated_image.image.image_bytes)))
             return collected_images
 
-        elif 'flash-image' in model or 'image-preview' in model or '2.5-flash' in model:
+        elif (
+            'flash-image' in model
+            or 'image-preview' in model
+            or '2.5-flash' in model
+            or 'nano-banana' in model
+            or 'pro-image' in model
+            or 'image-generation' in model
+        ):
             response = client.models.generate_content(
                 model=model,
                 contents=[prompt],
@@ -455,7 +466,7 @@ def generate_image(
         elif provider == "diffusers":
             model = "runwayml/stable-diffusion-v1-5"
         elif provider == "gemini":
-            model = "gemini-2.5-flash-image"
+            model = "gemini-3.1-flash-image"
         elif provider == "ollama":
             model = "x/z-image-turbo"
     
@@ -584,7 +595,7 @@ def edit_image(
         if provider == "openai":
             model = "gpt-image-2.5-sunburst"
         elif provider == "gemini":
-            model = "gemini-2.5-flash-image"
+            model = "gemini-3.1-flash-image"
     
     image = generate_image(
         prompt=prompt,

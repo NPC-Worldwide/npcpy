@@ -3948,14 +3948,63 @@ def get_attachment_response():
         "messages": messages,
     })
 _IMAGE_MODELS_FALLBACK = {
-    "ollama": [
-        {"value": "x/z-image-turbo", "display_name": "Z-Image Turbo (6B)"},
-        {"value": "x/flux2-klein", "display_name": "FLUX.2 Klein (4B)"},
+    # Current OpenAI image models (Image API). Sunburst = highest editing
+    # precision, Flare = fast/high-quality everyday generation.
+    "openai": [
+        {"value": "gpt-image-2.5-sunburst", "display_name": "GPT-Image 2.5 Sunburst"},
+        {"value": "gpt-image-2.5-flare", "display_name": "GPT-Image 2.5 Flare"},
+        {"value": "gpt-image-1.5", "display_name": "GPT-Image 1.5"},
+        {"value": "gpt-image-1-mini", "display_name": "GPT-Image 1 mini"},
+    ],
+    # Current Gemini image models. Nano Banana 2.1 / Gemini 3.1 Flash Image are
+    # the fast, high-volume options; Gemini 3 Pro Image for production assets.
+    "gemini": [
+        {"value": "gemini-3.1-flash-image", "display_name": "Gemini 3.1 Flash Image (Nano Banana 2)"},
+        {"value": "gemini-3.1-flash-lite-image", "display_name": "Gemini 3.1 Flash Lite Image"},
+        {"value": "gemini-3-pro-image", "display_name": "Gemini 3 Pro Image"},
+        {"value": "gemini-nano-banana-2.1", "display_name": "Gemini Nano Banana 2.1"},
+        {"value": "gemini-2.5-flash-image", "display_name": "Gemini 2.5 Flash Image"},
+    ],
+    "stability": [
+        {"value": "sd3.5-large", "display_name": "Stable Diffusion 3.5 Large"},
+        {"value": "sd3.5-large-turbo", "display_name": "Stable Diffusion 3.5 Large Turbo"},
+        {"value": "sd3.5-medium", "display_name": "Stable Diffusion 3.5 Medium"},
+        {"value": "stable-image-ultra", "display_name": "Stable Image Ultra"},
+        {"value": "stable-image-core", "display_name": "Stable Image Core"},
+    ],
+    "fal": [
+        {"value": "fal-ai/flux-pro/v1.1-ultra", "display_name": "FLUX 1.1 Pro Ultra"},
+        {"value": "fal-ai/flux-pro/v1.1", "display_name": "FLUX 1.1 Pro"},
+        {"value": "fal-ai/bytedance/seedream/v3/text-to-image", "display_name": "Seedream v3"},
+        {"value": "fal-ai/imagen4/preview", "display_name": "Imagen 4 (preview)"},
+        {"value": "fal-ai/gemini-25-flash-image", "display_name": "Gemini 2.5 Flash Image"},
     ],
     "bfl": [
+        {"value": "flux-pro-1.1-ultra", "display_name": "FLUX 1.1 Pro Ultra"},
         {"value": "flux-pro-1.1", "display_name": "FLUX Pro 1.1"},
         {"value": "flux-pro", "display_name": "FLUX Pro"},
         {"value": "flux-dev", "display_name": "FLUX Dev"},
+    ],
+    "replicate": [
+        {"value": "black-forest-labs/flux-1.1-pro", "display_name": "FLUX 1.1 Pro"},
+        {"value": "black-forest-labs/flux-schnell", "display_name": "FLUX Schnell"},
+        {"value": "stability-ai/stable-diffusion-3.5-large", "display_name": "SD 3.5 Large"},
+    ],
+    "together": [
+        {"value": "black-forest-labs/FLUX.1-schnell-Free", "display_name": "FLUX.1 Schnell (free)"},
+        {"value": "black-forest-labs/FLUX.1-pro", "display_name": "FLUX.1 Pro"},
+    ],
+    "fireworks": [
+        {"value": "accounts/fireworks/models/flux-1-1-pro", "display_name": "FLUX 1.1 Pro"},
+        {"value": "accounts/fireworks/models/flux-1-schnell", "display_name": "FLUX.1 Schnell"},
+    ],
+    "deepinfra": [
+        {"value": "black-forest-labs/FLUX-1.1-pro", "display_name": "FLUX 1.1 Pro"},
+        {"value": "black-forest-labs/FLUX-1-schnell", "display_name": "FLUX.1 Schnell"},
+    ],
+    "ollama": [
+        {"value": "x/z-image-turbo", "display_name": "Z-Image Turbo (6B)"},
+        {"value": "x/flux2-klein", "display_name": "FLUX.2 Klein (4B)"},
     ],
     "bagel": [
         {"value": "bagel-image-v1", "display_name": "Bagel Image v1"},
@@ -3971,10 +4020,17 @@ _IMAGE_MODELS_FALLBACK = {
 }
 
 _LITELLM_IMAGE_PROVIDER_ATTRS = {
-    "gemini": ("gemini_models", lambda m: any(k in m.lower() for k in ["image", "imagen", "nano", "banana"]) and "veo" not in m.lower()),
-    "openai": ("openai_image_generation_models", None),
-    "stability": ("stability_models", None),
-    "fal": ("fal_ai_models", None),
+    # Only surface current Gemini image generation models; litellm still
+    # carries retired imagen-3.0 previews, so those are filtered out.
+    "gemini": ("gemini_models", lambda m: any(k in m.lower() for k in ["image", "nano-banana"]) and "veo" not in m.lower() and "imagen-3.0" not in m.lower()),
+    # OpenAI's live atlas lags the API (still lists only dall-e-2/3), so keep
+    # only gpt-image/dall-e ids here and let fallbacks supply the current set.
+    # DALL-E is deprecated and deliberately excluded; gpt-image ids only.
+    "openai": ("openai_image_generation_models", lambda m: "gpt-image" in m.lower()),
+    # litellm's stability_models is a capability list (sd3, fast, erase, ...),
+    # not model ids -- skip live discovery and rely on the fallback list.
+    "stability": (None, None),
+    "fal": ("fal_ai_models", lambda m: "image" in m.lower() and "video" not in m.lower()),
     "replicate": (None, None),
     "together": (None, None),
     "fireworks": (None, None),
@@ -4113,7 +4169,12 @@ def get_available_image_models(current_path=None):
                 for model_id in sorted(model_set):
                     if filter_fn and not filter_fn(model_id):
                         continue
-                    clean_id = model_id.split("/")[-1] if "/" in model_id else model_id
+                    # Strip a leading litellm provider prefix (e.g. "gemini/")
+                    # but keep nested ids intact for providers like fal.
+                    clean_id = model_id
+                    for prefix in (f"{provider_key}/", "fal_ai/"):
+                        if clean_id.startswith(prefix):
+                            clean_id = clean_id[len(prefix):]
                     all_image_models.append({
                         "value": clean_id,
                         "provider": provider_key,
