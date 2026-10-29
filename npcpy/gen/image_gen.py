@@ -455,7 +455,7 @@ def generate_image(
         elif provider == "diffusers":
             model = "runwayml/stable-diffusion-v1-5"
         elif provider == "gemini":
-            model = "gemini-2.5-flash-image"
+            model = "gemini-3.1-flash-image"
         elif provider == "ollama":
             model = "x/z-image-turbo"
     
@@ -584,7 +584,7 @@ def edit_image(
         if provider == "openai":
             model = "gpt-image-2.5-sunburst"
         elif provider == "gemini":
-            model = "gemini-2.5-flash-image"
+            model = "gemini-3.1-flash-image"
     
     image = generate_image(
         prompt=prompt,
