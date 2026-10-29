@@ -219,3 +219,15 @@ class TestFunctionsModuleStatus:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestRetiredSQLModels:
+    """The SQL helpers must not map to models providers have shut down."""
+
+    def test_bigquery_gemini_flash_alias_is_live(self):
+        pytest.importorskip("sqlalchemy")
+        from npcpy.sql.npcsql import DatabaseAIFunctionMapper
+
+        resolved = DatabaseAIFunctionMapper.resolve_bigquery_model("gemini-flash")
+
+        assert resolved == "gemini-3.8-flash"
