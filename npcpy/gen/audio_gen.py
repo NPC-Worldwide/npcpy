@@ -9,12 +9,14 @@ TTS Engines:
 - OpenAI: Realtime voice API
 - Gemini: Live API for real-time voice
 - gTTS: Google TTS fallback
+- Ollama: Local speech models (Phonon) via /v1/audio/speech
 
 Usage:
     from npcpy.gen.audio_gen import text_to_speech
 
     audio = text_to_speech("Hello world", engine="kokoro", voice="af_heart")
     audio = text_to_speech("Hello world", engine="qwen3", voice="ryan")
+    audio = text_to_speech("Hello world", engine="ollama", voice="Zoey")
 
 For STT, see npcpy.data.audio
 """
@@ -581,6 +583,148 @@ def get_qwen3_voices() -> list:
         {"id": "uncle_fu", "name": "Uncle Fu", "gender": "male"},
     ]
 
+def tts_ollama(
+    text: str,
+    voice: str = "Zoey",
+    model: str = "phonon",
+    api_url: Optional[str] = None,
+    response_format: str = "wav",
+    timeout: int = 120,
+) -> bytes:
+    """
+    Generate speech using an Ollama-hosted speech model (e.g. Phonon).
+
+    Ollama exposes speech through its OpenAI-compatible
+    /v1/audio/speech endpoint. Requires Ollama >= 0.40.11 and the model
+    pulled locally (`ollama pull phonon`).
+
+    NOTE: as of Ollama 0.40.11, speech models are supported on macOS
+    (Apple Silicon) only. Windows and Linux support is announced but not
+    yet released; calls will fail on those platforms.
+
+    Args:
+        text: Text to synthesize
+        voice: Voice name (Zoey, Easton, Freya, Hadley, Hugh, ...)
+        model: Ollama speech model. Base `phonon` is English; use e.g.
+            phonon:40m-fr / -de / -es / -pt / -multilingual for others.
+        api_url: Ollama base URL. Defaults to OLLAMA_HOST or
+            http://localhost:11434
+        response_format: 'wav' (24 kHz mono) or 'pcm' (raw 16-bit samples)
+        timeout: Request timeout in seconds
+
+    Returns:
+        Audio bytes: WAV by default, raw PCM16 if response_format='pcm'.
+    """
+    import requests
+
+    if api_url is None:
+        api_url = os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
+
+    api_url = api_url.rstrip("/")
+    if not api_url.startswith(("http://", "https://")):
+        api_url = f"http://{api_url}"
+
+    url = f"{api_url}/v1/audio/speech"
+
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "response_format": response_format,
+    }
+
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("OLLAMA_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        response = requests.post(
+            url, json=payload, headers=headers, timeout=timeout
+        )
+    except requests.exceptions.ConnectionError as e:
+        raise ConnectionError(
+            f"Could not reach Ollama at {api_url}. Is the server running?"
+        ) from e
+
+    if response.status_code == 404:
+        raise ValueError(
+            f"Ollama at {api_url} returned 404 for /v1/audio/speech. This "
+            "requires Ollama >= 0.40.11 (speech models are macOS/Apple "
+            "Silicon only as of that release) and a pulled speech model "
+            f"(try `ollama pull {model}`)."
+        )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Ollama speech request failed ({response.status_code}): "
+            f"{response.text[:500]}"
+        )
+
+    if not response.content:
+        raise ValueError("Ollama generated no audio")
+
+    return response.content
+
+
+def get_ollama_voices(model: str = "phonon") -> list:
+    """
+    Get available voices for an Ollama speech model.
+
+    The voice catalog lives server-side in `ollama show <model>`, so this
+    returns the Phonon catalog when reachable and a static fallback
+    otherwise.
+    """
+    fallback = [
+        {"id": "Zoey", "name": "Zoey", "accent": "American"},
+        {"id": "Easton", "name": "Easton", "accent": "American"},
+        {"id": "Freya", "name": "Freya", "accent": "British"},
+        {"id": "Hadley", "name": "Hadley", "accent": "American"},
+        {"id": "Hugh", "name": "Hugh", "accent": "British"},
+    ]
+
+    api_url = os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
+    api_url = api_url.rstrip("/")
+    if not api_url.startswith(("http://", "https://")):
+        api_url = f"http://{api_url}"
+
+    try:
+        import requests
+
+        response = requests.post(
+            f"{api_url}/api/show", json={"model": model}, timeout=5
+        )
+        if response.status_code != 200:
+            return fallback
+
+        info = response.json().get("model_info", {})
+        raw = json.dumps(info, default=str)
+        found = []
+        for name in ("Zoey", "Easton", "Freya", "Hadley", "Hugh", "Lily",
+                     "Maya", "Marcus", "Nova", "Owen"):
+            if name in raw:
+                found.append({"id": name, "name": name})
+        return found or fallback
+    except Exception:
+        return fallback
+
+
+def get_ollama_speech_models() -> list:
+    """Get known Ollama speech models."""
+    return [
+        {"id": "phonon", "name": "Phonon (English)", "language": "English"},
+        {"id": "phonon:40m-fr", "name": "Phonon (French)", "language": "French"},
+        {"id": "phonon:40m-de", "name": "Phonon (German)", "language": "German"},
+        {"id": "phonon:40m-es", "name": "Phonon (Spanish)", "language": "Spanish"},
+        {"id": "phonon:40m-pt", "name": "Phonon (Portuguese)", "language": "Portuguese"},
+        {
+            "id": "phonon:40m-multilingual",
+            "name": "Phonon (Multilingual)",
+            "language": "All five",
+        },
+    ]
+
+
 def tts_gtts(text: str, lang: str = "en") -> bytes:
     """
     Generate speech using gTTS.
@@ -621,7 +765,7 @@ def text_to_speech(
 
     Args:
         text: Text to synthesize
-        engine: TTS engine (kokoro, qwen3, elevenlabs, openai, gemini, gtts)
+        engine: TTS engine (kokoro, qwen3, elevenlabs, openai, gemini, gtts, ollama)
         voice: Voice ID (engine-specific)
         **kwargs: Engine-specific options
 
@@ -656,6 +800,10 @@ def text_to_speech(
         lang = voice if voice and len(voice) <= 5 else "en"
         return tts_gtts(text, lang=lang)
 
+    elif engine == "ollama":
+        voice = voice or "Zoey"
+        return tts_ollama(text, voice=voice, **kwargs)
+
     else:
         raise ValueError(f"Unknown TTS engine: {engine}")
 
@@ -675,6 +823,8 @@ def get_available_voices(engine: str = "kokoro") -> list:
         return get_gemini_voices()
     elif engine == "gtts":
         return get_gtts_voices()
+    elif engine == "ollama":
+        return get_ollama_voices()
     else:
         return []
 
@@ -721,6 +871,13 @@ def get_available_engines() -> dict:
             "type": "cloud",
             "available": False,
             "description": "Free Google TTS (fallback)"
+        },
+        "ollama": {
+            "name": "Ollama Speech",
+            "type": "local",
+            "available": False,
+            "description": "Local speech models via Ollama (Phonon)",
+            "requires": "Ollama >= 0.40.11 (macOS/Apple Silicon)"
         }
     }
 
@@ -749,6 +906,21 @@ def get_available_engines() -> dict:
         from gtts import gTTS
         engines["gtts"]["available"] = True
     except ImportError:
+        pass
+
+    try:
+        import requests
+
+        api_url = os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
+        api_url = api_url.rstrip("/")
+        if not api_url.startswith(("http://", "https://")):
+            api_url = f"http://{api_url}"
+        resp = requests.post(
+            f"{api_url}/api/show", json={"model": "phonon"}, timeout=2
+        )
+        if resp.status_code == 200:
+            engines["ollama"]["available"] = True
+    except Exception:
         pass
 
     return engines
