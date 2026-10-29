@@ -322,7 +322,7 @@ def get_openai_voices() -> list:
 
 async def gemini_live_connect(
     api_key: Optional[str] = None,
-    model: str = "gemini-2.0-flash-exp",
+    model: str = "gemini-3.8-live",
     voice: str = "Puck",
     system_instruction: str = "You are a helpful assistant."
 ):
