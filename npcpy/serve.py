@@ -3953,11 +3953,8 @@ _IMAGE_MODELS_FALLBACK = {
     "openai": [
         {"value": "gpt-image-2.5-sunburst", "display_name": "GPT-Image 2.5 Sunburst"},
         {"value": "gpt-image-2.5-flare", "display_name": "GPT-Image 2.5 Flare"},
-        {"value": "gpt-image-2", "display_name": "GPT-Image 2"},
         {"value": "gpt-image-1.5", "display_name": "GPT-Image 1.5"},
-        {"value": "gpt-image-1", "display_name": "GPT-Image 1"},
         {"value": "gpt-image-1-mini", "display_name": "GPT-Image 1 mini"},
-        {"value": "dall-e-3", "display_name": "DALL-E 3 (legacy)"},
     ],
     # Current Gemini image models. Nano Banana 2.1 / Gemini 3.1 Flash Image are
     # the fast, high-volume options; Gemini 3 Pro Image for production assets.
@@ -3967,7 +3964,6 @@ _IMAGE_MODELS_FALLBACK = {
         {"value": "gemini-3-pro-image", "display_name": "Gemini 3 Pro Image"},
         {"value": "gemini-nano-banana-2.1", "display_name": "Gemini Nano Banana 2.1"},
         {"value": "gemini-2.5-flash-image", "display_name": "Gemini 2.5 Flash Image"},
-        {"value": "imagen-4.0-generate", "display_name": "Imagen 4.0"},
     ],
     "stability": [
         {"value": "sd3.5-large", "display_name": "Stable Diffusion 3.5 Large"},
@@ -4024,10 +4020,13 @@ _IMAGE_MODELS_FALLBACK = {
 }
 
 _LITELLM_IMAGE_PROVIDER_ATTRS = {
-    "gemini": ("gemini_models", lambda m: any(k in m.lower() for k in ["image", "imagen", "nano", "banana"]) and "veo" not in m.lower()),
+    # Only surface current Gemini image generation models; litellm still
+    # carries retired imagen-3.0 previews, so those are filtered out.
+    "gemini": ("gemini_models", lambda m: any(k in m.lower() for k in ["image", "nano-banana"]) and "veo" not in m.lower() and "imagen-3.0" not in m.lower()),
     # OpenAI's live atlas lags the API (still lists only dall-e-2/3), so keep
     # only gpt-image/dall-e ids here and let fallbacks supply the current set.
-    "openai": ("openai_image_generation_models", lambda m: ("gpt-image" in m.lower() or "dall-e" in m.lower())),
+    # DALL-E is deprecated and deliberately excluded; gpt-image ids only.
+    "openai": ("openai_image_generation_models", lambda m: "gpt-image" in m.lower()),
     # litellm's stability_models is a capability list (sd3, fast, erase, ...),
     # not model ids -- skip live discovery and rely on the fallback list.
     "stability": (None, None),

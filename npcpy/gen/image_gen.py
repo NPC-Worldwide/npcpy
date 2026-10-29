@@ -316,7 +316,14 @@ def gemini_image_gen(
                 collected_images.append(Image.open(BytesIO(generated_image.image.image_bytes)))
             return collected_images
 
-        elif 'flash-image' in model or 'image-preview' in model or '2.5-flash' in model:
+        elif (
+            'flash-image' in model
+            or 'image-preview' in model
+            or '2.5-flash' in model
+            or 'nano-banana' in model
+            or 'pro-image' in model
+            or 'image-generation' in model
+        ):
             response = client.models.generate_content(
                 model=model,
                 contents=[prompt],
