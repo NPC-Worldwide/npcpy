@@ -141,7 +141,7 @@ class DatabaseAIFunctionMapper:
     }
 
     BIGQUERY_MODELS = {
-        'gemini-2.5-flash', 'gemini-2.5-pro',
+        'gemini-3.8-flash', 'gemini-2.5-pro',
         'gemini-2.0-flash', 'gemini-2.0-pro',
         'gemini-1.5-flash', 'gemini-1.5-pro',
         'claude-3-5-sonnet-v2@20241022', 'claude-3-5-haiku@20241022',
@@ -152,7 +152,7 @@ class DatabaseAIFunctionMapper:
     }
 
     BIGQUERY_MODEL_ALIASES = {
-        'gemini-flash': 'gemini-2.5-flash',
+        'gemini-flash': 'gemini-3.8-flash',
         'gemini-pro': 'gemini-2.5-pro',
         'llama3.1:70b': 'meta/llama-3.1-70b-instruct-maas',
         'llama3.1:405b': 'meta/llama-3.1-405b-instruct-maas',
