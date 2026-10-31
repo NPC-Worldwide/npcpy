@@ -199,6 +199,35 @@ def search_keenable(query: str, num_results: int = 5, api_key: str = None):
         print(f"Keenable search failed: {e}")
     return []
 
+def search_firecrawl(query: str, num_results: int = 5, api_key: str = None):
+    """Search the web using the Firecrawl Search API."""
+    if api_key is None:
+        api_key = os.environ.get('FIRECRAWL_API_KEY')
+    if not api_key:
+        print("Firecrawl API key not set")
+        return []
+
+    try:
+        response = requests.post(
+            'https://api.firecrawl.dev/v2/search',
+            json={'query': query, 'limit': num_results, 'sources': ['web'], 'integration': '_npcpy'},
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json', 'User-Agent': 'npcpy'},
+            timeout=30
+        )
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for r in (data.get('data') or {}).get('web', [])[:num_results]:
+                results.append({
+                    'title': r.get('title', ''),
+                    'link': r.get('url', ''),
+                    'content': r.get('description', '')
+                })
+            return results
+    except Exception as e:
+        print(f"Firecrawl search failed: {e}")
+    return []
+
 def search_perplexity(
     query: str,
     api_key: str = None,
@@ -315,6 +344,9 @@ def search_web(
 
     elif provider == 'keenable':
         results = search_keenable(query, num_results=num_results, api_key=api_key)
+
+    elif provider == 'firecrawl':
+        results = search_firecrawl(query, num_results=num_results, api_key=api_key)
 
     elif provider == 'google':
         if _google_search is None:
