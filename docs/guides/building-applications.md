@@ -389,7 +389,6 @@ npc_team/
 │   ├── summarize.jinx
 │   └── analyze.jinx
 ├── assembly_lines/           # Batch processing pipelines
-├── sql_models/               # NPCSQL model files
 ├── jobs/                     # Scheduled task definitions
 └── triggers/                 # Event-triggered workflows
 ```
@@ -438,94 +437,21 @@ content = rollback_npc_to_version(engine, npc_name="analyst", team_path="./npc_t
 
 ---
 
-## NPCSQL — AI-Powered SQL
+## AI-Powered SQL (now: nql)
 
-NPCSQL lets you write SQL model files with embedded AI function calls, Jinja templating, and DAG-based execution. Think dbt meets LLM-powered transformations.
+The in-repo SQL module (`npcpy/sql`) has been removed. For SQL models with embedded AI
+function calls, Jinja templating, and dbt-style DAG execution, use
+[nql](https://github.com/npc-worldwide/nql) — a standalone Rust CLI that compiles
+`nql.*` functions to native AI SQL for SQLite, PostgreSQL, Snowflake, BigQuery, and
+Databricks.
 
-Source: `npcpy/sql/npcsql.py`, `npcpy/sql/database_ai_functions.py`
-
-### SQL Model Files
-
-SQL models are `.sql` files in your `npc_team/sql_models/` directory. They support Jinja templating:
-
-```sql
--- models/base_stats.sql
-{{ config(materialized='table') }}
-
-SELECT
-    customer_id,
-    COUNT(*) as order_count,
-    SUM(amount) as total_spent
-FROM orders
-GROUP BY customer_id
+```
+cargo install nql
+nql run my_model --models-dir ./models --db ./data.db --target sqlite
 ```
 
-```sql
--- models/enriched_customers.sql
-{{ config(materialized='table') }}
-
-SELECT
-    b.customer_id,
-    b.order_count,
-    b.total_spent,
-    nql.generate_text(b.customer_id, 'analyst') as customer_segment
-FROM {{ ref('base_stats') }} b
-```
-
-### Jinja Functions
-
-| Function | Usage | Description |
-|----------|-------|-------------|
-| `{{ ref('model_name') }}` | Reference another model | Creates dependency in the DAG |
-| `{{ config(materialized='table') }}` | Model configuration | Controls materialization strategy |
-| `{{ npc('name').model }}` | Access NPC properties | Name, model, provider, directive |
-| `{{ jinx('name').description }}` | Access jinx properties | Name, description, inputs |
-| `{{ env('VAR_NAME') }}` | Environment variable | Read environment values |
-
-### NQL Function Syntax
-
-NQL functions embed AI calls directly in SQL:
-
-```sql
-nql.generate_text(column, 'agent_name') as alias
-```
-
-The `nql.` prefix indicates an AI function. The column value is passed to the specified NPC agent, and the result replaces the function call in the output.
-
-### DAG-Based Execution
-
-The `ModelCompiler` orchestrates execution:
-
-```python
-from npcpy.sql.npcsql import ModelCompiler
-
-compiler = ModelCompiler(
-    models_dir="./npc_team/sql_models",
-    target_engine=engine,
-    npc_directory="./npc_team",
-)
-
-# Discover → parse → topological sort → execute → materialize
-compiler.run_all_models()
-```
-
-The pipeline:
-
-1. **Discover** — find all `.sql` files in `models_dir`
-2. **Parse** — extract `{{ ref() }}` dependencies and `nql.*` calls
-3. **Topological sort** — order models by dependency
-4. **Execute** — run each model's SQL, applying AI functions
-5. **Materialize** — write results to the target database
-
-### Database-Native AI
-
-For supported databases, NQL functions are translated to native SQL:
-
-- **Snowflake Cortex** — `nql.generate_text()` → `SNOWFLAKE.CORTEX.COMPLETE()`
-- **BigQuery ML** — `nql.generate_text()` → `ML.GENERATE_TEXT()`
-- **Databricks** — `nql.generate_text()` → `serving.predict()`
-
-For SQLite and PostgreSQL, npcpy falls back to Python-based execution: the SQL runs without the NQL calls, then AI functions are applied row-by-row on the resulting DataFrame.
+See the [nql README](https://github.com/npc-worldwide/nql#readme) for the model file
+format, `{{ ref() }}` / `{{ config() }}` templating, and per-target AI function support.
 
 ---
 
