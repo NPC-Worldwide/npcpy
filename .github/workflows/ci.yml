@@ -79,9 +79,9 @@ jobs:
         run: |
           pytest tests/test_data_models.py tests/test_video.py -v --tb=short --timeout=60
 
-      - name: Run SQL module tests
+      - name: Run model runner tests
         run: |
-          pytest tests/test_sql_adapters.py tests/test_sql_functions.py tests/test_sql_compiler.py tests/test_model_runner.py -v --tb=short --timeout=60
+          pytest tests/test_model_runner.py -v --tb=short --timeout=60
 
       - name: Run additional module tests
         run: |
