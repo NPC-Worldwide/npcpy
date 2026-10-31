@@ -22,7 +22,10 @@ def python_type_to_json_schema(py_type: type) -> Dict[str, Any]:
     
     
     if get_origin(py_type) is list:
-        item_type = get_args(py_type)[0] if get_args(py_type) else str
+        item_type = get_args(py_type)[0] if get_args(py_type) else None
+        if item_type is None:
+            # bare List with no parameters -> open items, same as builtin list
+            return {"type": "array", "items": {}}
         return {
             "type": "array",
             "items": python_type_to_json_schema(item_type)
@@ -38,7 +41,9 @@ def python_type_to_json_schema(py_type: type) -> Dict[str, Any]:
         int: {"type": "integer"},
         float: {"type": "number"},
         bool: {"type": "boolean"},
-        list: {"type": "array"},
+        # open "items" keeps the element type unspecified so OpenAI accepts the
+        # schema (it rejects arrays with no items) and non-string elements still work
+        list: {"type": "array", "items": {}},
         dict: {"type": "object"},
     }
     
