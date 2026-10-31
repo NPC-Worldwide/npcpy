@@ -57,7 +57,7 @@ from npcpy.db import generate_message_id, ensure_engine
 from npcpy.memory.knowledge_graph import (
     find_similar_facts_chroma,
 )
-from npcpy.gen.response import calculate_cost
+from npcpy.gen.response import provider_cost_from_usage
 from npcpy.ft.system1 import (
     choice as system1_choice,
     noul as system1_noul,
@@ -5269,6 +5269,7 @@ def stream():
             prompt = commandstr
             total_input_tokens = 0
             total_output_tokens = 0
+            total_cost = None
             stop_requested = False
             tools_executed = False
             max_agent_iterations = data.get('maxAgentIterations')
@@ -5314,6 +5315,7 @@ def stream():
                         messages=messages,
                         tools=tools_for_llm,
                         stream=True,
+                        include_usage=True,
                         team=team_object,
                         api_url=api_url,
                         api_key=api_key,
@@ -5335,6 +5337,9 @@ def stream():
                         usage = item["usage"]
                         total_input_tokens += usage.get("input_tokens", 0) or 0
                         total_output_tokens += usage.get("output_tokens", 0) or 0
+                        usage_cost = provider_cost_from_usage(usage)
+                        if usage_cost is not None:
+                            total_cost = (total_cost or 0) + usage_cost
                         continue
                     response_chunk = item["chunk"]
                     last_response_chunk = response_chunk
@@ -5416,6 +5421,9 @@ def stream():
                     if isinstance(last_response_chunk, dict) and last_response_chunk.get("type") == "usage":
                         total_input_tokens += last_response_chunk.get("input_tokens", 0) or 0
                         total_output_tokens += last_response_chunk.get("output_tokens", 0) or 0
+                        usage_cost = provider_cost_from_usage(last_response_chunk)
+                        if usage_cost is not None:
+                            total_cost = (total_cost or 0) + usage_cost
                     else:
                         chunk_usage = getattr(last_response_chunk, 'usage', None)
                         if chunk_usage is None and isinstance(last_response_chunk, dict):
@@ -5425,6 +5433,9 @@ def stream():
                             out = getattr(chunk_usage, 'completion_tokens', None) or (chunk_usage.get('completion_tokens', 0) if isinstance(chunk_usage, dict) else 0)
                             if inp: total_input_tokens += inp
                             if out: total_output_tokens += out
+                            usage_cost = provider_cost_from_usage(chunk_usage)
+                            if usage_cost is not None:
+                                total_cost = (total_cost or 0) + usage_cost
                         prompt_eval = getattr(last_response_chunk, 'prompt_eval_count', None)
                         eval_count = getattr(last_response_chunk, 'eval_count', None)
                         if prompt_eval:
@@ -5433,8 +5444,7 @@ def stream():
                             total_output_tokens += eval_count
 
                 if total_input_tokens or total_output_tokens:
-                    mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider)
-                    yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
+                    yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": total_cost}
 
                 if not collected_tool_calls:
                     if tools_executed and iteration < 10:
@@ -5686,6 +5696,7 @@ def stream():
         tool_call_data = {"id": None, "function_name": None, "arguments": ""}
         total_input_tokens = 0
         total_output_tokens = 0
+        total_cost = None
 
         def estimate_tokens():
             if not litellm:
@@ -5760,8 +5771,10 @@ def stream():
                                 "content": chunk.get("result", "")
                             })
                         if chunk.get("type") == "usage":
-                            total_input_tokens += chunk.get("input_tokens", 0) or 0
-                            total_output_tokens += chunk.get("output_tokens", 0) or 0
+                            total_input_tokens = chunk.get("input_tokens", 0) or 0
+                            total_output_tokens = chunk.get("output_tokens", 0) or 0
+                            if chunk.get("cost") is not None:
+                                total_cost = chunk.get("cost")
                         continue
                     yield f"data: {json.dumps({'choices':[{'delta':{'content': str(chunk), 'role': 'assistant'},'finish_reason':None}]})}\n\n"
             elif isinstance(stream_response, str) :
@@ -5841,6 +5854,15 @@ def stream():
                             break
                     print('.', end="", flush=True)
                     dot_count += 1
+                    if isinstance(response_chunk, dict) and response_chunk.get("type") == "usage":
+                        inp = response_chunk.get("input_tokens", 0) or 0
+                        out = response_chunk.get("output_tokens", 0) or 0
+                        if inp: total_input_tokens = inp
+                        if out: total_output_tokens = out
+                        usage_cost = provider_cost_from_usage(response_chunk)
+                        if usage_cost is not None:
+                            total_cost = usage_cost
+                        continue
                     if provider == 'llamacpp':
                         chunk_content = ""
                         reasoning_content = None
@@ -5941,6 +5963,9 @@ def stream():
                         out = getattr(chunk_usage, 'completion_tokens', None) or (chunk_usage.get('completion_tokens', 0) if isinstance(chunk_usage, dict) else 0)
                         if inp: total_input_tokens = inp
                         if out: total_output_tokens = out
+                        usage_cost = provider_cost_from_usage(chunk_usage)
+                        if usage_cost is not None:
+                            total_cost = usage_cost
                     prompt_eval = getattr(response_chunk, 'prompt_eval_count', None)
                     eval_count = getattr(response_chunk, 'eval_count', None)
                     if prompt_eval:
@@ -5956,6 +5981,9 @@ def stream():
                           out = getattr(final_usage, 'completion_tokens', None) or (final_usage.get('completion_tokens', 0) if isinstance(final_usage, dict) else 0)
                           if inp: total_input_tokens = inp
                           if out: total_output_tokens = out
+                          usage_cost = provider_cost_from_usage(final_usage)
+                          if usage_cost is not None:
+                              total_cost = usage_cost
                       final_prompt_eval = getattr(last_response_chunk, 'prompt_eval_count', None)
                       final_eval_count = getattr(last_response_chunk, 'eval_count', None)
                       if final_prompt_eval:
@@ -5971,8 +5999,7 @@ def stream():
             print('\r' + ' ' * dot_count*2 + '\r', end="", flush=True)
             final_response_text = ''.join(complete_response)
             if total_input_tokens or total_output_tokens:
-                stream_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider) if total_input_tokens or total_output_tokens else 0
-                yield f"data: {json.dumps({'type': 'usage', 'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'cost': stream_cost or 0})}\n\n"
+                yield f"data: {json.dumps({'type': 'usage', 'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'cost': total_cost})}\n\n"
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
             _cleanup_stream(current_stream_id)
     return Response(event_stream(stream_id), mimetype="text/event-stream", headers={

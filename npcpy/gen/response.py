@@ -124,6 +124,101 @@ def sanitize_messages(messages: list) -> list:
     return merged
 
 
+def _extract_raw_sse_usage(line):
+    try:
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", "replace")
+        if not isinstance(line, str) or '"usage"' not in line:
+            return None
+        text = line.strip()
+        if text.startswith("data:"):
+            text = text[5:].strip()
+        if not text or text == "[DONE]":
+            return None
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                return usage
+    except Exception:
+        return None
+    return None
+
+
+def _wrap_raw_stream_for_usage(raw_stream, sink):
+    if not hasattr(raw_stream, "__next__"):
+        return raw_stream
+    def _snooping():
+        for line in raw_stream:
+            try:
+                found = _extract_raw_sse_usage(line)
+            except Exception:
+                found = None
+            if found:
+                sink.update(found)
+            yield line
+    try:
+        return _snooping()
+    except Exception:
+        return raw_stream
+
+
+def _attach_raw_usage_snoop(resp, sink):
+    try:
+        obj = resp
+        for _ in range(6):
+            nxt = None
+            for attr in ("completion_stream", "response_iterator", "streaming_response"):
+                try:
+                    cand = getattr(obj, attr, None)
+                except Exception:
+                    continue
+                if cand is not None and cand is not obj:
+                    nxt = cand
+                    break
+            if nxt is None:
+                return
+            deeper = False
+            for attr in ("completion_stream", "response_iterator", "streaming_response"):
+                try:
+                    cand = getattr(nxt, attr, None)
+                except Exception:
+                    continue
+                if cand is not None and cand is not nxt and cand is not obj:
+                    deeper = True
+                    break
+            if deeper:
+                obj = nxt
+                continue
+            try:
+                wrapped = _wrap_raw_stream_for_usage(nxt, sink)
+            except Exception:
+                return
+            for attr in ("completion_stream", "response_iterator", "streaming_response"):
+                try:
+                    if getattr(obj, attr, None) is nxt:
+                        setattr(obj, attr, wrapped)
+                except Exception:
+                    continue
+            return
+    except Exception:
+        pass
+
+
+def provider_cost_from_usage(usage):
+    if usage is None:
+        return None
+    raw = getattr(usage, 'cost', None)
+    if raw is None and isinstance(usage, dict):
+        raw = usage.get('cost')
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def calculate_cost(model: str, input_tokens: int, output_tokens: int, provider: str = None) -> float:
     if not model or input_tokens < 0 or output_tokens < 0:
         return 0.0
@@ -2785,8 +2880,11 @@ def get_litellm_response(
             # usage event for providers (e.g. OpenRouter, OrcaRouter) that don't emit one.
             collected_chunks = []
             original_resp = resp
+            raw_provider_usage = {}
+            _attach_raw_usage_snoop(resp, raw_provider_usage)
             def _usage_aware_stream():
                 final_usage_yielded = False
+                closing = False
                 try:
                     for chunk in original_resp:
                         collected_chunks.append(chunk)
@@ -2797,7 +2895,29 @@ def get_litellm_response(
                         if usage:
                             final_usage_yielded = True
                         yield chunk
+                except GeneratorExit:
+                    closing = True
+                    raise
                 finally:
+                    if closing:
+                        return
+                    raw_cost = raw_provider_usage.get("cost")
+                    if raw_cost is not None:
+                        try:
+                            cost = float(raw_cost)
+                        except (TypeError, ValueError):
+                            cost = None
+                        if cost is not None:
+                            try:
+                                raw_in = int(raw_provider_usage.get("prompt_tokens") or 0)
+                            except (TypeError, ValueError):
+                                raw_in = 0
+                            try:
+                                raw_out = int(raw_provider_usage.get("completion_tokens") or 0)
+                            except (TypeError, ValueError):
+                                raw_out = 0
+                            yield {"type": "usage", "input_tokens": raw_in, "output_tokens": raw_out, "cost": cost}
+                            return
                     if not final_usage_yielded and collected_chunks:
                         try:
                             complete = litellm.stream_chunk_builder(collected_chunks, messages=api_params.get('messages'))

@@ -90,7 +90,7 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="2.1.26",
+    version="2.1.27",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
@@ -102,14 +102,6 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "npc-init=npcpy.init:main",
-            "npc-claude=npcpy.launcher:main",
-            "npc-codex=npcpy.launcher:main",
-            "npc-gemini=npcpy.launcher:main",
-            "npc-opencode=npcpy.launcher:main",
-            "npc-aider=npcpy.launcher:main",
-            "npc-amp=npcpy.launcher:main",
-            "npc-plugin=npcpy.plugin_setup:main",
             "jinx2skill=npcpy.convert:_cli_jinx_to_skill",
             "skill2jinx=npcpy.convert:_cli_skill_to_jinx",
             "agents2npc=npcpy.convert:_cli_agents_to_npc",
