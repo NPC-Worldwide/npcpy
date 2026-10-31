@@ -90,7 +90,7 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="2.1.27",
+    version="2.1.28",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={

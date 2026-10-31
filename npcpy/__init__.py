@@ -3,7 +3,6 @@ from . import npc_sysenv
 from . import llm_funcs
 from . import ml_funcs
 from . import npc_array
-from . import sql
 from . import work
 from . import gen
 from . import data
