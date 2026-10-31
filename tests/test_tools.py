@@ -3,6 +3,7 @@
 import os
 import json
 import pytest
+from typing import List, Optional
 from npcpy.tools import auto_tools
 
 
@@ -205,6 +206,53 @@ class TestAutoToolsSchemaValidation:
         # Should be able to parse back
         parsed = json.loads(json_str)
         assert len(parsed) == 3
+
+
+class TestArrayItemsRegression:
+    """Regression tests for issue #338: every array schema must include `items`.
+
+    OpenAI rejects tool schemas where an array property has no `items`
+    (e.g. `array schema missing items`). Bare `list` / `List` / `Optional[list]`
+    annotations previously produced such schemas.
+    """
+
+    def test_issue_338_repro(self):
+        """Exact repro from the issue: bare `list` params get items."""
+        def finetune(image_paths: list, captions: list = None) -> str:
+            """Fine-tune a model on a set of images."""
+            return "ok"
+
+        schema, _ = auto_tools([finetune])
+        props = schema[0]["function"]["parameters"]["properties"]
+        assert props["image_paths"]["type"] == "array"
+        assert "items" in props["image_paths"]
+        assert props["captions"]["type"] == "array"
+        assert "items" in props["captions"]
+
+    def test_all_list_annotations_have_items(self):
+        """All list-like annotations produce an `items` key."""
+        def f(a: list, b: List, c: List[int], d: List[str],
+              e: Optional[list] = None, f2: Optional[List[int]] = None) -> str:
+            """t"""
+            return "ok"
+
+        schema, _ = auto_tools([f])
+        props = schema[0]["function"]["parameters"]["properties"]
+        for name in ("a", "b", "c", "d", "e", "f2"):
+            assert props[name]["type"] == "array", name
+            assert "items" in props[name], name
+
+        # parameterized lists keep their element types
+        assert props["c"]["items"] == {"type": "integer"}
+        assert props["d"]["items"] == {"type": "string"}
+        assert props["f2"]["items"] == {"type": "integer"}
+
+    def test_process_data_schema_valid(self):
+        """The numbers-taking process_data gets an open-items array, valid for OpenAI."""
+        schema, _ = auto_tools([process_data])
+        data = schema[0]["function"]["parameters"]["properties"]["data"]
+        assert data["type"] == "array"
+        assert "items" in data
 
 
 if __name__ == "__main__":
