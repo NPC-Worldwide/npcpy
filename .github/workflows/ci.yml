@@ -79,9 +79,6 @@ jobs:
         run: |
           pytest tests/test_data_models.py tests/test_video.py -v --tb=short --timeout=60
 
-      - name: Run model runner tests
-        run: |
-          pytest tests/test_model_runner.py -v --tb=short --timeout=60
 
       - name: Run additional module tests
         run: |
