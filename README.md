@@ -714,25 +714,6 @@ jinxes:
 
 </details>
 
-### CLI tools
-
-```bash
-# The NPC shell — the recommended way to use NPC teams
-npcsh                        # Interactive shell with agents, tools, and jinxes
-
-# Scaffold a new team
-npc-init
-
-# Launch AI coding tools as an NPC from your team
-npc-claude --npc corca       # Claude Code
-npc-codex --npc analyst      # Codex
-npc-gemini                   # Gemini CLI (interactive picker)
-npc-opencode / npc-aider / npc-amp
-
-# Register MCP server + hooks for deeper integration
-npc-plugin claude
-```
-
 ### NPCArray — parallel jinx across multiple NPCs
 
 Run any jinx in parallel across a list of NPC instances and collect results as an array:
