@@ -193,24 +193,24 @@ AirLLM loads and processes model layers sequentially, allowing you to run models
 
 | Provider | Example Model | Notes |
 |----------|--------------|-------|
+| `airllm` | `Qwen/Qwen2.5-7B-Instruct` | Layer-by-layer local inference |
+| `anthropic` | `claude-sonnet-4` | Requires `ANTHROPIC_API_KEY` |
+| `api-route` (alias `api_route`) | `gpt-6.1-sol` | [API Route](https://api-route.com) OpenAI-compatible gateway; requires `API_ROUTE_API_KEY`, optional `API_ROUTE_API_URL` override |
+| `atlascloud` | `deepseek-ai/deepseek-v4-flash` | [Atlas Cloud](https://www.atlascloud.ai) OpenAI-compatible gateway; requires `ATLASCLOUD_API_KEY` |
+| `cheapaimodel` | `deepseek-v4-1-flash` | [cheapaimodel](https://cheapaimodel.ai/?utm_source=npcpy) OpenAI-compatible API for open-weight models (DeepSeek, GLM, Kimi) and Grok, billed per token from a prepaid USD balance; requires `CHEAPAIMODEL_API_KEY`, optional `CHEAPAIMODEL_API_URL` override |
+| `cheaperinference` | `gpt-5.4-mini` | [Cheaper Inference](https://cheaperinference.com) OpenAI-compatible gateway; requires `CHEAPER_INFERENCE_API_KEY` |
+| `cloudgpu` | `deepseek-v4.1-flash` | [CloudGPU](https://cloudgpu.app/api/docs?utm_source=github&utm_medium=referral&utm_campaign=202611_seg06_indiedev&utm_content=github_npcpy_provider) OpenAI-compatible API for open models; requires `CLOUDGPU_API_KEY`, optional `CLOUDGPU_API_URL` override |
+| `deepseek` | `deepseek-chat`, `deepseek-reasoner` | Requires `DEEPSEEK_API_KEY` |
+| `gemini` | `gemini-2.0-flash` | Requires `GEMINI_API_KEY` |
+| `llamacpp` | path to GGUF file | Direct llama.cpp binding |
+| `lmstudio` | local model name | OpenAI-compatible on port 1234 |
+| `lora` | path to adapter | LoRA fine-tuned adapters |
+| `obscurify` | `deepseek/deepseek-v4-flash` | [Obscurify.ai](https://obscurify.ai/?utm_source=npcpy) privacy-focused OpenAI-compatible API, 200+ models; requires `OBSCURIFY_API_KEY`, optional `OBSCURIFY_API_URL` override |
 | `ollama` | `llama3.2`, `gemma3:4b` | Local models, default provider |
 | `openai` | `gpt-4o`, `gpt-4o-mini` | Requires `OPENAI_API_KEY` |
 | `openai` | `orcarouter/auto` | [OrcaRouter](https://www.orcarouter.ai) gateway: set `api_url` to `https://api.orcarouter.ai/v1` with a `sk-orca-` key |
-| `atlascloud` | `deepseek-ai/deepseek-v4-flash` | [Atlas Cloud](https://www.atlascloud.ai) OpenAI-compatible gateway; requires `ATLASCLOUD_API_KEY` |
-| `api-route` (alias `api_route`) | `gpt-6.1-sol` | [API Route](https://api-route.com) OpenAI-compatible gateway; requires `API_ROUTE_API_KEY`, optional `API_ROUTE_API_URL` override |
-| `cheaperinference` | `gpt-5.4-mini` | [Cheaper Inference](https://cheaperinference.com) OpenAI-compatible gateway; requires `CHEAPER_INFERENCE_API_KEY` |
-| `runcrate` | `deepseek-ai/DeepSeek-V4.1-Flash` | [Runcrate](https://www.runcrate.ai/?utm_source=npcpy&utm_medium=directory&utm_campaign=gpu_pricing) OpenAI-compatible API for open models; requires `RUNCRATE_API_KEY`, optional `RUNCRATE_API_URL` override |
-| `cloudgpu` | `deepseek-v4.1-flash` | [CloudGPU](https://cloudgpu.app/api/docs?utm_source=github&utm_medium=referral&utm_campaign=202611_seg06_indiedev&utm_content=github_npcpy_provider) OpenAI-compatible API for open models; requires `CLOUDGPU_API_KEY`, optional `CLOUDGPU_API_URL` override |
-| `obscurify` | `deepseek/deepseek-v4-flash` | [Obscurify.ai](https://obscurify.ai/?utm_source=npcpy) privacy-focused OpenAI-compatible API, 200+ models; requires `OBSCURIFY_API_KEY`, optional `OBSCURIFY_API_URL` override |
-| `cheapaimodel` | `deepseek-v4-1-flash` | [cheapaimodel](https://cheapaimodel.ai/?utm_source=npcpy) OpenAI-compatible API for open-weight models (DeepSeek, GLM, Kimi) and Grok, billed per token from a prepaid USD balance; requires `CHEAPAIMODEL_API_KEY`, optional `CHEAPAIMODEL_API_URL` override |
 | `opper` | `claude-sonnet-4-6` | [Opper](https://opper.ai) EU-hosted OpenAI-compatible gateway; requires `OPPER_API_KEY`, optional `OPPER_API_URL` override |
-| `anthropic` | `claude-sonnet-4` | Requires `ANTHROPIC_API_KEY` |
-| `gemini` | `gemini-2.0-flash` | Requires `GEMINI_API_KEY` |
-| `deepseek` | `deepseek-chat`, `deepseek-reasoner` | Requires `DEEPSEEK_API_KEY` |
-| `airllm` | `Qwen/Qwen2.5-7B-Instruct` | Layer-by-layer local inference |
-| `lmstudio` | local model name | OpenAI-compatible on port 1234 |
-| `llamacpp` | path to GGUF file | Direct llama.cpp binding |
+| `runcrate` | `deepseek-ai/DeepSeek-V4.1-Flash` | [Runcrate](https://www.runcrate.ai/?utm_source=npcpy&utm_medium=directory&utm_campaign=gpu_pricing) OpenAI-compatible API for open models; requires `RUNCRATE_API_KEY`, optional `RUNCRATE_API_URL` override |
 | `transformers` | HuggingFace model ID | Full HuggingFace transformers |
-| `lora` | path to adapter | LoRA fine-tuned adapters |
 
 If no provider is specified and no NPC is given, npcpy defaults to `ollama` with `llama3.2` (or `llava:7b` if images are present).
