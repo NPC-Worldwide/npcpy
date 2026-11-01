@@ -714,25 +714,6 @@ jinxes:
 
 </details>
 
-### CLI tools
-
-```bash
-# The NPC shell — the recommended way to use NPC teams
-npcsh                        # Interactive shell with agents, tools, and jinxes
-
-# Scaffold a new team
-npc-init
-
-# Launch AI coding tools as an NPC from your team
-npc-claude --npc corca       # Claude Code
-npc-codex --npc analyst      # Codex
-npc-gemini                   # Gemini CLI (interactive picker)
-npc-opencode / npc-aider / npc-amp
-
-# Register MCP server + hooks for deeper integration
-npc-plugin claude
-```
-
 ### NPCArray — parallel jinx across multiple NPCs
 
 Run any jinx in parallel across a list of NPC instances and collect results as an array:
@@ -1033,7 +1014,7 @@ model_path = run_sft(X_train, y_train, config=sft_config, format_style="llama")
 
 Works with all major LLM providers through LiteLLM: `ollama`, `openai`, `anthropic`, `gemini`, `deepseek`, `airllm`, `openai-like`, and more.
 
-### MiniMax
+<details><summary>MiniMax</summary>
 
 Set `MINIMAX_API_KEY` and use `provider="minimax"`. When no model is configured, `MiniMax-M3.1-Flash` is the default; the model list offers it first, followed by `MiniMax-M3`. Explicit saved or custom model IDs remain supported, including legacy IDs. The optional `MINIMAX_API_URL` setting selects the region and compatible protocol; it defaults to the global OpenAI-compatible Base URL.
 
@@ -1046,7 +1027,8 @@ Use the Anthropic-compatible Base URL exactly as shown. The client appends `/v1/
 
 For Flash, use adaptive thinking (`thinking={"type": "adaptive"}`) and an optional `reasoning_effort` of `low`, `medium`, `high`, `xhigh`, or `max`; Anthropic-compatible requests send this as `output_config.effort`. Flash does not support disabled thinking. M3 retains its existing thinking modes. OpenRouter lists `minimax/minimax-m3.1-flash:free` first and `minimax/minimax-m3` second, using their full gateway IDs.
 
-### Atlas Cloud
+</details>
+<details><summary>Atlas Cloud</summary>
 
 Set `ATLASCLOUD_API_KEY` and use `provider="atlascloud"` with any model ID from the [Atlas Cloud model list](https://www.atlascloud.ai/models), for example `deepseek-ai/deepseek-v4-flash`, `zai-org/glm-5.2` or `moonshotai/kimi-k3`. Requests go to the OpenAI-compatible Base URL `https://api.atlascloud.ai/v1`; set `ATLASCLOUD_API_URL` to override it.
 
@@ -1055,7 +1037,8 @@ response = get_llm_response("Say hello in one short sentence.", model="deepseek-
 print(response["response"])
 ```
 
-### API Route
+</details>
+<details><summary>API Route</summary>
 
 Set `API_ROUTE_API_KEY` and use `provider="api-route"` with an exact model ID from your account's authenticated `GET /v1/models` response, for example `gpt-6.1-sol`. [API Route](https://api-route.com) uses the OpenAI-compatible Base URL `https://global.api-route.com/v1`; set `API_ROUTE_API_URL` to override it. The alias `api_route` is also accepted. Explicit `api_url` and `api_key` arguments take precedence.
 
@@ -1066,7 +1049,8 @@ response = get_llm_response("Say hello in one short sentence.", model="gpt-6.1-s
 print(response["response"])
 ```
 
-### Cheaper Inference
+</details>
+<details><summary>Cheaper Inference</summary>
 
 Set `CHEAPER_INFERENCE_API_KEY` and use `provider="cheaperinference"` with any model ID from the [Cheaper Inference model list](https://cheaperinference.com/markets), for example `gpt-5.4-mini`, `claude-sonnet-5` or `glm-5.3`. Requests go to the OpenAI-compatible Base URL `https://api.cheaperinference.com/v1`; set `CHEAPER_INFERENCE_API_URL` to override it.
 
@@ -1075,7 +1059,8 @@ response = get_llm_response("Say hello in one short sentence.", model="gpt-5.4-m
 print(response["response"])
 ```
 
-### Opper
+</details>
+<details><summary>Opper</summary>
 
 Set `OPPER_API_KEY` and use `provider="opper"` with any model ID from the [Opper model catalogue](https://opper.ai/models), for example `claude-sonnet-4-6`, `gpt-5.4-mini` or `gemini-3.8-flash`. These pool names route across the providers serving that model; a `provider/model` ID such as `anthropic/claude-sonnet-4-6` pins one route. Requests go to the OpenAI-compatible Base URL `https://api.opper.ai/v3/compat`; set `OPPER_API_URL` to override it. Keys are created at [platform.opper.ai](https://platform.opper.ai).
 
@@ -1084,7 +1069,8 @@ response = get_llm_response("Say hello in one short sentence.", model="claude-so
 print(response["response"])
 ```
 
-### Runcrate
+</details>
+<details><summary>Runcrate</summary>
 
 Set `RUNCRATE_API_KEY` and use `provider="runcrate"` with any `vendor/model` ID from Runcrate's public model list (`GET https://api.runcrate.ai/v1/models`), for example `deepseek-ai/DeepSeek-V4.1-Flash` or `openai/gpt-oss-120b`. Requests go to the OpenAI-compatible Base URL `https://api.runcrate.ai/v1`; set `RUNCRATE_API_URL` to override it. Open models are free with your GitHub account; keys are created in the [Runcrate dashboard](https://www.runcrate.ai/dashboard/api-keys?utm_source=npcpy&utm_medium=directory&utm_campaign=gpu_pricing).
 
@@ -1093,7 +1079,8 @@ response = get_llm_response("Say hello in one short sentence.", model="deepseek-
 print(response["response"])
 ```
 
-### CloudGPU
+</details>
+<details><summary>CloudGPU</summary>
 
 Set `CLOUDGPU_API_KEY` and use `provider="cloudgpu"` with a model ID from CloudGPU's model list (`GET https://cloudgpu.app/v1/models`), for example `deepseek-v4.1-flash`, `kimi-k2.7-code` or `glm-5.3-flash`. Requests go to the OpenAI-compatible base URL `https://cloudgpu.app/v1`; set `CLOUDGPU_API_URL` to override it. Keys are created in the CloudGPU console; see the [API docs](https://cloudgpu.app/api/docs?utm_source=github&utm_medium=referral&utm_campaign=202611_seg06_indiedev&utm_content=github_npcpy_provider).
 
@@ -1102,7 +1089,8 @@ response = get_llm_response("Say hello in one short sentence.", model="deepseek-
 print(response["response"])
 ```
 
-### Obscurify.ai
+</details>
+<details><summary>Obscurify.ai</summary>
 
 Set `OBSCURIFY_API_KEY` and use `provider="obscurify"` with a model ID from the public model list (`GET https://obscurify.ai/v1/models`, no key needed), for example `deepseek/deepseek-v4-flash`, `moonshotai/kimi-k2-0905` or `z-ai/glm-5.3`. Requests go to the OpenAI-compatible base URL `https://obscurify.ai/v1`; set `OBSCURIFY_API_URL` to override it. Accounts are a random account number with no email; the key is under "Show API Key" on the [account page](https://obscurify.ai/account). See the [API docs](https://obscurify.ai/api-docs) or [obscurify.ai](https://obscurify.ai/?utm_source=npcpy).
 
@@ -1111,7 +1099,8 @@ response = get_llm_response("Say hello in one short sentence.", model="deepseek/
 print(response["response"])
 ```
 
-### cheapaimodel
+</details>
+<details><summary>cheapaimodel</summary>
 
 Set `CHEAPAIMODEL_API_KEY` and use `provider="cheapaimodel"` with a model ID from the [model list](https://cheapaimodel.ai/models), for example `deepseek-v4-1-flash`, `glm-5.3`, `kimi-k3` or `grok-4.7`. Requests go to the OpenAI-compatible base URL `https://api.cheapaimodel.ai/v1`; set `CHEAPAIMODEL_API_URL` to override it. Usage is billed per token from a prepaid USD balance; create a key in the [console](https://console.cheapaimodel.ai/keys). See the [docs](https://cheapaimodel.ai/docs) or [cheapaimodel.ai](https://cheapaimodel.ai/?utm_source=npcpy).
 
@@ -1120,7 +1109,8 @@ response = get_llm_response("Say hello in one short sentence.", model="deepseek-
 print(response["response"])
 ```
 
-### QLLM-PAM (local, attention-free)
+</details>
+<details><summary>QLLM-PAM (local, attention-free)</summary>
 
 `npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).
 
@@ -1139,6 +1129,7 @@ print(response["response"])
 
 The `model` value can be a Hugging Face repo id (downloaded and cached automatically), a local directory, or a `.pt` file path. Supported kwargs include `max_tokens`, `temperature`, `top_k`, `top_p`, `repetition_penalty`, `stream=True`, and `format="json"`.
 
+</details>
 ## Installation
 
 ```bash
