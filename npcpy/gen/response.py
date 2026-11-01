@@ -812,16 +812,12 @@ def get_ollama_response(
         result["messages"].append({"role": "assistant", "content": response_content})
         
         if stream:
-            
-            stream_api_params = {
-                "model": model,
-                "messages": messages,
-                "stream": True,
-            }
-            if tools:
-                stream_api_params["tools"] = tools
-            
-            result["response"] = client.chat(**stream_api_params, options=options)
+            # The first call was already made with stream=False to check for tool
+            # calls; no tool calls were found, so wrap the existing response in a
+            # single-chunk generator instead of issuing a second API request.
+            def _wrap_as_stream(r=res):
+                yield r
+            result["response"] = _wrap_as_stream()
         else:
 
             if format == "json":
