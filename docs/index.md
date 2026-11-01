@@ -4,8 +4,6 @@
 </p>
 
 
-Interested to stay in the loop and to hear the latest and greatest about `npcpy` ? Be sure to sign up for the [npcpy newsletter](https://forms.gle/n1NzQmwjsV4xv1B2A)!
-
 Welcome to `npcpy`, the python library for the NPC Toolkit and the home of the core command-line programs that make up the NPC Shell (`npcsh`).
 
 `npcpy` is an agent-based framework designed to easily integrate AI models into one's daily workflow and it does this by providing users with a variety of interfaces through which they can use, test, and explore the capabilities of AI models, agents, and agent systems.

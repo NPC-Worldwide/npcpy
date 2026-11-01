@@ -34,9 +34,11 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Quickstart: quickstart.md
+  - Documentation Index: npcpy.md
   - Core Concepts: concepts.md
   - Guides:
     - Working with LLMs: guides/llm-responses.md
+    - AirLLM Local Inference: guides/airllm.md
     - Building Agents: guides/agents.md
     - Multi-Agent Teams: guides/teams.md
     - Jinx Workflows: guides/jinx-workflows.md
@@ -44,11 +46,14 @@ nav:
     - NPCArray - Vectorized AI: guides/npc-array.md
     - Image, Audio & Video: guides/image-audio-video.md
     - Knowledge Graphs: guides/knowledge-graphs.md
+    - Knowledge YAML: guides/knowledge-yaml.md
     - Fine-Tuning & Evolution: guides/fine-tuning.md
+    - Model Export & Hub: guides/model-export.md
     - System One Decisions: guides/system-one.md
     - Serving & Deployment: guides/serving.md
     - ML Functions: guides/ml-funcs.md
     - Building Applications: guides/building-applications.md
+    - Conversation History: guides/command-history.md
   - Architecture: npc_data_layer.md
   - API Reference:
     - LLM Functions: api/llm_funcs.md
