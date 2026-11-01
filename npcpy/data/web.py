@@ -14,11 +14,6 @@ from typing import List, Dict, Any, Optional, Union
 import numpy as np
 import json
 
-try:
-    from sentence_transformers import util, SentenceTransformer
-except Exception:
-    pass
-
 def search_exa(query:str,
                api_key:str = None,
                top_k = 5,

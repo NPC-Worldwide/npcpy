@@ -21,36 +21,68 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 
-_sklearn_available = False
-_torch_available = False
-_xgboost_available = False
-_statsmodels_available = False
+# Heavy third-party stacks (scikit-learn, torch, xgboost, statsmodels) are
+# imported lazily. A cold `import npcpy.serve` spent ~2s here before Flask
+# could bind its port, which made the shell's server-spawn handshake time out.
+_HEAVY_DEPS = ("sklearn", "torch", "xgboost", "statsmodels")
+_heavy_loaded = {}
 
-try:
-    import sklearn
-    from sklearn.base import clone, BaseEstimator
-    _sklearn_available = True
-except ImportError:
-    pass
 
-try:
-    import torch
-    import torch.nn as nn
-    _torch_available = True
-except (ImportError, OSError):
-    pass
+def _require(name, install=None):
+    """Import a heavy dependency on first use, caching the module."""
+    mod = _heavy_loaded.get(name)
+    if mod is not None:
+        return mod
+    import importlib
+    try:
+        # importlib.import_module, not __import__, so dotted names like
+        # "torch.nn" resolve to the submodule instead of the top-level package.
+        mod = importlib.import_module(name)
+    except (ImportError, OSError):
+        hint = f" Install with: pip install {install}" if install else ""
+        raise ImportError(f"{name} required.{hint}") from None
+    _heavy_loaded[name] = mod
+    return mod
 
-try:
-    import xgboost as xgb
-    _xgboost_available = True
-except ImportError:
-    pass
 
-try:
-    import statsmodels.api as sm
-    _statsmodels_available = True
-except ImportError:
-    pass
+def _is_available(name):
+    """Cheap availability check that does not import the dependency."""
+    if name in _heavy_loaded:
+        return True
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+_FLAG_TO_DEP = {
+    "_sklearn_available": "sklearn",
+    "_torch_available": "torch",
+    "_xgboost_available": "xgboost",
+    "_statsmodels_available": "statsmodels",
+}
+
+
+def __getattr__(name):
+    """Resolve legacy eager module attributes (e.g. ``from npcpy.ml_funcs import torch``)."""
+    if name in _HEAVY_DEPS:
+        return _require(name)
+    if name in _FLAG_TO_DEP:
+        return _is_available(_FLAG_TO_DEP[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _clone(model):
+    """Clone an estimator, using sklearn when present and falling back to deepcopy."""
+    if _is_available('sklearn'):
+        try:
+            from sklearn.base import clone
+            return clone(model)
+        except Exception:
+            pass
+    return copy.deepcopy(model)
+
 
 SKLEARN_MODELS = {
     'LogisticRegression': 'sklearn.linear_model.LogisticRegression',
@@ -98,7 +130,8 @@ def _get_model_instance(model_name: str, **kwargs):
     if model_name in SKLEARN_MODELS:
         model_class = _import_model_class(SKLEARN_MODELS[model_name])
         return model_class(**kwargs)
-    elif _xgboost_available and model_name.lower().startswith('xgb'):
+    elif model_name.lower().startswith('xgb') and _is_available('xgboost'):
+        xgb = _require('xgboost')
         if 'classifier' in model_name.lower():
             return xgb.XGBClassifier(**kwargs)
         else:
@@ -135,7 +168,7 @@ def fit_model(
             - 'models': List of all fitted models (if multiple)
             - 'scores': Training scores if available
     """
-    if not _sklearn_available:
+    if not _is_available('sklearn'):
         raise ImportError("sklearn required. Install with: pip install scikit-learn")
 
     def _fit_single(model_instance, X, y, seed=None):
@@ -157,7 +190,7 @@ def fit_model(
         if isinstance(model, str):
             model_instance = _get_model_instance(model, **kwargs)
         elif hasattr(model, 'fit'):
-            model_instance = clone(model) if _sklearn_available else copy.deepcopy(model)
+            model_instance = _clone(model)
         else:
             raise ValueError(f"Invalid model: {model}")
 
@@ -192,7 +225,7 @@ def fit_model(
                 if isinstance(model, str):
                     model_instance = _get_model_instance(model, **merged_kwargs)
                 else:
-                    model_instance = clone(model)
+                    model_instance = _clone(model)
                     for k, v in merged_kwargs.items():
                         if hasattr(model_instance, k):
                             setattr(model_instance, k, v)
@@ -215,7 +248,7 @@ def fit_model(
             if isinstance(model, str):
                 model_instance = _get_model_instance(model, **merged_kwargs)
             else:
-                model_instance = clone(model)
+                model_instance = _clone(model)
                 for k, v in merged_kwargs.items():
                     if hasattr(model_instance, k):
                         setattr(model_instance, k, v)
@@ -381,8 +414,10 @@ def fit_torch(
     Returns:
         Dict with trained model and training history
     """
-    if not _torch_available:
+    if not _is_available('torch'):
         raise ImportError("PyTorch required. Install with: pip install torch")
+    torch = _require('torch')
+    nn = _require('torch.nn')
 
     model = model.to(device)
 
@@ -462,8 +497,9 @@ def forward_torch(
     Returns:
         Dict with outputs
     """
-    if not _torch_available:
+    if not _is_available('torch'):
         raise ImportError("PyTorch required. Install with: pip install torch")
+    torch = _require('torch')
 
     model = model.to(device)
     model.eval()
@@ -503,7 +539,7 @@ def fit_timeseries(
         Dict with fitted model and diagnostics
     """
     if method.lower() in ('arima', 'sarima'):
-        if not _statsmodels_available:
+        if not _is_available('statsmodels'):
             raise ImportError("statsmodels required. Install with: pip install statsmodels")
 
         from statsmodels.tsa.arima.model import ARIMA

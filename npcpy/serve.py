@@ -7114,6 +7114,34 @@ def start_flask_server(
     except Exception as e:
         print(f"Error starting server: {str(e)}")
         raise
+@app.errorhandler(Exception)
+def handle_global_exception(e):
+    """Handle all unhandled exceptions and return JSON instead of HTML."""
+    print(f"Unhandled exception: {e}")
+    traceback.print_exc()
+    return jsonify({
+        'success': False,
+        'error': str(e),
+        'error_type': type(e).__name__
+    }), 500
+@app.errorhandler(404)
+def handle_404(e):
+    """Handle 404 errors and return JSON instead of HTML."""
+    return jsonify({
+        'success': False,
+        'error': 'Endpoint not found',
+        'path': request.path
+    }), 404
+@app.errorhandler(500)
+def handle_500(e):
+    """Handle 500 errors and return JSON instead of HTML."""
+    return jsonify({
+        'success': False,
+        'error': 'Internal server error',
+        'details': str(e)
+    }), 500
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generic npcpy API server")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind the server on")
@@ -7193,29 +7221,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-@app.errorhandler(Exception)
-def handle_global_exception(e):
-    """Handle all unhandled exceptions and return JSON instead of HTML."""
-    print(f"Unhandled exception: {e}")
-    traceback.print_exc()
-    return jsonify({
-        'success': False,
-        'error': str(e),
-        'error_type': type(e).__name__
-    }), 500
-@app.errorhandler(404)
-def handle_404(e):
-    """Handle 404 errors and return JSON instead of HTML."""
-    return jsonify({
-        'success': False,
-        'error': 'Endpoint not found',
-        'path': request.path
-    }), 404
-@app.errorhandler(500)
-def handle_500(e):
-    """Handle 500 errors and return JSON instead of HTML."""
-    return jsonify({
-        'success': False,
-        'error': 'Internal server error',
-        'details': str(e)
-    }), 500
