@@ -60,3 +60,25 @@ test_data/*
 **/.npcsh_global
 system1_*/
 decision_models/
+
+# --- runtime artifacts from local runs ---
+# a file literally named "!" from a failed shell redirect; escaped because
+# a leading ! is gitignore's negation operator
+\!
+*.db
+*.db-journal
+*.sqlite3
+*.wav
+rl_traces_*
+.NPCSH_PREFERRED_TEAM_NAME
+
+# --- tooling caches ---
+.ruff_cache/
+.pytest_cache/
+site/
+
+# --- npcsh session scaffolding (per-session, not project files) ---
+AGENTS.md
+CLAUDE.md
+agents/
+.claude/
