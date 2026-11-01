@@ -11,7 +11,7 @@
   <a href="https://npcpy.readthedocs.io/"><img src="https://img.shields.io/badge/docs-readthedocs-brightgreen.svg" alt="Docs"></a>
 </p>
 
-`npcpy` is a library that provides key primitives for research and development with multimodal language models, agentic AI, and knowledge graphs. Its flexible framework makes it easy to engineer powerful AI applications with support for local (`ollama`, `llama.cpp`, `omlx`, `LM Studio`) and cloud providers. Build multi-agent teams and simplify context engineering through the NPC Context-Agent-Tool data layer which ensures compliance through software rather than prompts.
+`npcpy` is a library that provides key primitives for research and development with multimodal language models, agentic AI, and knowledge graphs. Its flexible framework makes it easy to engineer powerful AI applications with support for local (`llama.cpp`, `LM Studio`, `ollama`, `omlx`) and cloud providers. Build multi-agent teams and simplify context engineering through the NPC Context-Agent-Tool data layer which ensures compliance through software rather than prompts.
 ```bash
 pip install npcpy
 ```
@@ -1012,7 +1012,7 @@ model_path = run_sft(X_train, y_train, config=sft_config, format_style="llama")
 
 ## Providers
 
-Works with all major LLM providers through LiteLLM: `ollama`, `openai`, `anthropic`, `gemini`, `deepseek`, `airllm`, `openai-like`, and more.
+Works with all major LLM providers through LiteLLM: `airllm`, `anthropic`, `deepseek`, `gemini`, `ollama`, `openai`, `openai-like`, and more.
 
 <details><summary>API Route</summary>
 
