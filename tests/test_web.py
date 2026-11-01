@@ -294,3 +294,56 @@ def test_search_web_keenable_provider():
     keenable.assert_called_once_with("python", num_results=3, api_key="k")
     assert "Citation: https://www.python.org/" in content_str
     assert link_str.strip() == "https://www.python.org/"
+
+
+def test_firecrawl_search(monkeypatch):
+    """Test Firecrawl search request and result mapping (mocked)"""
+    from unittest.mock import MagicMock, patch
+    from npcpy.data.web import search_firecrawl
+
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "test-key")
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "success": True,
+        "data": {
+            "web": [
+                {"title": "Python", "url": "https://www.python.org/", "description": "The official home of Python."},
+                {"title": "Docs", "url": "https://docs.python.org/3/", "description": "Python documentation."},
+            ]
+        },
+    }
+    with patch("npcpy.data.web.requests.post", return_value=response) as post:
+        results = search_firecrawl("python", num_results=1)
+
+    assert results == [
+        {"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}
+    ]
+    args, kwargs = post.call_args
+    assert args[0] == "https://api.firecrawl.dev/v2/search"
+    assert kwargs["json"] == {"query": "python", "limit": 1, "sources": ["web"], "integration": "_npcpy"}
+    assert kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert kwargs["headers"]["User-Agent"] == "npcpy"
+
+
+def test_firecrawl_search_without_key(monkeypatch):
+    """Firecrawl returns no results and makes no request without a key"""
+    from unittest.mock import patch
+    from npcpy.data.web import search_firecrawl
+
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    with patch("npcpy.data.web.requests.post") as post:
+        assert search_firecrawl("python") == []
+    post.assert_not_called()
+
+
+def test_search_web_firecrawl_provider():
+    """search_web routes provider='firecrawl' and formats citations (mocked)"""
+    from unittest.mock import patch
+
+    hits = [{"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}]
+    with patch("npcpy.data.web.search_firecrawl", return_value=hits) as firecrawl:
+        content_str, link_str = search_web("python", num_results=3, provider="firecrawl", api_key="k")
+
+    firecrawl.assert_called_once_with("python", num_results=3, api_key="k")
+    assert "Citation: https://www.python.org/" in content_str
+    assert link_str.strip() == "https://www.python.org/"

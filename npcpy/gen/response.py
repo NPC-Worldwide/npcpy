@@ -2631,6 +2631,10 @@ def get_litellm_response(
         api_url = api_url or os.environ.get("OBSCURIFY_API_URL") or "https://obscurify.ai/v1"
         api_key = api_key or os.environ.get("OBSCURIFY_API_KEY")
         provider = "openai"
+    elif provider == 'cheapaimodel':
+        api_url = api_url or os.environ.get("CHEAPAIMODEL_API_URL") or "https://api.cheapaimodel.ai/v1"
+        api_key = api_key or os.environ.get("CHEAPAIMODEL_API_KEY")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:
@@ -3114,6 +3118,14 @@ def get_litellm_response(
         if stream:
             processed_result["response"] = final_resp
         else:
+            if hasattr(final_resp, 'usage') and final_resp.usage:
+                first_usage = processed_result.get("usage") or {}
+                processed_result["usage"] = {
+                    "input_tokens": first_usage.get("input_tokens", 0)
+                    + (getattr(final_resp.usage, 'prompt_tokens', 0) or 0),
+                    "output_tokens": first_usage.get("output_tokens", 0)
+                    + (getattr(final_resp.usage, 'completion_tokens', 0) or 0),
+                }
             if final_resp.choices:
                 final_content = final_resp.choices[0].message.content
                 processed_result["response"] = final_content
