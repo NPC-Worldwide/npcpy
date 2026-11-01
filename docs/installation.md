@@ -29,6 +29,8 @@ pip install npcpy[lite]
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[tts]
+# if you want System One (scikit-learn, sentence-transformers)
+pip install npcpy[system1]
 # if you want everything:
 pip install npcpy[all]
 ```
@@ -41,8 +43,8 @@ brew install portaudio
 brew install ffmpeg
 brew install pygobject3
 
-# for triggers
-brew install inotify-tools
+# for triggers (macOS uses fswatch; inotifywait is Linux-only)
+brew install fswatch
 
 
 brew install ollama
@@ -57,6 +59,8 @@ pip install npcpy[lite]
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[tts]
+# if you want System One (scikit-learn, sentence-transformers)
+pip install npcpy[system1]
 # if you want everything:
 pip install npcpy[all]
 
@@ -78,6 +82,8 @@ pip install npcpy[lite]
 pip install npcpy[local]
 # if you want to use tts/stt
 pip install npcpy[tts]
+# if you want System One (scikit-learn, sentence-transformers)
+pip install npcpy[system1]
 # if you want everything:
 pip install npcpy[all]
 
