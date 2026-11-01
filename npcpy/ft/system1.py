@@ -9,19 +9,46 @@ import numpy as np
 
 logger = logging.getLogger("npcpy.ft.system1")
 
-_sklearn_available = False
-try:
-    from sklearn.base import BaseEstimator
-    _sklearn_available = True
-except Exception:
-    BaseEstimator = None
+class _LazyAvailability:
+    """Boolean-ish availability flag that imports the dependency on first use."""
 
-_sentence_transformers_available = False
-try:
-    from sentence_transformers import SentenceTransformer
-    _sentence_transformers_available = True
-except Exception:
-    SentenceTransformer = None
+    def __init__(self, flag_name, fn):
+        self._flag_name = flag_name
+        self._fn = fn
+        self._cached = None
+
+    def __bool__(self):
+        if self._cached is None:
+            self._cached = bool(self._fn())
+        return self._cached
+
+    def __repr__(self):
+        return f"<{self._flag_name}: lazy>"
+
+
+def _sklearn_available_fn():
+    try:
+        import sklearn.base  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _sentence_transformers_available_fn():
+    try:
+        import sentence_transformers  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+# Resolved lazily so importing this module does not pull in scikit-learn /
+# sentence-transformers / torch. A cold `import npcpy.serve` spent ~12s here
+# before Flask could bind its port.
+_sklearn_available = _LazyAvailability("_sklearn_available", _sklearn_available_fn)
+_sentence_transformers_available = _LazyAvailability(
+    "_sentence_transformers_available", _sentence_transformers_available_fn
+)
 
 _pydantic_available = False
 try:
@@ -180,7 +207,14 @@ class System1Predictor:
         encoder = self.encoders.get(resolved)
         if encoder is None:
             raise ValueError(f"No trained model for question '{question_name}'")
-        if _sentence_transformers_available and isinstance(encoder, SentenceTransformer):
+        try:
+            from sentence_transformers import SentenceTransformer
+        except Exception:
+            # sentence-transformers is optional, and encoders passed to a
+            # System1Predictor directly may be plain callables.
+            SentenceTransformer = None
+
+        if SentenceTransformer is not None and isinstance(encoder, SentenceTransformer):
             embeddings = encoder.encode(texts, device=self.config.device, convert_to_numpy=True, show_progress_bar=False)
             return np.asarray(embeddings)
         return np.asarray(encoder(texts))
@@ -267,6 +301,8 @@ class System1Predictor:
 def _get_sentence_transformer_encoder(model_name: str, device: str):
     if not _sentence_transformers_available:
         raise ImportError("sentence-transformers is required for System 1 training. Install with: pip install sentence-transformers")
+    from sentence_transformers import SentenceTransformer
+
     return SentenceTransformer(model_name, device=device)
 
 

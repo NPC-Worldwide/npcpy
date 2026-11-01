@@ -11,7 +11,7 @@
   <a href="https://npcpy.readthedocs.io/"><img src="https://img.shields.io/badge/docs-readthedocs-brightgreen.svg" alt="Docs"></a>
 </p>
 
-`npcpy` is a library that provides key primitives for research and development with multimodal language models, agentic AI, and knowledge graphs. Its flexible framework makes it easy to engineer powerful AI applications with support for local (`ollama`, `llama.cpp`, `omlx`, `LM Studio`) and cloud providers. Build multi-agent teams and simplify context engineering through the NPC Context-Agent-Tool data layer which ensures compliance through software rather than prompts.
+`npcpy` is a library that provides key primitives for research and development with multimodal language models, agentic AI, and knowledge graphs. Its flexible framework makes it easy to engineer powerful AI applications with support for local (`llama.cpp`, `LM Studio`, `ollama`, `omlx`) and cloud providers. Build multi-agent teams and simplify context engineering through the NPC Context-Agent-Tool data layer which ensures compliance through software rather than prompts.
 ```bash
 pip install npcpy
 ```
@@ -1012,8 +1012,60 @@ model_path = run_sft(X_train, y_train, config=sft_config, format_style="llama")
 
 ## Providers
 
-Works with all major LLM providers through LiteLLM: `ollama`, `openai`, `anthropic`, `gemini`, `deepseek`, `airllm`, `openai-like`, and more.
+Works with all major LLM providers through LiteLLM: `airllm`, `anthropic`, `deepseek`, `gemini`, `ollama`, `openai`, `openai-like`, and more.
 
+<details><summary>API Route</summary>
+
+Set `API_ROUTE_API_KEY` and use `provider="api-route"` with an exact model ID from your account's authenticated `GET /v1/models` response, for example `gpt-6.1-sol`. [API Route](https://api-route.com) uses the OpenAI-compatible Base URL `https://global.api-route.com/v1`; set `API_ROUTE_API_URL` to override it. The alias `api_route` is also accepted. Explicit `api_url` and `api_key` arguments take precedence.
+
+```python
+from npcpy import get_llm_response
+
+response = get_llm_response("Say hello in one short sentence.", model="gpt-6.1-sol", provider="api-route")
+print(response["response"])
+```
+
+</details>
+<details><summary>Atlas Cloud</summary>
+
+Set `ATLASCLOUD_API_KEY` and use `provider="atlascloud"` with any model ID from the [Atlas Cloud model list](https://www.atlascloud.ai/models), for example `deepseek-ai/deepseek-v4-flash`, `zai-org/glm-5.2` or `moonshotai/kimi-k3`. Requests go to the OpenAI-compatible Base URL `https://api.atlascloud.ai/v1`; set `ATLASCLOUD_API_URL` to override it.
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="deepseek-ai/deepseek-v4-flash", provider="atlascloud")
+print(response["response"])
+```
+
+</details>
+<details><summary>cheapaimodel</summary>
+
+Set `CHEAPAIMODEL_API_KEY` and use `provider="cheapaimodel"` with a model ID from the [model list](https://cheapaimodel.ai/models), for example `deepseek-v4-1-flash`, `glm-5.3`, `kimi-k3` or `grok-4.7`. Requests go to the OpenAI-compatible base URL `https://api.cheapaimodel.ai/v1`; set `CHEAPAIMODEL_API_URL` to override it. Usage is billed per token from a prepaid USD balance; create a key in the [console](https://console.cheapaimodel.ai/keys). See the [docs](https://cheapaimodel.ai/docs) or [cheapaimodel.ai](https://cheapaimodel.ai/?utm_source=npcpy).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="deepseek-v4-1-flash", provider="cheapaimodel")
+print(response["response"])
+```
+
+</details>
+<details><summary>Cheaper Inference</summary>
+
+Set `CHEAPER_INFERENCE_API_KEY` and use `provider="cheaperinference"` with any model ID from the [Cheaper Inference model list](https://cheaperinference.com/markets), for example `gpt-5.4-mini`, `claude-sonnet-5` or `glm-5.3`. Requests go to the OpenAI-compatible Base URL `https://api.cheaperinference.com/v1`; set `CHEAPER_INFERENCE_API_URL` to override it.
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="gpt-5.4-mini", provider="cheaperinference")
+print(response["response"])
+```
+
+</details>
+<details><summary>CloudGPU</summary>
+
+Set `CLOUDGPU_API_KEY` and use `provider="cloudgpu"` with a model ID from CloudGPU's model list (`GET https://cloudgpu.app/v1/models`), for example `deepseek-v4.1-flash`, `kimi-k2.7-code` or `glm-5.3-flash`. Requests go to the OpenAI-compatible base URL `https://cloudgpu.app/v1`; set `CLOUDGPU_API_URL` to override it. Keys are created in the CloudGPU console; see the [API docs](https://cloudgpu.app/api/docs?utm_source=github&utm_medium=referral&utm_campaign=202611_seg06_indiedev&utm_content=github_npcpy_provider).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="deepseek-v4.1-flash", provider="cloudgpu")
+print(response["response"])
+```
+
+</details>
 <details><summary>MiniMax</summary>
 
 Set `MINIMAX_API_KEY` and use `provider="minimax"`. When no model is configured, `MiniMax-M3.1-Flash` is the default; the model list offers it first, followed by `MiniMax-M3`. Explicit saved or custom model IDs remain supported, including legacy IDs. The optional `MINIMAX_API_URL` setting selects the region and compatible protocol; it defaults to the global OpenAI-compatible Base URL.
@@ -1028,34 +1080,12 @@ Use the Anthropic-compatible Base URL exactly as shown. The client appends `/v1/
 For Flash, use adaptive thinking (`thinking={"type": "adaptive"}`) and an optional `reasoning_effort` of `low`, `medium`, `high`, `xhigh`, or `max`; Anthropic-compatible requests send this as `output_config.effort`. Flash does not support disabled thinking. M3 retains its existing thinking modes. OpenRouter lists `minimax/minimax-m3.1-flash:free` first and `minimax/minimax-m3` second, using their full gateway IDs.
 
 </details>
-<details><summary>Atlas Cloud</summary>
+<details><summary>Obscurify.ai</summary>
 
-Set `ATLASCLOUD_API_KEY` and use `provider="atlascloud"` with any model ID from the [Atlas Cloud model list](https://www.atlascloud.ai/models), for example `deepseek-ai/deepseek-v4-flash`, `zai-org/glm-5.2` or `moonshotai/kimi-k3`. Requests go to the OpenAI-compatible Base URL `https://api.atlascloud.ai/v1`; set `ATLASCLOUD_API_URL` to override it.
-
-```python
-response = get_llm_response("Say hello in one short sentence.", model="deepseek-ai/deepseek-v4-flash", provider="atlascloud")
-print(response["response"])
-```
-
-</details>
-<details><summary>API Route</summary>
-
-Set `API_ROUTE_API_KEY` and use `provider="api-route"` with an exact model ID from your account's authenticated `GET /v1/models` response, for example `gpt-6.1-sol`. [API Route](https://api-route.com) uses the OpenAI-compatible Base URL `https://global.api-route.com/v1`; set `API_ROUTE_API_URL` to override it. The alias `api_route` is also accepted. Explicit `api_url` and `api_key` arguments take precedence.
+Set `OBSCURIFY_API_KEY` and use `provider="obscurify"` with a model ID from the public model list (`GET https://obscurify.ai/v1/models`, no key needed), for example `deepseek/deepseek-v4-flash`, `moonshotai/kimi-k2-0905` or `z-ai/glm-5.3`. Requests go to the OpenAI-compatible base URL `https://obscurify.ai/v1`; set `OBSCURIFY_API_URL` to override it. Accounts are a random account number with no email; the key is under "Show API Key" on the [account page](https://obscurify.ai/account). See the [API docs](https://obscurify.ai/api-docs) or [obscurify.ai](https://obscurify.ai/?utm_source=npcpy).
 
 ```python
-from npcpy import get_llm_response
-
-response = get_llm_response("Say hello in one short sentence.", model="gpt-6.1-sol", provider="api-route")
-print(response["response"])
-```
-
-</details>
-<details><summary>Cheaper Inference</summary>
-
-Set `CHEAPER_INFERENCE_API_KEY` and use `provider="cheaperinference"` with any model ID from the [Cheaper Inference model list](https://cheaperinference.com/markets), for example `gpt-5.4-mini`, `claude-sonnet-5` or `glm-5.3`. Requests go to the OpenAI-compatible Base URL `https://api.cheaperinference.com/v1`; set `CHEAPER_INFERENCE_API_URL` to override it.
-
-```python
-response = get_llm_response("Say hello in one short sentence.", model="gpt-5.4-mini", provider="cheaperinference")
+response = get_llm_response("Say hello in one short sentence.", model="deepseek/deepseek-v4-flash", provider="obscurify")
 print(response["response"])
 ```
 
@@ -1080,37 +1110,8 @@ print(response["response"])
 ```
 
 </details>
-<details><summary>CloudGPU</summary>
 
-Set `CLOUDGPU_API_KEY` and use `provider="cloudgpu"` with a model ID from CloudGPU's model list (`GET https://cloudgpu.app/v1/models`), for example `deepseek-v4.1-flash`, `kimi-k2.7-code` or `glm-5.3-flash`. Requests go to the OpenAI-compatible base URL `https://cloudgpu.app/v1`; set `CLOUDGPU_API_URL` to override it. Keys are created in the CloudGPU console; see the [API docs](https://cloudgpu.app/api/docs?utm_source=github&utm_medium=referral&utm_campaign=202611_seg06_indiedev&utm_content=github_npcpy_provider).
-
-```python
-response = get_llm_response("Say hello in one short sentence.", model="deepseek-v4.1-flash", provider="cloudgpu")
-print(response["response"])
-```
-
-</details>
-<details><summary>Obscurify.ai</summary>
-
-Set `OBSCURIFY_API_KEY` and use `provider="obscurify"` with a model ID from the public model list (`GET https://obscurify.ai/v1/models`, no key needed), for example `deepseek/deepseek-v4-flash`, `moonshotai/kimi-k2-0905` or `z-ai/glm-5.3`. Requests go to the OpenAI-compatible base URL `https://obscurify.ai/v1`; set `OBSCURIFY_API_URL` to override it. Accounts are a random account number with no email; the key is under "Show API Key" on the [account page](https://obscurify.ai/account). See the [API docs](https://obscurify.ai/api-docs) or [obscurify.ai](https://obscurify.ai/?utm_source=npcpy).
-
-```python
-response = get_llm_response("Say hello in one short sentence.", model="deepseek/deepseek-v4-flash", provider="obscurify")
-print(response["response"])
-```
-
-</details>
-<details><summary>cheapaimodel</summary>
-
-Set `CHEAPAIMODEL_API_KEY` and use `provider="cheapaimodel"` with a model ID from the [model list](https://cheapaimodel.ai/models), for example `deepseek-v4-1-flash`, `glm-5.3`, `kimi-k3` or `grok-4.7`. Requests go to the OpenAI-compatible base URL `https://api.cheapaimodel.ai/v1`; set `CHEAPAIMODEL_API_URL` to override it. Usage is billed per token from a prepaid USD balance; create a key in the [console](https://console.cheapaimodel.ai/keys). See the [docs](https://cheapaimodel.ai/docs) or [cheapaimodel.ai](https://cheapaimodel.ai/?utm_source=npcpy).
-
-```python
-response = get_llm_response("Say hello in one short sentence.", model="deepseek-v4-1-flash", provider="cheapaimodel")
-print(response["response"])
-```
-
-</details>
-<details><summary>QLLM-PAM (local, attention-free)</summary>
+## QLLM-PAM (local, attention-free)
 
 `npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).
 
@@ -1129,7 +1130,6 @@ print(response["response"])
 
 The `model` value can be a Hugging Face repo id (downloaded and cached automatically), a local directory, or a `.pt` file path. Supported kwargs include `max_tokens`, `temperature`, `top_k`, `top_p`, `repetition_penalty`, `stream=True`, and `format="json"`.
 
-</details>
 ## Installation
 
 ```bash
