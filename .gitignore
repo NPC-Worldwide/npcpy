@@ -76,9 +76,3 @@ rl_traces_*
 .ruff_cache/
 .pytest_cache/
 site/
-
-# --- npcsh session scaffolding (per-session, not project files) ---
-AGENTS.md
-CLAUDE.md
-agents/
-.claude/
