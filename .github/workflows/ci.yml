@@ -324,6 +324,42 @@ jobs:
         continue-on-error: true
 
   # =============================================================================
+  # Docs Build
+  # =============================================================================
+  docs-check:
+    name: Docs Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Only the docs toolchain. docs/requirements.txt also carries torch,
+      # airllm, chromadb, opencv and whisper, which a docs build never touches
+      # and which would add several GB and ten-plus minutes to this job.
+      - name: Install docs toolchain
+        run: |
+          python -m pip install --upgrade pip
+          pip install mkdocs "mkdocstrings[python]" "pymdown-extensions>=12.1"
+
+      # Deliberately not --strict: that also promotes griffe's ~44 "no type
+      # annotation" notes to errors, so the job would be red on arrival.
+      # The orphan check is the part that catches real regressions.
+      - name: Build docs and verify every page is reachable from nav
+        run: |
+          mkdocs build 2>&1 | tee /tmp/docs_build.log
+          if grep -q 'not included in the "nav" configuration' /tmp/docs_build.log; then
+            echo "::error::Docs pages exist that are not linked from the nav:"
+            grep -A50 'not included in the "nav" configuration' /tmp/docs_build.log
+            exit 1
+          fi
+          echo "All docs pages are reachable from the nav."
+
+  # =============================================================================
   # Build Check
   # =============================================================================
   build:
