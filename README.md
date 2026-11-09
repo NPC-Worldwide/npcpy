@@ -1110,6 +1110,16 @@ print(response["response"])
 ```
 
 </details>
+<details><summary>Standard Compute</summary>
+
+Set `STANDARDCOMPUTE_API_KEY` and use `provider="standardcompute"`. The model `StandardCompute` is routed: each request goes to the cheapest enabled model that can handle it, with automatic fallback. To pin a model, use any ID from the public model list (`GET https://api.stdcmpt.com/v1/models`), for example `deepseek/deepseek-v4.1-flash` or `z-ai/glm-5.3`. Requests go to the OpenAI-compatible Base URL `https://api.stdcmpt.com/v1`; set `STANDARDCOMPUTE_API_URL` to override it. Keys are created at [standardcompute.com](https://standardcompute.com/?utm_source=npcpy).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="StandardCompute", provider="standardcompute")
+print(response["response"])
+```
+
+</details>
 
 ## QLLM-PAM (local, attention-free)
 
