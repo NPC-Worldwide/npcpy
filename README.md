@@ -1110,6 +1110,16 @@ print(response["response"])
 ```
 
 </details>
+<details><summary>UberLLM</summary>
+
+Set `UBERLLM_API_KEY` and use `provider="uberllm"` with a `vendor/model` ID from UberLLM's public model list (`GET https://api.uberllm.dev/v1/models`), for example `deepseek/deepseek-v4.1-flash`, `openai/gpt-5.4-mini` or `anthropic/claude-sonnet-4.6`. Requests go to the OpenAI-compatible base URL `https://api.uberllm.dev/v1`; set `UBERLLM_API_URL` to override it. Usage is prepaid and billed per request (failed requests are not billed); per-model prices are on the [model list](https://uberllm.dev/models) and keys are created at [uberllm.dev/signup](https://uberllm.dev/signup). See the [quickstart](https://uberllm.dev/docs/quickstart).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="deepseek/deepseek-v4.1-flash", provider="uberllm")
+print(response["response"])
+```
+
+</details>
 
 ## QLLM-PAM (local, attention-free)
 
