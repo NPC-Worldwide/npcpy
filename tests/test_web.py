@@ -347,3 +347,53 @@ def test_search_web_firecrawl_provider():
     firecrawl.assert_called_once_with("python", num_results=3, api_key="k")
     assert "Citation: https://www.python.org/" in content_str
     assert link_str.strip() == "https://www.python.org/"
+
+
+def test_sofya_search(monkeypatch):
+    """Test Sofya search request and result mapping (mocked)"""
+    from unittest.mock import MagicMock, patch
+    from npcpy.data.web import search_sofya
+
+    monkeypatch.setenv("SOFYA_API_KEY", "test-key")
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "query": "python",
+        "results": [
+            {"title": "Python", "url": "https://www.python.org/", "content": "The official home of Python."},
+            {"title": "Docs", "url": "https://docs.python.org/3/", "content": "Python documentation."},
+        ],
+    }
+    with patch("npcpy.data.web.requests.post", return_value=response) as post:
+        results = search_sofya("python", num_results=1)
+
+    assert results == [
+        {"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}
+    ]
+    args, kwargs = post.call_args
+    assert args[0] == "https://sofya.co/v1/search"
+    assert kwargs["json"] == {"query": "python", "max_results": 1, "search_depth": "snippets"}
+    assert kwargs["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_sofya_search_without_key(monkeypatch):
+    """Sofya returns no results and makes no request without a key"""
+    from unittest.mock import patch
+    from npcpy.data.web import search_sofya
+
+    monkeypatch.delenv("SOFYA_API_KEY", raising=False)
+    with patch("npcpy.data.web.requests.post") as post:
+        assert search_sofya("python") == []
+    post.assert_not_called()
+
+
+def test_search_web_sofya_provider():
+    """search_web routes provider='sofya' and formats citations (mocked)"""
+    from unittest.mock import patch
+
+    hits = [{"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}]
+    with patch("npcpy.data.web.search_sofya", return_value=hits) as sofya:
+        content_str, link_str = search_web("python", num_results=3, provider="sofya", api_key="k")
+
+    sofya.assert_called_once_with("python", num_results=3, api_key="k")
+    assert "Citation: https://www.python.org/" in content_str
+    assert link_str.strip() == "https://www.python.org/"

@@ -223,6 +223,35 @@ def search_firecrawl(query: str, num_results: int = 5, api_key: str = None):
         print(f"Firecrawl search failed: {e}")
     return []
 
+def search_sofya(query: str, num_results: int = 5, api_key: str = None):
+    """Search the web using the Sofya Search API."""
+    if api_key is None:
+        api_key = os.environ.get('SOFYA_API_KEY')
+    if not api_key:
+        print("Sofya API key not set")
+        return []
+
+    try:
+        response = requests.post(
+            'https://sofya.co/v1/search',
+            json={'query': query, 'max_results': max(1, min(num_results, 20)), 'search_depth': 'snippets'},
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json', 'User-Agent': 'npcpy'},
+            timeout=30
+        )
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for r in data.get('results', [])[:num_results]:
+                results.append({
+                    'title': r.get('title', ''),
+                    'link': r.get('url', ''),
+                    'content': r.get('content', '')
+                })
+            return results
+    except Exception as e:
+        print(f"Sofya search failed: {e}")
+    return []
+
 def search_perplexity(
     query: str,
     api_key: str = None,
@@ -342,6 +371,9 @@ def search_web(
 
     elif provider == 'firecrawl':
         results = search_firecrawl(query, num_results=num_results, api_key=api_key)
+
+    elif provider == 'sofya':
+        results = search_sofya(query, num_results=num_results, api_key=api_key)
 
     elif provider == 'google':
         if _google_search is None:

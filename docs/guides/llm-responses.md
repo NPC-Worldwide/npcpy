@@ -211,6 +211,7 @@ AirLLM loads and processes model layers sequentially, allowing you to run models
 | `openai` | `orcarouter/auto` | [OrcaRouter](https://www.orcarouter.ai) gateway: set `api_url` to `https://api.orcarouter.ai/v1` with a `sk-orca-` key |
 | `opper` | `claude-sonnet-4-6` | [Opper](https://opper.ai) EU-hosted OpenAI-compatible gateway; requires `OPPER_API_KEY`, optional `OPPER_API_URL` override |
 | `runcrate` | `deepseek-ai/DeepSeek-V4.1-Flash` | [Runcrate](https://www.runcrate.ai/?utm_source=npcpy&utm_medium=directory&utm_campaign=gpu_pricing) OpenAI-compatible API for open models; requires `RUNCRATE_API_KEY`, optional `RUNCRATE_API_URL` override |
+| `standardcompute` | `StandardCompute` | [Standard Compute](https://standardcompute.com/?utm_source=npcpy) OpenAI-compatible gateway; the `StandardCompute` model routes each request to the cheapest enabled model that can handle it, with automatic fallback, or pin an ID from `GET https://api.stdcmpt.com/v1/models`; requires `STANDARDCOMPUTE_API_KEY`, optional `STANDARDCOMPUTE_API_URL` override |
 | `transformers` | HuggingFace model ID | Full HuggingFace transformers |
 | `uberllm` | `deepseek/deepseek-v4.1-flash` | [UberLLM](https://uberllm.dev/models) OpenAI-compatible gateway for text models under `vendor/model` IDs; requires `UBERLLM_API_KEY`, optional `UBERLLM_API_URL` override |
 

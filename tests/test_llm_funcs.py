@@ -861,6 +861,22 @@ class TestUberLLMRouting:
         monkeypatch.setenv("UBERLLM_API_KEY", "env-key")
         _, p, url, key = resolve_model_provider(model="openai/gpt-5.4-mini", provider="uberllm")
         assert p == "uberllm"
+class TestStandardComputeRouting:
+    """Test Standard Compute provider resolution and request routing."""
+
+    def test_resolve_defaults(self, monkeypatch):
+        monkeypatch.delenv("STANDARDCOMPUTE_API_URL", raising=False)
+        monkeypatch.setenv("STANDARDCOMPUTE_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(model="StandardCompute", provider="standardcompute")
+        assert (m, p) == ("StandardCompute", "standardcompute")
+        assert url == "https://api.stdcmpt.com/v1"
+        assert key == "test-key"
+
+    def test_resolve_env_url_override(self, monkeypatch):
+        monkeypatch.setenv("STANDARDCOMPUTE_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("STANDARDCOMPUTE_API_KEY", "env-key")
+        _, p, url, key = resolve_model_provider(model="z-ai/glm-5.3", provider="standardcompute")
+        assert p == "standardcompute"
         assert url == "https://example.test/v1"
         assert key == "env-key"
 
@@ -877,6 +893,9 @@ class TestUberLLMRouting:
     @pytest.mark.parametrize("model", ["deepseek/deepseek-v4.1-flash", "openai/gpt-5.4-mini"])
     def test_request_keeps_model_id(self, monkeypatch, model):
         """The request hits <base>/chat/completions with the key and the vendor/model ID unchanged."""
+    @pytest.mark.parametrize("model", ["StandardCompute", "deepseek/deepseek-v4.1-flash"])
+    def test_request_keeps_model_id(self, monkeypatch, model):
+        """The request hits <base>/chat/completions with the key and the model ID unchanged."""
         import json
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         from threading import Thread
@@ -906,12 +925,12 @@ class TestUberLLMRouting:
         server.seen = []
         Thread(target=server.serve_forever, daemon=True).start()
         try:
-            monkeypatch.setenv("UBERLLM_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
-            monkeypatch.setenv("UBERLLM_API_KEY", "ull-test-key")
-            result = get_llm_response("Hello", model=model, provider="uberllm")
+            monkeypatch.setenv("STANDARDCOMPUTE_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+            monkeypatch.setenv("STANDARDCOMPUTE_API_KEY", "sc-test-key")
+            result = get_llm_response("Hello", model=model, provider="standardcompute")
         finally:
             server.shutdown()
             server.server_close()
 
         assert result["response"] == "ok"
-        assert server.seen == [("/v1/chat/completions", "Bearer ull-test-key", model)]
+        assert server.seen == [("/v1/chat/completions", "Bearer sc-test-key", model)]
