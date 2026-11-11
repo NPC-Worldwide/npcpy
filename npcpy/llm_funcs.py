@@ -228,6 +228,9 @@ def resolve_model_provider(
     if p == "cheapaimodel":
         a_url = a_url or os.environ.get("CHEAPAIMODEL_API_URL") or "https://api.cheapaimodel.ai/v1"
         a_key = a_key or os.environ.get("CHEAPAIMODEL_API_KEY")
+    if p == "uberllm":
+        a_url = a_url or os.environ.get("UBERLLM_API_URL") or "https://api.uberllm.dev/v1"
+        a_key = a_key or os.environ.get("UBERLLM_API_KEY")
     if p == "standardcompute":
         a_url = a_url or os.environ.get("STANDARDCOMPUTE_API_URL") or "https://api.stdcmpt.com/v1"
         a_key = a_key or os.environ.get("STANDARDCOMPUTE_API_KEY")

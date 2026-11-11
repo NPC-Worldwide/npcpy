@@ -2631,6 +2631,9 @@ def get_litellm_response(
         api_url = api_url or os.environ.get("CHEAPAIMODEL_API_URL") or "https://api.cheapaimodel.ai/v1"
         api_key = api_key or os.environ.get("CHEAPAIMODEL_API_KEY")
         provider = "openai"
+    elif provider == 'uberllm':
+        api_url = api_url or os.environ.get("UBERLLM_API_URL") or "https://api.uberllm.dev/v1"
+        api_key = api_key or os.environ.get("UBERLLM_API_KEY")
     elif provider == 'standardcompute':
         api_url = api_url or os.environ.get("STANDARDCOMPUTE_API_URL") or "https://api.stdcmpt.com/v1"
         api_key = api_key or os.environ.get("STANDARDCOMPUTE_API_KEY")

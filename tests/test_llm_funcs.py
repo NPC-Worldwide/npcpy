@@ -845,6 +845,22 @@ class TestCheapaimodelRouting:
         assert server.seen == [("/v1/chat/completions", "Bearer cam-test-key", model)]
 
 
+class TestUberLLMRouting:
+    """Test UberLLM provider resolution and request routing."""
+
+    def test_resolve_defaults(self, monkeypatch):
+        monkeypatch.delenv("UBERLLM_API_URL", raising=False)
+        monkeypatch.setenv("UBERLLM_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(model="deepseek/deepseek-v4.1-flash", provider="uberllm")
+        assert (m, p) == ("deepseek/deepseek-v4.1-flash", "uberllm")
+        assert url == "https://api.uberllm.dev/v1"
+        assert key == "test-key"
+
+    def test_resolve_env_url_override(self, monkeypatch):
+        monkeypatch.setenv("UBERLLM_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("UBERLLM_API_KEY", "env-key")
+        _, p, url, key = resolve_model_provider(model="openai/gpt-5.4-mini", provider="uberllm")
+        assert p == "uberllm"
 class TestStandardComputeRouting:
     """Test Standard Compute provider resolution and request routing."""
 
@@ -865,15 +881,18 @@ class TestStandardComputeRouting:
         assert key == "env-key"
 
     def test_explicit_arguments_win(self, monkeypatch):
-        monkeypatch.setenv("STANDARDCOMPUTE_API_URL", "https://example.test/v1")
-        monkeypatch.setenv("STANDARDCOMPUTE_API_KEY", "env-key")
+        monkeypatch.setenv("UBERLLM_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("UBERLLM_API_KEY", "env-key")
         _, _, url, key = resolve_model_provider(
-            model="z-ai/glm-5.3", provider="standardcompute",
+            model="openai/gpt-5.4-mini", provider="uberllm",
             api_url="https://other.test/v1", api_key="arg-key",
         )
         assert url == "https://other.test/v1"
         assert key == "arg-key"
 
+    @pytest.mark.parametrize("model", ["deepseek/deepseek-v4.1-flash", "openai/gpt-5.4-mini"])
+    def test_request_keeps_model_id(self, monkeypatch, model):
+        """The request hits <base>/chat/completions with the key and the vendor/model ID unchanged."""
     @pytest.mark.parametrize("model", ["StandardCompute", "deepseek/deepseek-v4.1-flash"])
     def test_request_keeps_model_id(self, monkeypatch, model):
         """The request hits <base>/chat/completions with the key and the model ID unchanged."""
