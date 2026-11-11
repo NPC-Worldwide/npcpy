@@ -422,7 +422,7 @@ def create_chat_stream(config: StreamConfig,
     kwargs = {}
     if config.params:
         kwargs.update(config.params)
-    if config.temperature and 'temperature' not in kwargs:
+    if config.temperature is not None and 'temperature' not in kwargs:
         kwargs['temperature'] = config.temperature
 
     thinking_kwargs = {}
@@ -522,7 +522,7 @@ def create_tool_agent_stream(config: StreamConfig,
     kwargs = {}
     if config.params:
         kwargs.update(config.params)
-    if config.temperature and 'temperature' not in kwargs:
+    if config.temperature is not None and 'temperature' not in kwargs:
         kwargs['temperature'] = config.temperature
 
     thinking_kwargs = {}
