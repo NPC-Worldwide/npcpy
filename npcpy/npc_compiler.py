@@ -925,7 +925,7 @@ output = {mcp_tool.__module__}.{name}(
             
             return cls(jinx_data=jinx_data)
             
-        except: 
+        except Exception:
             pass
 
 def _parse_skill_md(path):
