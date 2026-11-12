@@ -729,6 +729,12 @@ def get_ollama_response(
     logger.debug(f"ollama api_params: {api_params}")
     res = client.chat(**api_params, options=options)
     result["raw_response"] = res
+
+    if hasattr(res, 'prompt_eval_count') or 'prompt_eval_count' in res:
+        result["usage"] = {
+            "input_tokens": res.get('prompt_eval_count', 0) or 0,
+            "output_tokens": res.get('eval_count', 0) or 0,
+        }
     
     
     
@@ -749,6 +755,9 @@ def get_ollama_response(
         }
         
         
+        if "usage" in result:
+            response_for_processing["usage"] = result["usage"]
+
         processed_result = process_tool_calls(response_for_processing,
                                               tool_map, model,
                                               'ollama',
@@ -794,6 +803,14 @@ def get_ollama_response(
             processed_result["response"] = final_stream
         else:
             final_resp = client.chat(**final_api_params, options=options)
+            if hasattr(final_resp, 'prompt_eval_count') or 'prompt_eval_count' in final_resp:
+                first_usage = processed_result.get("usage") or {}
+                processed_result["usage"] = {
+                    "input_tokens": first_usage.get("input_tokens", 0)
+                    + (final_resp.get('prompt_eval_count', 0) or 0),
+                    "output_tokens": first_usage.get("output_tokens", 0)
+                    + (final_resp.get('eval_count', 0) or 0),
+                }
             final_message = final_resp.get("message", {})
             final_content = final_message.get("content", "")
             if final_content:
