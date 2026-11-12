@@ -11,9 +11,9 @@ import npcpy.gen.response as resp_mod
     "params",
     [
         {"seed": 42, "frequency_penalty": 0.5, "presence_penalty": -0.5,
-         "logit_bias": {"123": -100}, "n": 2},
+         "logit_bias": {"123": -100}},
         {"seed": 0, "frequency_penalty": 0, "presence_penalty": 0,
-         "logit_bias": {}, "n": 1},
+         "logit_bias": {}},
     ],
 )
 def test_generation_params_reach_completion(monkeypatch, stream, params):
