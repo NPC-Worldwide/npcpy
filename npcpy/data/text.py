@@ -3,7 +3,7 @@ import os
 import numpy as np
 try:
     from sentence_transformers import SentenceTransformer, util
-except: 
+except Exception:
     pass
 
 def rag_search(
