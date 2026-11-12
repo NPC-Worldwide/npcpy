@@ -7,7 +7,7 @@ from datetime import datetime
 try:
     from openai import OpenAI
     import anthropic
-except: 
+except Exception:
     pass
 
 def get_ollama_embeddings(
