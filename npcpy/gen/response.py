@@ -2851,6 +2851,7 @@ def get_litellm_response(
                 continue
             if key in [
                 "stop", "temperature", "top_p", "max_tokens", "max_completion_tokens",
+                "seed", "frequency_penalty", "presence_penalty", "logit_bias",
                  "extra_headers", "parallel_tool_calls",
                 "response_format", "user", "timeout", "think", "thinking", "reasoning_effort",
             ]:
