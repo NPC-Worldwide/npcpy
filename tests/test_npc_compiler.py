@@ -474,3 +474,103 @@ if __name__ == "__main__":
     print("=" * 60)
 
     sys.exit(0 if failed == 0 else 1)
+
+
+def test_npc_jinxes_directory_attribute_is_consistent(tmp_path):
+    """NPC.jinxes_directory must be the single attribute name for the per-NPC
+    jinxes dir.
+
+    Regression: commit 0f238f5 ("jinxs renaming") left five references to a
+    nonexistent ``npc_jinxes_directory``. ``_load_from_file`` assigned that stale
+    name, so .npc-declared NPCs happened to work, while any NPC constructed
+    directly with a `jinxes:` list (e.g. a markdown agent from agents/*.md with
+    frontmatter) raised AttributeError in NPC.__init__.
+    """
+    # Directly constructed: no file, attribute exists and is None.
+    npc = NPC(
+        name="jinx_dir_test",
+        primary_directive="You are a test agent.",
+        model="gpt-4",
+        provider="openai",
+    )
+    assert hasattr(npc, "jinxes_directory")
+    assert npc.jinxes_directory is None
+    assert not hasattr(npc, "npc_jinxes_directory")
+
+    # File-loaded: _load_from_file runs FIRST, so it is the place that could
+    # introduce the stale name. Assert it writes the canonical one instead.
+    team_dir = tmp_path / "team"
+    (team_dir / "jinxes").mkdir(parents=True)
+    (team_dir / "filed.npc").write_text(
+        "name: filed\n"
+        "primary_directive: A file-declared agent.\n"
+        "model: gpt-4\n"
+        "provider: openai\n"
+    )
+    from npcpy.npc_compiler import NPC as _NPC
+    filed = _NPC(file=str(team_dir / "filed.npc"))
+    assert not hasattr(filed, "npc_jinxes_directory"), (
+        "_load_from_file must not assign the stale 'npc_jinxes_directory'; "
+        "use the canonical 'jinxes_directory'"
+    )
+    assert filed.jinxes_directory == os.path.join(str(team_dir), "jinxes")
+
+
+def test_markdown_agent_with_frontmatter_jinxes_loads(tmp_path):
+    """agents/*.md frontmatter `jinxes:` must not crash the team load.
+
+    This is the exact crash fixed in the 2.1.29 release: the NPC is built with a
+    `jinxes` list before any .npc file has set a jinxes directory.
+    """
+    project = tmp_path / "proj"
+    team_dir = project / "npc_team"
+    agents_dir = project / "agents"
+    team_dir.mkdir(parents=True)
+    agents_dir.mkdir()
+
+    (team_dir / "t.ctx").write_text("model: gpt-4\nprovider: openai\n")
+    (agents_dir / "jinxy.md").write_text(
+        "---\n"
+        "jinxes:\n"
+        "  - read\n"
+        "  - write\n"
+        "---\n"
+        "You are a jinxed markdown agent.\n"
+    )
+
+    team = Team(team_path=str(team_dir))
+    names = {n for n in team.npcs if n != "forenpc"}
+    assert "jinxy" in names, f"expected jinxy in {names}"
+
+
+def test_agents_md_h2_agents_load(tmp_path):
+    """agents.md H2 sections become agents (read from dirname(team_path))."""
+    project = tmp_path / "proj2"
+    team_dir = project / "npc_team"
+    team_dir.mkdir(parents=True)
+
+    (project / "agents.md").write_text(
+        "## alicanto\nResearch agent.\n\n## kadiefa\nExplorer agent.\n"
+    )
+    (team_dir / "t.ctx").write_text("model: gpt-4\nprovider: openai\n")
+
+    team = Team(team_path=str(team_dir))
+    names = {n for n in team.npcs if n != "forenpc"}
+    assert names == {"alicanto", "kadiefa"}, names
+
+
+def test_npc_file_jinxes_directory_points_at_sibling_jinxes(tmp_path):
+    """A .npc NPC resolves its per-NPC jinxes dir from its own file location."""
+    team_dir = tmp_path / "proj3" / "npc_team"
+    (team_dir / "jinxes").mkdir(parents=True)
+    (team_dir / "solo.npc").write_text(
+        "name: solo\n"
+        "primary_directive: A solo agent.\n"
+        "model: gpt-4\n"
+        "provider: openai\n"
+    )
+
+    team = Team(team_path=str(team_dir))
+    solo = team.npcs.get("solo")
+    assert solo is not None
+    assert solo.jinxes_directory == os.path.join(str(team_dir), "jinxes")
