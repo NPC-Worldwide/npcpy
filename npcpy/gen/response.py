@@ -2880,6 +2880,13 @@ def get_litellm_response(
                 else:
                     api_params[key] = value
 
+    # top_k is not an OpenAI parameter (LiteLLM rejects it there), so only
+    # forward it to providers that accept it natively.
+    if kwargs.get("top_k") is not None and normalized_provider in (
+        "anthropic", "gemini", "vertex_ai", "ollama", "ollama_chat"
+    ):
+        api_params["top_k"] = kwargs["top_k"]
+
     if not auto_process_tool_calls or not (tools and tool_map):
         api_params["stream"] = stream
         resp = completion(**api_params)
