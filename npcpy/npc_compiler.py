@@ -1394,7 +1394,7 @@ class NPC:
                     jinx_obj = Jinx(jinx_data=jinx_item)
                     self.jinxes_dict[jinx_obj.jinx_name] = jinx_obj
                 elif isinstance(jinx_item, str):
-                    jinx_path = find_file_path(jinx_item, [self.npc_jinxes_directory], suffix=".jinx")
+                    jinx_path = find_file_path(jinx_item, dirs, suffix=".jinx")
                     if jinx_path:
                         jinx_obj = Jinx(jinx_path=jinx_path)
                         self.jinxes_dict[jinx_obj.jinx_name] = jinx_obj
@@ -1489,16 +1489,16 @@ class NPC:
                         self.jinxes_dict[jinx_name] = self.team.jinxes_dict[jinx_name]
 
         should_load_from_directory = False
-        if hasattr(self, 'npc_jinxes_directory') and self.npc_jinxes_directory and os.path.exists(self.npc_jinxes_directory):
+        if self.jinxes_directory and os.path.exists(self.jinxes_directory):
             if not self.team:
                 should_load_from_directory = True
             elif hasattr(self.team, 'team_path') and self.team.team_path:
                 team_jinxes_dir = os.path.join(self.team.team_path, 'jinxes')
-                if os.path.normpath(self.npc_jinxes_directory) != os.path.normpath(team_jinxes_dir):
+                if os.path.normpath(self.jinxes_directory) != os.path.normpath(team_jinxes_dir):
                     should_load_from_directory = True
 
         if should_load_from_directory:
-            for jinx_obj in load_jinxes_from_directory(self.npc_jinxes_directory):
+            for jinx_obj in load_jinxes_from_directory(self.jinxes_directory):
                 if jinx_obj.jinx_name not in self.jinxes_dict:
                     npc_jinxes_raw_list.append(jinx_obj)
         
@@ -1774,7 +1774,7 @@ class NPC:
         self._extra_fields = {k: v for k, v in npc_data.items() if k not in known_keys}
 
         self.npc_path = file
-        self.npc_jinxes_directory = os.path.join(os.path.dirname(file), "jinxes")
+        self.jinxes_directory = os.path.join(os.path.dirname(file), "jinxes")
 
     def resolve_tools(self, mcp_clients_cache: dict = None) -> tuple:
         """
