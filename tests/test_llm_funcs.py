@@ -934,3 +934,75 @@ class TestStandardComputeRouting:
 
         assert result["response"] == "ok"
         assert server.seen == [("/v1/chat/completions", "Bearer sc-test-key", model)]
+
+
+class TestRequestyRouting:
+    """Test Requesty provider resolution and request routing."""
+
+    def test_resolve_defaults(self, monkeypatch):
+        monkeypatch.delenv("REQUESTY_API_URL", raising=False)
+        monkeypatch.setenv("REQUESTY_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(model="openai/gpt-4o-mini", provider="requesty")
+        assert (m, p) == ("openai/gpt-4o-mini", "requesty")
+        assert url == "https://router.requesty.ai/v1"
+        assert key == "test-key"
+
+    def test_resolve_env_url_override(self, monkeypatch):
+        monkeypatch.setenv("REQUESTY_API_URL", "https://router.eu.requesty.ai/v1")
+        monkeypatch.setenv("REQUESTY_API_KEY", "env-key")
+        _, p, url, key = resolve_model_provider(model="anthropic/claude-sonnet-5", provider="requesty")
+        assert p == "requesty"
+        assert url == "https://router.eu.requesty.ai/v1"
+        assert key == "env-key"
+
+    def test_explicit_arguments_win(self, monkeypatch):
+        monkeypatch.setenv("REQUESTY_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("REQUESTY_API_KEY", "env-key")
+        _, _, url, key = resolve_model_provider(
+            model="openai/gpt-4o-mini", provider="requesty",
+            api_url="https://other.test/v1", api_key="arg-key",
+        )
+        assert url == "https://other.test/v1"
+        assert key == "arg-key"
+
+    @pytest.mark.parametrize("model", ["openai/gpt-4o-mini", "anthropic/claude-sonnet-5"])
+    def test_request_keeps_model_id(self, monkeypatch, model):
+        """The request hits <base>/chat/completions with the key and the vendor/model ID unchanged."""
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                self.server.seen.append((self.path, self.headers.get("Authorization"), body.get("model")))
+                data = json.dumps({
+                    "id": "chatcmpl-local",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": body.get("model"),
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.seen = []
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            monkeypatch.setenv("REQUESTY_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+            monkeypatch.setenv("REQUESTY_API_KEY", "rq-test-key")
+            result = get_llm_response("Hello", model=model, provider="requesty")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert result["response"] == "ok"
+        assert server.seen == [("/v1/chat/completions", "Bearer rq-test-key", model)]

@@ -1100,6 +1100,16 @@ print(response["response"])
 ```
 
 </details>
+<details><summary>Requesty</summary>
+
+Set `REQUESTY_API_KEY` and use `provider="requesty"` with a `vendor/model` ID from Requesty's public model list (`GET https://router.requesty.ai/v1/models`), for example `openai/gpt-4o-mini`, `anthropic/claude-sonnet-5` or `google/gemini-2.5-flash`. Requests go to the OpenAI-compatible Base URL `https://router.requesty.ai/v1` and are routed to the first-party providers (OpenAI, Anthropic, Google and others); set `REQUESTY_API_URL` to override it, for example `https://router.eu.requesty.ai/v1` for the EU endpoint. Keys are created in the [Requesty dashboard](https://app.requesty.ai/api-keys).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="openai/gpt-4o-mini", provider="requesty")
+print(response["response"])
+```
+
+</details>
 <details><summary>Runcrate</summary>
 
 Set `RUNCRATE_API_KEY` and use `provider="runcrate"` with any `vendor/model` ID from Runcrate's public model list (`GET https://api.runcrate.ai/v1/models`), for example `deepseek-ai/DeepSeek-V4.1-Flash` or `openai/gpt-oss-120b`. Requests go to the OpenAI-compatible Base URL `https://api.runcrate.ai/v1`; set `RUNCRATE_API_URL` to override it. Open models are free with your GitHub account; keys are created in the [Runcrate dashboard](https://www.runcrate.ai/dashboard/api-keys?utm_source=npcpy&utm_medium=directory&utm_campaign=gpu_pricing).
