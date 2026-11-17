@@ -1327,6 +1327,18 @@ def get_llamacpp_response(
         if kwargs.get("stop"):
             params["stop"] = kwargs["stop"]
 
+        if tools is not None:
+            params["tools"] = tools
+        if tool_choice is not None:
+            params["tool_choice"] = tool_choice
+        if format == "json":
+            params["response_format"] = {"type": "json_object"}
+        elif isinstance(format, type) and issubclass(format, BaseModel):
+            params["response_format"] = {
+                "type": "json_object",
+                "schema": format.model_json_schema(),
+            }
+
         if stream:
             response = llm.create_chat_completion(**params)
 
