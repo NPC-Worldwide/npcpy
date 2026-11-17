@@ -1008,13 +1008,18 @@ Do not include any additional markdown formatting or leading ```json tags in you
         max_new_tokens = kwargs.get("max_tokens", 512)
         temperature = kwargs.get("temperature", 0.7)
 
+        # transformers rejects temperature=0 when do_sample=True; use greedy
+        # decoding for temperature <= 0 and only pass temperature when sampling.
+        generate_kwargs = {"do_sample": bool(temperature and temperature > 0)}
+        if generate_kwargs["do_sample"]:
+            generate_kwargs["temperature"] = temperature
+
         with torch.no_grad():
             outputs = model_with_adapter.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                do_sample=True,
                 pad_token_id=tokenizer.eos_token_id,
+                **generate_kwargs,
             )
 
         response_content = tokenizer.decode(
