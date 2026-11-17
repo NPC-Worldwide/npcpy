@@ -74,3 +74,36 @@ def test_default_request_omits_optional_params(response_module, completion):
     assert completion.call_args.kwargs == {
         "messages": [{"role": "user", "content": "Hello"}], "stream": False,
     }
+
+
+@pytest.mark.parametrize("auto_process,with_map", [(False, True), (True, False), (True, True)])
+def test_tool_call_without_content(response_module, completion, auto_process, with_map):
+    tool_calls = [{"id": "call_weather", "type": "function", "function": {
+        "name": "weather", "arguments": '{"city": "Paris"}',
+    }}]
+    completion.return_value = {"choices": [{"message": {
+        "role": "assistant", "content": None, "tool_calls": tool_calls,
+    }}]}
+    weather = Mock(return_value="Sunny")
+    result = response_module.get_llamacpp_response(
+        prompt="Weather?", model="test.gguf",
+        tool_choice={"type": "function", "function": {"name": "weather"}},
+        tool_map={"weather": weather} if with_map else None,
+        auto_process_tool_calls=auto_process,
+    )
+    assert "error" not in result
+    assert result["tool_calls"] == tool_calls
+    if auto_process and with_map:
+        weather.assert_called_once_with(city="Paris")
+        assert result["tool_results"] == [{
+            "tool_call_id": "call_weather", "tool_name": "weather",
+            "arguments": {"city": "Paris"}, "result": "Sunny",
+        }]
+        assert result["messages"][-1]["role"] == "tool"
+        assistant = result["messages"][-2]
+    else:
+        weather.assert_not_called()
+        assert result["tool_results"] == []
+        assistant = result["messages"][-1]
+    assert assistant["tool_calls"] == tool_calls
+    assert assistant["content"] is None
