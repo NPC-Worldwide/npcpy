@@ -1332,6 +1332,18 @@ def get_llamacpp_response(
         if kwargs.get("stop"):
             params["stop"] = kwargs["stop"]
 
+        if tools is not None:
+            params["tools"] = tools
+        if tool_choice is not None:
+            params["tool_choice"] = tool_choice
+        if format == "json":
+            params["response_format"] = {"type": "json_object"}
+        elif isinstance(format, type) and issubclass(format, BaseModel):
+            params["response_format"] = {
+                "type": "json_object",
+                "schema": format.model_json_schema(),
+            }
+
         if stream:
             response = llm.create_chat_completion(**params)
 
@@ -1345,9 +1357,20 @@ def get_llamacpp_response(
             result["raw_response"] = response
 
             if response.get("choices"):
-                content = response["choices"][0].get("message", {}).get("content", "")
+                message = response["choices"][0].get("message", {})
+                content = message.get("content", "")
                 result["response"] = content
-                result["messages"].append({"role": "assistant", "content": content})
+                tool_calls = message.get("tool_calls", [])
+                result["tool_calls"] = tool_calls
+                if tool_calls and auto_process_tool_calls and tool_map:
+                    result = process_tool_calls(
+                        result, tool_map, model, "llamacpp", result["messages"], tools=tools,
+                    )
+                else:
+                    assistant_msg = {"role": "assistant", "content": content}
+                    if tool_calls:
+                        assistant_msg["tool_calls"] = tool_calls
+                    result["messages"].append(assistant_msg)
 
             if response.get("usage"):
                 result["usage"] = {
