@@ -158,6 +158,42 @@ def search_serply(query: str, num_results: int = 5, api_key: str = None):
         print(f"Serply search failed: {e}")
     return []
 
+def search_searchapi(query: str, num_results: int = 5, api_key: str = None):
+    """Search Google results using the SearchApi API (https://www.searchapi.io/docs/google)."""
+    if api_key is None:
+        api_key = os.environ.get('SEARCHAPI_API_KEY')
+    if not api_key:
+        print("SearchApi API key not set")
+        return []
+
+    try:
+        # Google ignores a per-request result count, so one page (~10 rows) is
+        # requested and trimmed client-side. The key travels only in the header.
+        response = requests.get(
+            'https://www.searchapi.io/api/v1/search',
+            params={'engine': 'google', 'q': query},
+            headers={'Authorization': f'Bearer {api_key}', 'Accept': 'application/json', 'User-Agent': 'npcpy'},
+            timeout=30
+        )
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for r in data.get('organic_results', [])[:num_results]:
+                results.append({
+                    'title': r.get('title', ''),
+                    'link': r.get('link', ''),
+                    'content': r.get('snippet', '')
+                })
+            return results
+        try:
+            error = response.json().get('error') or response.text[:200]
+        except Exception:
+            error = response.text[:200]
+        print(f"SearchApi search failed ({response.status_code}): {error}")
+    except Exception as e:
+        print(f"SearchApi search failed: {e}")
+    return []
+
 def search_keenable(query: str, num_results: int = 5, api_key: str = None):
     """Search using the Keenable API. Works without a key; KEENABLE_API_KEY lifts rate limits."""
     if api_key is None:
@@ -365,6 +401,9 @@ def search_web(
 
     elif provider == 'serply':
         results = search_serply(query, num_results=num_results, api_key=api_key)
+
+    elif provider == 'searchapi':
+        results = search_searchapi(query, num_results=num_results, api_key=api_key)
 
     elif provider == 'keenable':
         results = search_keenable(query, num_results=num_results, api_key=api_key)

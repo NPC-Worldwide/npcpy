@@ -397,3 +397,66 @@ def test_search_web_sofya_provider():
     sofya.assert_called_once_with("python", num_results=3, api_key="k")
     assert "Citation: https://www.python.org/" in content_str
     assert link_str.strip() == "https://www.python.org/"
+
+
+def test_searchapi_search(monkeypatch):
+    """Test SearchApi search request and result mapping (mocked)"""
+    from unittest.mock import MagicMock, patch
+    from npcpy.data.web import search_searchapi
+
+    monkeypatch.setenv("SEARCHAPI_API_KEY", "test-key")
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "search_parameters": {"engine": "google", "q": "python"},
+        "organic_results": [
+            {"position": 1, "title": "Python", "link": "https://www.python.org/", "snippet": "The official home of Python.", "source": "Python.org", "domain": "www.python.org"},
+            {"position": 2, "title": "Docs", "link": "https://docs.python.org/3/", "snippet": "Python documentation.", "source": "Python docs", "domain": "docs.python.org"},
+        ],
+    }
+    with patch("npcpy.data.web.requests.get", return_value=response) as get:
+        results = search_searchapi("python", num_results=1)
+
+    assert results == [
+        {"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}
+    ]
+    args, kwargs = get.call_args
+    assert args[0] == "https://www.searchapi.io/api/v1/search"
+    assert kwargs["params"] == {"engine": "google", "q": "python"}
+    assert kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert "api_key" not in kwargs["params"]
+
+
+def test_searchapi_search_without_key(monkeypatch):
+    """SearchApi returns no results and makes no request without a key"""
+    from unittest.mock import patch
+    from npcpy.data.web import search_searchapi
+
+    monkeypatch.delenv("SEARCHAPI_API_KEY", raising=False)
+    with patch("npcpy.data.web.requests.get") as get:
+        assert search_searchapi("python") == []
+    get.assert_not_called()
+
+
+def test_searchapi_search_api_error(monkeypatch, capsys):
+    """SearchApi surfaces the API's error message and returns no results on a non-200"""
+    from unittest.mock import MagicMock, patch
+    from npcpy.data.web import search_searchapi
+
+    response = MagicMock(status_code=401, text='{"error": "Invalid API key."}')
+    response.json.return_value = {"error": "Invalid API key."}
+    with patch("npcpy.data.web.requests.get", return_value=response):
+        assert search_searchapi("python", api_key="bad-key") == []
+    assert "Invalid API key." in capsys.readouterr().out
+
+
+def test_search_web_searchapi_provider():
+    """search_web routes provider='searchapi' and formats citations (mocked)"""
+    from unittest.mock import patch
+
+    hits = [{"title": "Python", "link": "https://www.python.org/", "content": "The official home of Python."}]
+    with patch("npcpy.data.web.search_searchapi", return_value=hits) as searchapi:
+        content_str, link_str = search_web("python", num_results=3, provider="searchapi", api_key="k")
+
+    searchapi.assert_called_once_with("python", num_results=3, api_key="k")
+    assert "Citation: https://www.python.org/" in content_str
+    assert link_str.strip() == "https://www.python.org/"
