@@ -6,6 +6,19 @@ from .systemone import (
     available as systemone_available,
     require_available as require_systemone,
 )
+from .decisions import (
+    DecisionsClient,
+    DecisionsConfig,
+    DecisionsError,
+    PROVIDERS as decisions_providers,
+    DEFAULT_MODELS as decisions_default_models,
+    build_payload as build_decisions_payload,
+    decisions,
+    parse_answers as parse_decision_answers,
+    load_decisions,
+    available as decisions_available,
+    require_available as require_decisions,
+)
 from .decision import (
     DecisionQuestion,
     DecisionRouter,
@@ -40,4 +53,15 @@ __all__ = [
     "decision_noul",
     "decision_predict",
     "decision_route",
+    "DecisionsClient",
+    "DecisionsConfig",
+    "DecisionsError",
+    "decisions_providers",
+    "decisions_default_models",
+    "build_decisions_payload",
+    "decisions",
+    "parse_decision_answers",
+    "load_decisions",
+    "decisions_available",
+    "require_decisions",
 ]

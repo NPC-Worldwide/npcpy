@@ -9,8 +9,14 @@ from pathlib import Path
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 SKIP_LONG = os.environ.get("NPC_README_SKIP_LONG", "0").lower() in ("1", "true", "yes")
 SKIP_MEDIA = os.environ.get("NPC_README_SKIP_MEDIA", os.environ.get("NPC_README_SKIP_LONG", "0")).lower() in ("1", "true", "yes")
-LONG_INDICES = {5, 22, 23, 24}
-MEDIA_INDICES = {14}
+LONG_INDICES = {9, 26, 27, 28}
+MEDIA_INDICES = {18}
+# Decisions examples need a real API key (hosted) or a pulled decision model
+# (Ollama), and they must not be rewritten by _normalize() below -- that helper
+# swaps every model=/provider= literal for a chat model, which a decision
+# endpoint rejects. Opt in with NPC_README_DECISIONS=1 to execute them.
+RUN_DECISIONS = os.environ.get("NPC_README_DECISIONS", "0").lower() in ("1", "true", "yes")
+DECISION_MARKERS = ("DecisionSystem1", "decision_choice", "decision_route", "decision_noul")
 TEST_MODEL = os.environ.get("NPC_README_TEST_MODEL", "kimi-k2.7-code:cloud")
 TEST_PROVIDER = os.environ.get("NPC_README_TEST_PROVIDER", "ollama")
 
@@ -52,6 +58,9 @@ def _build_tests():
         namespace = {}
         failures = []
         for idx, code in valid_blocks:
+            if not RUN_DECISIONS and any(m in code for m in DECISION_MARKERS):
+                print(f"skipping decisions example {idx}")
+                continue
             if SKIP_LONG and idx in LONG_INDICES:
                 print(f"skipping long example {idx}")
                 continue

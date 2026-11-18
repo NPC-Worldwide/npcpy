@@ -11,9 +11,10 @@ There are two interchangeable backends, and they return the exact same result ob
 | Backend | How it works | Best for |
 |---------|--------------|----------|
 | `"local"` (default) | Trains a scikit-learn classifier over sentence-transformer embeddings of your labelled examples. Runs entirely on your machine with no model server. | Your own label taxonomy and domain-specific decisions. |
-| `"ollama"` | Sends `state` + `questions` to a local Ollama decision model via `POST /v1/systemone` (Ollama >= 0.35.0, based on TypeSafe's Jev API). No training required. | General-purpose decisions out of the box, near-instant latency. |
+| `"ollama"` | Sends `state` + `questions` to a local Ollama decision model via `POST /v1/systemone` (Ollama >= 0.35.0, based on TypeSafe's Jev API). No training required. | General-purpose decisions out of the box, near-instant latency, no API key. |
+| `"gemini"` / `"perplexity"` / `"openai"` | Calls the hosted Decisions API of Google, Perplexity, or OpenAI over `POST /decisions`. No training required. | Multimodal input (PDF, audio, video, images) and managed infrastructure. |
 
-Both backends answer the same three question types:
+All backends answer the same three question types:
 
 - **`choice`** — pick one label from a `criteria` mapping of `label -> description`.
 - **`noul`** — answer a yes/no question; returns `P(true)` as a float in `[0, 1]`. (`noul` is "no/yes" as a single scalar.)
@@ -146,6 +147,119 @@ print(payload["answers"]["label"]["choice"], payload["usage"])
 `state` may be a string, an object, or an array. Objects and arrays are sent as JSON
 verbatim; anything else is JSON-encoded. It is not interpreted as chat messages.
 
+## Hosted Decisions APIs (OpenAI, Gemini, Perplexity)
+
+OpenAI, Google, and Perplexity all ship a hosted Decisions API. They take the same
+concept as the Ollama endpoint -- shared evidence plus named questions, typed answers
+with probabilities, no generated text -- but each spells the request a little
+differently. `npcpy.gen.decisions` normalizes all three onto the same surface, and the
+answers come back as the same `ChoiceResult` / `NoulResult` / `ScoreResult` objects as
+every other backend.
+
+| Provider | Model | Key env var | Endpoint |
+|----------|-------|-------------|----------|
+| `"openai"` | `gpt-6-luna` | `OPENAI_API_KEY` | `POST https://api.openai.com/v1/decisions` |
+| `"gemini"` | `gemini-decision-1` | `GEMINI_API_KEY` | `POST https://generativelanguage.googleapis.com/v1beta/decisions` |
+| `"perplexity"` | `pplx-decider-latest` | `PERPLEXITY_API_KEY` | `POST https://api.perplexity.ai/v1/decisions` |
+
+No provider SDK is required; each call is a single JSON `POST` made with `requests`,
+the same way the Ollama client works.
+
+```python
+from npcpy.gen.decisions import DecisionsClient, DecisionsConfig
+
+client = DecisionsClient(DecisionsConfig(provider="gemini"))   # reads GEMINI_API_KEY
+
+ticket = "I was charged twice for my order. Please refund the extra payment."
+
+team = client.choice(
+    ticket,
+    instructions="Which department should handle this?",
+    criteria={"billing": "Payments, invoices, refunds.",
+              "technical": "Problems using the product.",
+              "other": "Anything else."},
+)
+print(team.choice, team.confidence, team.probabilities)
+
+refund = client.noul(ticket, instructions="Is the customer asking for a refund?")
+print(refund.noul)   # P(true)
+
+severity = client.score(
+    "Export fails in Safari but works in Chrome.",
+    instructions="How severe is this issue?",
+    criteria=["Cosmetic: appearance only.",
+              "Workaround available: another way works.",
+              "Fully blocked: no workaround."],
+)
+print(severity.score, severity.legend)
+```
+
+Provider differences the client hides for you:
+
+- **Request shape.** OpenAI uses `input` + a `questions` **array** and calls yes/no
+  questions `predicate`; Gemini uses `input` + a `questions` **map**; Perplexity uses
+  `state` + a `questions` map. You always write `noul` / `choice` / `score`, and JSON
+  states are routed into the right field per provider.
+- **Response shape.** Gemini and Perplexity key answers by question name; OpenAI returns
+  an ordered array carrying `name`. Both are normalized to `result.answers[name]`.
+- **Choice/score criteria.** OpenAI wants `choices: [{value, description}]` and
+  `levels: [{label, description}]`; Gemini and Perplexity take a mapping and a list. A
+  rubric entry like `"Fully blocked: no workaround."` is split into label and
+  description automatically.
+- **Refusals.** OpenAI can return a `refusal` answer. The client raises `DecisionsError`
+  naming the question instead of returning a silent zero.
+- **Probabilities.** OpenAI returns probabilities as a list of
+  `{value, probability}` records; the client flattens them into `{key: probability}` so
+  you can index them the same way everywhere.
+
+The unified surface works identically:
+
+```python
+from npcpy.gen.decision import DecisionSystem1, DecisionQuestion, decision_choice
+
+model = DecisionSystem1.from_hosted(provider="perplexity")
+result = model.decide(ticket, [
+    DecisionQuestion(name="team", type="choice",
+                     instructions="Which team should handle this ticket?",
+                     criteria={"billing": "Payments and refunds",
+                               "technical": "Bugs and integrations"}),
+    DecisionQuestion(name="refund", type="noul",
+                     instructions="Does the customer explicitly ask for a refund?"),
+])
+print(result.answers["team"].choice)
+
+# Per-call backend selection; a provider name is a valid backend.
+decision_choice(
+    ticket,
+    instructions="Which team should handle this ticket?",
+    criteria={"billing": "Payments and refunds", "technical": "Bugs"},
+    backend="gemini",
+)
+```
+
+`DecisionSystem1` also accepts `backend="hosted:gemini"`, plus `api_model=`, `api_key=`,
+and `base_url=`. `to_dict()["hosted"]` reports the resolved provider, model, and base URL.
+
+Check configuration without spending tokens, and optionally verify with a live call:
+
+```python
+from npcpy.gen.decisions import available, require_available
+
+available(provider="gemini")
+# {'available': True, 'provider': 'gemini', 'api_key_present': True,
+#  'api_key_env': 'GEMINI_API_KEY', 'model': 'gemini-decision-1', ...}
+
+require_available(provider="gemini", verify=True)   # live round-trip; raises with a hint
+```
+
+### Hosted environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `NPCPY_DECISIONS_PROVIDER` | Default provider when `backend="hosted"` is used (`openai`, `gemini`, `perplexity`). |
+| `NPCPY_DECISIONS_OPENAI_MODEL` / `_GEMINI_MODEL` / `_PERPLEXITY_MODEL` | Override the model name. |
+| `NPCPY_DECISIONS_OPENAI_BASE_URL` / `_GEMINI_BASE_URL` / `_PERPLEXITY_BASE_URL` | Override the base URL (proxies, gateways, local decider). |
+
 ## Local Backend (train your own)
 
 Install the optional dependencies and label some examples.
@@ -253,7 +367,7 @@ the resolved model and base URL.
 
 Resolution order, highest first:
 
-1. The `backend=` argument on the call (`"ollama"`, `"systemone"`, `"system_one"`, `"jev"` all mean Ollama; `"local"`, `"sklearn"`, `"train"` mean the trained classifier).
+1. The `backend=` argument on the call. `"ollama"`, `"systemone"`, `"system_one"`, `"jev"` mean Ollama; `"local"`, `"sklearn"`, `"train"` mean the trained classifier; a hosted provider name (`"openai"`, `"gemini"`, `"perplexity"`, plus aliases such as `"pplx"` and `"google"`) selects the hosted API; `"hosted"` defers to `NPCPY_DECISIONS_PROVIDER`.
 2. The `NPCPY_SYSTEM1_BACKEND` environment variable.
 3. `"local"`.
 
@@ -263,7 +377,7 @@ An unrecognised value raises `ValueError` rather than silently defaulting.
 
 | Variable | Used by | Purpose |
 |----------|---------|---------|
-| `NPCPY_SYSTEM1_BACKEND` | `gen.decision` | Default backend (`local` or `ollama`). |
+| `NPCPY_SYSTEM1_BACKEND` | `gen.decision` | Default backend (`local`, `ollama`, `hosted`, or a provider name). |
 | `NPCPY_SYSTEM1_OLLAMA_MODEL` | Ollama client | Default decision model (default `nimble`). |
 | `NPCPY_OLLAMA_BASE_URL` / `OLLAMA_HOST` | Ollama client | Ollama host; default `http://localhost:11434`. |
 | `NPCPY_SYSTEM1_MODEL` | local backend | Path to a trained model directory. |
@@ -279,7 +393,8 @@ An unrecognised value raises `ValueError` rather than silently defaulting.
 | `decision_predict(state, questions, ...)` | `System1Result` |
 | `decision_route(state, instructions, tiers, criteria=None, threshold=None, ...)` | `dict` with `tier`, `confidence`, `probabilities`, `tiers` |
 
-Each accepts `model_path=`, `backend=`, `model=`, and `base_url=`.
+Each accepts `model_path=`, `backend=`, `model=`, and `base_url=`. For hosted providers,
+`model` is the API model name and `base_url` overrides the provider endpoint.
 
 ## Routing
 

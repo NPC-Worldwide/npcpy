@@ -37,6 +37,22 @@ Ollama backend: `POST /v1/systemone` against a local decision model.
       show_root_heading: false
       show_if_no_docstring: true
 
+## npcpy.gen.decisions
+
+Hosted backend: `POST /decisions` against OpenAI, Gemini, or Perplexity.
+
+::: npcpy.gen.decisions
+    options:
+      show_source: true
+      members: true
+      filters:
+        - "!^_"
+        - "!^[A-Z]{2,}"
+        - "!test_"
+      inherited_members: false
+      show_root_heading: false
+      show_if_no_docstring: true
+
 ## npcpy.gen.decision
 
 Unified decision surface with backend selection, batching, and routing.
