@@ -13,7 +13,6 @@ There are two interchangeable backends, and they return the exact same result ob
 | no provider (default) | Trains a scikit-learn classifier over sentence-transformer embeddings of your labelled examples. Runs entirely on your machine with no model server. Pass `model_path=` to load one. | Your own label taxonomy and domain-specific decisions. |
 | `"ollama"` | Sends `state` + `questions` to a local Ollama decision model via `POST /v1/systemone` (Ollama >= 0.35.0, based on TypeSafe's Jev API). No training required. | General-purpose decisions out of the box, near-instant latency, no API key. |
 | `"gemini"` / `"perplexity"` / `"openai"` | Calls the hosted Decisions API of Google, Perplexity, or OpenAI over `POST /decisions`. No training required. | Multimodal input (PDF, audio, video, images) and managed infrastructure. |
-| `"transformers"` | Runs a local HuggingFace zero-shot classifier (`pipeline("zero-shot-classification")`). Needs `pip install transformers torch`. | Fully local probabilities with your own choice of HF model. |
 
 All backends answer the same three question types:
 
@@ -286,43 +285,6 @@ require_available("gemini")   # raises with a fix-it hint if the key is missing
 The only setting read from the environment is the API key, using the same
 variables the rest of `npcpy` uses: `OPENAI_API_KEY`, `GEMINI_API_KEY`, and
 `PERPLEXITY_API_KEY`. Provider and model are always passed explicitly.
-
-## Transformers Backend (local zero-shot)
-
-The `"transformers"` provider runs a HuggingFace zero-shot classifier locally -- the
-same three question types, no API key. Its `candidate_labels` scores are exactly the
-per-label probabilities a decision model returns, so `choice` maps onto them directly,
-`noul` asks `["yes", "no"]`, and `score` takes the probability-weighted average.
-
-```bash
-pip install transformers torch
-```
-
-```python
-from npcpy import DecisionSystem1
-
-decisions = DecisionSystem1(
-    provider="transformers",
-    model="facebook/bart-large-mnli",   # default
-)
-
-team = decisions.choice(
-    "I was charged twice for my order.",
-    instructions="Which team should handle this ticket?",
-    criteria={"billing": "Payments and refunds", "technical": "Bugs"},
-)
-print(team.choice, team.confidence, team.probabilities)
-
-refund = decisions.noul(
-    "I was charged twice. Please refund the extra payment.",
-    instructions="Is the customer asking for a refund?",
-)
-print(refund.noul)   # P(true)
-```
-
-Both `transformers` and `torch` are imported lazily, so `import npcpy` stays fast and
-the dependency is only required when this provider is actually used. Any HF
-zero-shot model id works in place of the default.
 
 ## Local Backend (train your own)
 

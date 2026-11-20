@@ -26,14 +26,7 @@ from npcpy.gen.systemone import (
     OllamaSystem1Config,
     load_ollama_system1,
 )
-from npcpy.gen.decisions import (
-    PROVIDERS,
-    DEFAULT_TRANSFORMERS_MODEL,
-    TRANSFORMERS_PROVIDER,
-    DecisionsClient,
-    TransformersDecisionsClient,
-    load_transformers_decisions,
-)
+from npcpy.gen.decisions import PROVIDERS, DecisionsClient
 
 
 @dataclass
@@ -70,7 +63,7 @@ def _state_to_text(state: Union[str, Dict[str, Any], List[Any]]) -> str:
 
 _OLLAMA_PROVIDER_ALIASES = {"ollama", "systemone", "system_one", "system-1", "jev"}
 _HOSTED_PROVIDERS = frozenset(PROVIDERS)
-_NAMED_PROVIDERS = _HOSTED_PROVIDERS | {"ollama", TRANSFORMERS_PROVIDER}
+_NAMED_PROVIDERS = _HOSTED_PROVIDERS | {"ollama"}
 
 
 def _resolve_provider(
@@ -93,8 +86,6 @@ def _resolve_provider(
     key = str(raw).strip().lower()
     if key in _OLLAMA_PROVIDER_ALIASES:
         return "ollama"
-    if key == TRANSFORMERS_PROVIDER:
-        return TRANSFORMERS_PROVIDER
     if key in _HOSTED_PROVIDERS:
         return key
     raise ValueError(
@@ -213,8 +204,6 @@ class DecisionSystem1:
     * ``"ollama"`` -- a local Ollama System One model (``/v1/systemone``,
       Ollama >= 0.35.0), which needs no training.
     * ``"openai"`` / ``"gemini"`` / ``"perplexity"`` -- a hosted Decisions API.
-    * ``"transformers"`` -- a local HuggingFace zero-shot classifier
-      (``pip install transformers torch``).
 
     ``model``, ``api_url``, and ``api_key`` carry the same meaning as in
     ``get_llm_response``.
@@ -242,7 +231,6 @@ class DecisionSystem1:
         self.model_path: Optional[str] = None
         self.ollama_config: Optional[OllamaSystem1Config] = None
         self.decisions_client: Optional[DecisionsClient] = None
-        self.transformers_client: Optional[TransformersDecisionsClient] = None
 
         if self.provider is None:
             if model_path is not None:
@@ -253,11 +241,6 @@ class DecisionSystem1:
                 base_url=api_url or ollama_base_url,
             )
             self.predictor = OllamaSystem1Client(self.ollama_config)
-        elif self.provider == TRANSFORMERS_PROVIDER:
-            self.transformers_client = load_transformers_decisions(
-                model=model or DEFAULT_TRANSFORMERS_MODEL,
-            )
-            self.predictor = self.transformers_client
         elif self.provider in _HOSTED_PROVIDERS:
             if not model:
                 raise ValueError(
@@ -308,11 +291,6 @@ class DecisionSystem1:
             raise ValueError(
                 "Hosted providers do not load local model paths; pass provider= "
                 "and model= instead."
-            )
-        if self.provider == TRANSFORMERS_PROVIDER:
-            raise ValueError(
-                "provider='transformers' loads its own HuggingFace model; pass "
-                "model='<hf-model-id>' instead of a local model path."
             )
         self.predictor = load_system1(path)
         self.model_path = path
@@ -449,8 +427,6 @@ class DecisionSystem1:
             payload["api_url"] = self.ollama_config.resolved_base_url()
         if self.decisions_client is not None:
             payload.update(self.decisions_client.to_dict())
-        if self.transformers_client is not None:
-            payload.update(self.transformers_client.to_dict())
         return payload
 
 
@@ -515,12 +491,10 @@ def _client_for(
     model: Optional[str],
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
-) -> Union[OllamaSystem1Client, DecisionsClient, TransformersDecisionsClient]:
+) -> Union[OllamaSystem1Client, DecisionsClient]:
     """Build the client for a named provider."""
     if provider == "ollama":
         return _get_ollama_client(model, api_url)
-    if provider == TRANSFORMERS_PROVIDER:
-        return load_transformers_decisions(model=model or DEFAULT_TRANSFORMERS_MODEL)
     if not model:
         raise ValueError(
             f"provider={provider!r} requires model=, e.g. "
@@ -655,7 +629,7 @@ def _route_with_fallback(
     predictor: Optional[Any],
 ) -> Dict[str, Any]:
     if predictor is not None:
-        if isinstance(predictor, (OllamaSystem1Client, DecisionsClient, TransformersDecisionsClient)):
+        if isinstance(predictor, (OllamaSystem1Client, DecisionsClient)):
             result = predictor.choice(
                 state, instructions, router.criteria, question_name=question_name
             )

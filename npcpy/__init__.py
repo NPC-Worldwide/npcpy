@@ -59,8 +59,6 @@ from .gen.decisions import (
     DecisionsClient,
     DecisionsConfig,
     DecisionsError,
-    TransformersDecisionsClient,
-    load_transformers_decisions,
     get_decision_response,
     parse_answers as parse_decision_answers,
     load_decisions,
