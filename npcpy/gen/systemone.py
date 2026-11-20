@@ -209,6 +209,11 @@ def _raise_for_status(response: "requests.Response", model: str, base_url: str) 
         return
     detail = _extract_error(response)
     if response.status_code == 404:
+        detail_lower = detail.lower()
+        if "model" in detail_lower and "not found" in detail_lower:
+            raise OllamaSystem1Error(
+                f"Ollama is running at {base_url} but the decision model {model!r} is not installed (404: {detail}). Pull it with `ollama pull {model}`."
+            )
         raise OllamaSystem1Error(
             f"Ollama System One endpoint not found at {base_url}/v1/systemone (404: {detail}). Ollama >= 0.35.0 is required; upgrade with `ollama update` (or reinstall) and pull the model with `ollama pull {model}`."
         )

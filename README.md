@@ -68,6 +68,111 @@ When a traveler sees that soft, phosphorescent light, it isn’t just a pretty s
 The bird **shows the way to hidden water (and sometimes to buried silver or gold)** in the Atacama Desert.
 ```
 
+### Typed decisions instead of generated text
+
+Sometimes you do not want prose back from a model. You want a label, a yes/no
+probability, or a value on a rubric, fast, with a confidence your code can
+threshold on. That is what decision models are for. `npcpy` exposes one surface
+(`choice` / `noul` / `score` / `predict`) and every backend returns the same
+result objects.
+
+The local Ollama backend needs no API key and no training, so it is the quickest
+way to try this:
+
+```bash
+ollama pull tev1:0.8b
+```
+
+```python
+from npcpy import DecisionSystem1
+
+decisions = DecisionSystem1.from_ollama(model="tev1:0.8b")
+
+ticket = "I was charged twice for my order. Please refund the extra payment."
+
+# yes/no -> P(true) in [0, 1]
+print(round(decisions.noul(
+    ticket, instructions="Is the customer asking for a refund?"
+).noul, 4))
+# 0.9933
+
+# choice -> the winning label plus a probability for every option
+team = decisions.choice(
+    ticket,
+    instructions="Which team should handle this ticket?",
+    criteria={"billing": "Payments and refunds", "technical": "Bugs and integrations"},
+)
+print(team.choice, round(team.confidence, 4), team.probabilities)
+# billing 0.9931 {'billing': 0.9994, 'technical': 0.0006}
+
+# score -> probability-weighted average over an ordered rubric
+urgency = decisions.score(
+    ticket,
+    instructions="How urgent is this ticket?",
+    criteria=["Routine", "Soon", "Urgent"],
+)
+print(round(urgency.score, 4), urgency.legend)
+# 1.1292 {'0': 'Routine', '1': 'Soon', '2': 'Urgent'}
+```
+
+Ask many questions about the same input in one pass, then route on the numbers:
+
+```python
+from npcpy import DecisionQuestion, decision_route
+
+questions = [
+    DecisionQuestion(name="refund", type="noul",
+                     instructions="Is the customer asking for a refund?"),
+    DecisionQuestion(name="team", type="choice",
+                     instructions="Which team should handle this ticket?",
+                     criteria={"billing": "Payments and refunds",
+                               "technical": "Bugs and integrations"}),
+    DecisionQuestion(name="urgency", type="score",
+                     instructions="How urgent is this ticket?",
+                     criteria=["Routine", "Soon", "Urgent"]),
+]
+result = decisions.decide(ticket, questions)
+print({name: answer.to_dict() for name, answer in result.answers.items()})
+```
+
+Hosted decision models use the exact same `model` / `provider` / `api_key`
+arguments as `get_llm_response`, so there is nothing new to learn. The API key
+defaults to the usual environment variable:
+
+```python
+from npcpy import DecisionSystem1
+
+decisions = DecisionSystem1(provider="gemini", model="gemini-decision-1")
+# or: DecisionSystem1(provider="perplexity", model="pplx-decider-latest")
+# or: DecisionSystem1(provider="openai",     model="gpt-6-luna")
+```
+
+The functional helpers accept the same arguments:
+
+```python
+from npcpy import decision_choice, decision_noul
+
+decision_noul(
+    ticket,
+    instructions="Is this a refund request?",
+    provider="ollama",
+    model="tev1:0.8b",
+)
+decision_choice(
+    ticket,
+    instructions="Which team?",
+    criteria={"billing": "Payments", "technical": "Bugs"},
+    provider="gemini",
+    model="gemini-decision-1",
+)
+```
+
+Under the hood the Ollama backend speaks `POST /v1/systemone`, and the hosted
+backends speak `POST /decisions` (OpenAI, Gemini, Perplexity), but they all
+normalize onto the same `ChoiceResult` / `NoulResult` / `ScoreResult` types from
+`npcpy.ft.system1`. See the [System One Decisions guide](docs/guides/system-one.md)
+for the full reference.
+
 ### Agent with tools
 The `Agent` class in `npcpy` comes with a set of default tools (sh, python, edit_file, web_search, etc.)
 

@@ -55,6 +55,17 @@ from .gen.decision import (
     decision_route,
 )
 
+from .gen.decisions import (
+    DecisionsClient,
+    DecisionsConfig,
+    DecisionsError,
+    get_decision_response,
+    parse_answers as parse_decision_answers,
+    load_decisions,
+    available as decisions_available,
+    require_available as require_decisions,
+)
+
 from .gen.systemone import (
     OllamaSystem1Config,
     OllamaSystem1Client,

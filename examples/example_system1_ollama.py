@@ -95,7 +95,7 @@ def typed_client_example(model=None):
 
 def decision_helper_example(model=None):
     model = resolve_model(model)
-    """The gen.decision surface forwards to Ollama with backend='ollama'."""
+    """The gen.decision surface forwards to Ollama with provider='ollama'."""
     model_helper = DecisionSystem1.from_ollama(model=model)
 
     ticket_questions = [
@@ -125,7 +125,7 @@ def decision_helper_example(model=None):
         tiers=router.tiers,
         criteria=router.criteria,
         threshold=0.6,
-        backend="ollama",
+        provider="ollama",
         model=model,
     )
     print("route():", route)
