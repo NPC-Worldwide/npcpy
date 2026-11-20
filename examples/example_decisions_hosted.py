@@ -19,15 +19,24 @@ Run with no arguments to exercise every provider whose key is set::
 import json
 import sys
 
+from npcpy.gen.decision import (
+    DecisionQuestion,
+    DecisionRouter,
+    DecisionSystem1,
+    decision_route,
+)
 from npcpy.gen.decisions import (
-    DEFAULT_MODELS,
-    PROVIDERS,
     DecisionsClient,
-    DecisionsConfig,
     DecisionsError,
     available,
 )
-from npcpy.gen.decision import DecisionQuestion, DecisionRouter, DecisionSystem1, decision_route
+
+# provider -> (model, note)
+PROVIDER_MODELS = {
+    "openai": ("gpt-6-luna", "OPENAI_API_KEY"),
+    "gemini": ("gemini-decision-1", "GEMINI_API_KEY"),
+    "perplexity": ("pplx-decider-latest", "PERPLEXITY_API_KEY"),
+}
 
 TICKET = {
     "ticket": "I was charged twice. Please refund the extra payment.",
@@ -61,16 +70,8 @@ QUESTIONS = [
 ]
 
 
-def check_environment(provider):
-    info = available(provider=provider)
-    print(f"{provider} check:", json.dumps(info, indent=2))
-    if not info["available"]:
-        raise SystemExit(f"{provider} is not configured: {info['error']}")
-    return info
-
-
-def typed_client_example(provider):
-    client = DecisionsClient(DecisionsConfig(provider=provider))
+def typed_client_example(provider, model):
+    client = DecisionsClient(provider=provider, model=model)
     result = client.predict(TICKET, QUESTIONS)
 
     team = result.answers["team"]
@@ -83,10 +84,10 @@ def typed_client_example(provider):
     return result
 
 
-def unified_surface_example(provider):
+def unified_surface_example(provider, model):
     """The exact same decide()/route() calls work for every backend."""
-    model = DecisionSystem1.from_hosted(provider=provider)
-    result = model.decide(TICKET, QUESTIONS)
+    decision_model = DecisionSystem1(provider=provider, model=model)
+    result = decision_model.decide(TICKET, QUESTIONS)
     print("  decide():", json.dumps(result.to_dict()["answers"], indent=2)[:600])
 
     router = DecisionRouter(
@@ -103,29 +104,32 @@ def unified_surface_example(provider):
         tiers=router.tiers,
         criteria=router.criteria,
         threshold=0.6,
-        backend=provider,
+        provider=provider,
+        model=model,
     )
     print("  route():", route)
     return result
 
 
 def main(argv):
-    requested = argv[1:] or list(PROVIDERS)
-    unknown = [name for name in requested if name not in PROVIDERS]
+    requested = argv[1:] or list(PROVIDER_MODELS)
+    unknown = [name for name in requested if name not in PROVIDER_MODELS]
     if unknown:
-        raise SystemExit(f"unknown provider(s) {unknown}; expected one of {list(PROVIDERS)}")
+        raise SystemExit(
+            f"unknown provider(s) {unknown}; expected one of {list(PROVIDER_MODELS)}"
+        )
 
     ran = 0
     for provider in requested:
-        info = available(provider=provider)
+        model, key_env = PROVIDER_MODELS[provider]
+        info = available(provider)
         if not info["available"]:
-            print(f"skipping {provider}: {info['error']}")
+            print(f"skipping {provider}: {key_env} is not set")
             continue
-        print(f"\n=== {provider} ({DEFAULT_MODELS[provider]}) ===")
-        check_environment(provider)
+        print(f"\n=== {provider} ({model}) ===")
         try:
-            typed_client_example(provider)
-            unified_surface_example(provider)
+            typed_client_example(provider, model)
+            unified_surface_example(provider, model)
         except DecisionsError as exc:
             print(f"  request failed: {exc}")
             continue

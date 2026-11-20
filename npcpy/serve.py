@@ -6881,13 +6881,23 @@ def track_activity():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _request_provider(data):
+    """Read the decision provider from a request, accepting the old 'backend' key."""
+    return data.get('provider') or data.get('backend')
+
+
+def _request_api_url(data):
+    """Read the decision api_url from a request, accepting the old 'base_url' key."""
+    return data.get('api_url') or data.get('base_url')
+
+
 def _system1_predictor_from_request(data):
     """Select the local-trained or Ollama System One predictor for a request."""
     model_path = data.get('model_path') or os.environ.get('NPCPY_SYSTEM1_MODEL')
     if model_path:
         return load_system1(model_path)
-    if _resolve_backend(data.get('backend')) == 'ollama':
-        return load_ollama_system1(model=data.get('model'), base_url=data.get('base_url'))
+    if _resolve_backend(_request_provider(data)) == 'ollama':
+        return load_ollama_system1(model=data.get('model'), base_url=_request_api_url(data))
     return None
 
 
@@ -6967,7 +6977,8 @@ def decision_predict_endpoint():
         questions = [DecisionQuestion(**q) for q in raw_questions]
         result = decision_predict(
             state, questions, model_path=model_path,
-            backend=data.get('backend'), model=data.get('model'), base_url=data.get('base_url'),
+            provider=_request_provider(data), model=data.get('model'),
+            api_url=_request_api_url(data), api_key=data.get('api_key'),
         )
         return jsonify(result.to_dict())
     except Exception as e:
@@ -6987,7 +6998,8 @@ def decision_choice_endpoint():
             return jsonify({'error': 'instructions and criteria required'}), 400
         result = decision_choice(
             state, instructions, criteria, model_path=model_path,
-            backend=data.get('backend'), model=data.get('model'), base_url=data.get('base_url'),
+            provider=_request_provider(data), model=data.get('model'),
+            api_url=_request_api_url(data), api_key=data.get('api_key'),
         )
         return jsonify(result.to_dict())
     except Exception as e:
@@ -7006,7 +7018,8 @@ def decision_noul_endpoint():
             return jsonify({'error': 'instructions required'}), 400
         result = decision_noul(
             state, instructions, model_path=model_path,
-            backend=data.get('backend'), model=data.get('model'), base_url=data.get('base_url'),
+            provider=_request_provider(data), model=data.get('model'),
+            api_url=_request_api_url(data), api_key=data.get('api_key'),
         )
         return jsonify(result.to_dict())
     except Exception as e:
@@ -7026,7 +7039,8 @@ def decision_score_endpoint():
             return jsonify({'error': 'instructions and criteria required'}), 400
         result = decision_score(
             state, instructions, criteria, model_path=model_path,
-            backend=data.get('backend'), model=data.get('model'), base_url=data.get('base_url'),
+            provider=_request_provider(data), model=data.get('model'),
+            api_url=_request_api_url(data), api_key=data.get('api_key'),
         )
         return jsonify(result.to_dict())
     except Exception as e:

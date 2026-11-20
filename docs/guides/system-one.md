@@ -10,9 +10,10 @@ There are two interchangeable backends, and they return the exact same result ob
 
 | Backend | How it works | Best for |
 |---------|--------------|----------|
-| `"local"` (default) | Trains a scikit-learn classifier over sentence-transformer embeddings of your labelled examples. Runs entirely on your machine with no model server. | Your own label taxonomy and domain-specific decisions. |
+| no provider (default) | Trains a scikit-learn classifier over sentence-transformer embeddings of your labelled examples. Runs entirely on your machine with no model server. Pass `model_path=` to load one. | Your own label taxonomy and domain-specific decisions. |
 | `"ollama"` | Sends `state` + `questions` to a local Ollama decision model via `POST /v1/systemone` (Ollama >= 0.35.0, based on TypeSafe's Jev API). No training required. | General-purpose decisions out of the box, near-instant latency, no API key. |
 | `"gemini"` / `"perplexity"` / `"openai"` | Calls the hosted Decisions API of Google, Perplexity, or OpenAI over `POST /decisions`. No training required. | Multimodal input (PDF, audio, video, images) and managed infrastructure. |
+| `"transformers"` | Runs a local HuggingFace zero-shot classifier (`pipeline("zero-shot-classification")`). Needs `pip install transformers torch`. | Fully local probabilities with your own choice of HF model. |
 
 All backends answer the same three question types:
 
@@ -28,8 +29,8 @@ Install Ollama 0.35 or newer, then pull a decision model.
 
 ```bash
 ollama update          # or reinstall; System One requires >= 0.35.0
-ollama pull nimble     # 9B, from Bespoke Labs
-# or: ollama pull tev1  /  ollama pull tev1:0.8b
+ollama pull tev1:0.8b   # small and quick
+# or: ollama pull nimble   # 9B, from Bespoke Labs
 ```
 
 Verify availability before you wire it into anything:
@@ -37,12 +38,12 @@ Verify availability before you wire it into anything:
 ```python
 from npcpy.gen.systemone import available, require_available
 
-available(model="nimble")
+available(model="tev1:0.8b")
 # {'available': True, 'reachable': True, 'version': '0.35.1', 'version_ok': True,
-#  'model': 'nimble', 'model_present': True, 'base_url': 'http://localhost:11434',
+#  'model': 'tev1:0.8b', 'model_present': True, 'base_url': 'http://localhost:11434',
 #  'error': None}
 
-require_available(model="nimble")   # raises with a fix-it hint if anything is missing
+require_available(model="tev1:0.8b")   # raises with a fix-it hint if anything is missing
 ```
 
 ### Choosing, scoring, and yes/no
@@ -50,7 +51,7 @@ require_available(model="nimble")   # raises with a fix-it hint if anything is m
 ```python
 from npcpy.gen.systemone import OllamaSystem1Client, OllamaSystem1Config
 
-client = OllamaSystem1Client(OllamaSystem1Config(model="nimble"))
+client = OllamaSystem1Client(OllamaSystem1Config(model="tev1:0.8b"))
 
 ticket = {"ticket": "I was charged twice. Please refund the extra payment."}
 
@@ -139,7 +140,7 @@ payload = systemone(
             },
         }
     },
-    model="nimble",
+    model="tev1:0.8b",
 )
 print(payload["answers"]["label"]["choice"], payload["usage"])
 ```
@@ -166,9 +167,9 @@ No provider SDK is required; each call is a single JSON `POST` made with `reques
 the same way the Ollama client works.
 
 ```python
-from npcpy.gen.decisions import DecisionsClient, DecisionsConfig
+from npcpy.gen.decisions import DecisionsClient
 
-client = DecisionsClient(DecisionsConfig(provider="gemini"))   # reads GEMINI_API_KEY
+client = DecisionsClient(provider="gemini", model="gemini-decision-1")   # reads GEMINI_API_KEY
 
 ticket = "I was charged twice for my order. Please refund the extra payment."
 
@@ -217,7 +218,7 @@ The unified surface works identically:
 ```python
 from npcpy.gen.decision import DecisionSystem1, DecisionQuestion, decision_choice
 
-model = DecisionSystem1.from_hosted(provider="perplexity")
+model = DecisionSystem1(provider="perplexity", model="pplx-decider-latest")
 result = model.decide(ticket, [
     DecisionQuestion(name="team", type="choice",
                      instructions="Which team should handle this ticket?",
@@ -228,37 +229,100 @@ result = model.decide(ticket, [
 ])
 print(result.answers["team"].choice)
 
-# Per-call backend selection; a provider name is a valid backend.
+# Per-call provider selection
 decision_choice(
     ticket,
     instructions="Which team should handle this ticket?",
     criteria={"billing": "Payments and refunds", "technical": "Bugs"},
-    backend="gemini",
+    provider="gemini",
+    model="gemini-decision-1",
 )
 ```
 
-`DecisionSystem1` also accepts `backend="hosted:gemini"`, plus `api_model=`, `api_key=`,
-and `base_url=`. `to_dict()["hosted"]` reports the resolved provider, model, and base URL.
+`DecisionSystem1` takes the same `provider=`, `model=`, `api_url=`, and `api_key=`
+arguments as `get_llm_response`. `to_dict()` reports the resolved provider, model,
+and API URL.
 
-Check configuration without spending tokens, and optionally verify with a live call:
+### The `get_decision_response` entry point
+
+`get_decision_response` is the decision-model counterpart to `get_llm_response`: same
+`provider` / `model` / `api_url` / `api_key` arguments, but it returns typed answers
+with probabilities. It gives you the raw provider payload rather than result objects.
+
+```python
+from npcpy import get_decision_response
+
+payload = get_decision_response(
+    "I was charged twice for my order. Please refund the extra payment.",
+    {
+        "refund": {"type": "noul", "instructions": "Is a refund requested?"},
+        "team": {
+            "type": "choice",
+            "instructions": "Which team should handle this?",
+            "criteria": {"billing": "Payments", "technical": "Bugs"},
+        },
+    },
+    provider="gemini",
+    model="gemini-decision-1",
+)
+print(payload["answers"]["refund"]["noul"])
+print(payload["answers"]["team"]["choice"])
+```
+
+Check configuration without spending tokens:
 
 ```python
 from npcpy.gen.decisions import available, require_available
 
-available(provider="gemini")
+available("gemini")
 # {'available': True, 'provider': 'gemini', 'api_key_present': True,
-#  'api_key_env': 'GEMINI_API_KEY', 'model': 'gemini-decision-1', ...}
+#  'api_key_env': 'GEMINI_API_KEY', 'base_url': '...', 'error': None}
 
-require_available(provider="gemini", verify=True)   # live round-trip; raises with a hint
+require_available("gemini")   # raises with a fix-it hint if the key is missing
 ```
 
-### Hosted environment variables
+### Hosted credentials
 
-| Variable | Purpose |
-|----------|---------|
-| `NPCPY_DECISIONS_PROVIDER` | Default provider when `backend="hosted"` is used (`openai`, `gemini`, `perplexity`). |
-| `NPCPY_DECISIONS_OPENAI_MODEL` / `_GEMINI_MODEL` / `_PERPLEXITY_MODEL` | Override the model name. |
-| `NPCPY_DECISIONS_OPENAI_BASE_URL` / `_GEMINI_BASE_URL` / `_PERPLEXITY_BASE_URL` | Override the base URL (proxies, gateways, local decider). |
+The only setting read from the environment is the API key, using the same
+variables the rest of `npcpy` uses: `OPENAI_API_KEY`, `GEMINI_API_KEY`, and
+`PERPLEXITY_API_KEY`. Provider and model are always passed explicitly.
+
+## Transformers Backend (local zero-shot)
+
+The `"transformers"` provider runs a HuggingFace zero-shot classifier locally -- the
+same three question types, no API key. Its `candidate_labels` scores are exactly the
+per-label probabilities a decision model returns, so `choice` maps onto them directly,
+`noul` asks `["yes", "no"]`, and `score` takes the probability-weighted average.
+
+```bash
+pip install transformers torch
+```
+
+```python
+from npcpy import DecisionSystem1
+
+decisions = DecisionSystem1(
+    provider="transformers",
+    model="facebook/bart-large-mnli",   # default
+)
+
+team = decisions.choice(
+    "I was charged twice for my order.",
+    instructions="Which team should handle this ticket?",
+    criteria={"billing": "Payments and refunds", "technical": "Bugs"},
+)
+print(team.choice, team.confidence, team.probabilities)
+
+refund = decisions.noul(
+    "I was charged twice. Please refund the extra payment.",
+    instructions="Is the customer asking for a refund?",
+)
+print(refund.noul)   # P(true)
+```
+
+Both `transformers` and `torch` are imported lazily, so `import npcpy` stays fast and
+the dependency is only required when this provider is actually used. Any HF
+zero-shot model id works in place of the default.
 
 ## Local Backend (train your own)
 
@@ -331,13 +395,13 @@ router uses it to check whether a trained model actually covers the labels you a
 ## The `gen.decision` Interface
 
 `npcpy.gen.decision` is the unified surface over both backends. Pick a backend per call
-with `backend=`, or set it once for the process.
+with `provider=`.
 
 ```python
 from npcpy.gen.decision import DecisionSystem1, DecisionQuestion, decision_choice
 
 # Ollama, no training
-model = DecisionSystem1.from_ollama(model="nimble")
+model = DecisionSystem1.from_ollama(model="tev1:0.8b")
 result = model.decide(ticket, [
     DecisionQuestion(name="team", type="choice",
                      instructions="Which team should handle this ticket?",
@@ -354,22 +418,22 @@ decision_choice(
     ticket,
     instructions="Which team should handle this ticket?",
     criteria={"billing": "Payments and refunds", "technical": "Bugs"},
-    backend="ollama",
-    model="nimble",
+    provider="ollama",
+    model="tev1:0.8b",
 )
 ```
 
-`DecisionSystem1` also accepts `backend="ollama"`, `ollama_model=`, `ollama_base_url=`,
-or a prebuilt `ollama_config=`. `to_dict()` reports the active backend and, for Ollama,
-the resolved model and base URL.
+`DecisionSystem1` also accepts `ollama_config=` for finer control. `to_dict()` reports
+the active provider, the resolved model, and the API URL.
 
 ### Backend selection
 
 Resolution order, highest first:
 
-1. The `backend=` argument on the call. `"ollama"`, `"systemone"`, `"system_one"`, `"jev"` mean Ollama; `"local"`, `"sklearn"`, `"train"` mean the trained classifier; a hosted provider name (`"openai"`, `"gemini"`, `"perplexity"`, plus aliases such as `"pplx"` and `"google"`) selects the hosted API; `"hosted"` defers to `NPCPY_DECISIONS_PROVIDER`.
-2. The `NPCPY_SYSTEM1_BACKEND` environment variable.
-3. `"local"`.
+1. The `provider=` argument on the call -- the same values `get_llm_response` accepts: `"ollama"`, `"openai"`, `"gemini"`, `"perplexity"` (`"systemone"`, `"system_one"`, `"jev"` are accepted for Ollama).
+2. No provider given: the locally trained classifier is used, loaded from `model_path=` or `NPCPY_SYSTEM1_MODEL`.
+
+`backend=` is still accepted as a deprecated alias for `provider=`.
 
 An unrecognised value raises `ValueError` rather than silently defaulting.
 
@@ -377,8 +441,7 @@ An unrecognised value raises `ValueError` rather than silently defaulting.
 
 | Variable | Used by | Purpose |
 |----------|---------|---------|
-| `NPCPY_SYSTEM1_BACKEND` | `gen.decision` | Default backend (`local`, `ollama`, `hosted`, or a provider name). |
-| `NPCPY_SYSTEM1_OLLAMA_MODEL` | Ollama client | Default decision model (default `nimble`). |
+| `NPCPY_SYSTEM1_OLLAMA_MODEL` | Ollama client | Default decision model (default `nimble`). Set it to use a smaller model like `tev1:0.8b`. |
 | `NPCPY_OLLAMA_BASE_URL` / `OLLAMA_HOST` | Ollama client | Ollama host; default `http://localhost:11434`. |
 | `NPCPY_SYSTEM1_MODEL` | local backend | Path to a trained model directory. |
 | `NPCPY_DECISION_MODEL` | `gen.decision` | Path to a trained model used by `load_decision_model`. |
@@ -393,8 +456,8 @@ An unrecognised value raises `ValueError` rather than silently defaulting.
 | `decision_predict(state, questions, ...)` | `System1Result` |
 | `decision_route(state, instructions, tiers, criteria=None, threshold=None, ...)` | `dict` with `tier`, `confidence`, `probabilities`, `tiers` |
 
-Each accepts `model_path=`, `backend=`, `model=`, and `base_url=`. For hosted providers,
-`model` is the API model name and `base_url` overrides the provider endpoint.
+Each accepts `model_path=`, `provider=`, `model=`, `api_url=`, and `api_key=`. A hosted
+providers requires `model=`.
 
 ## Routing
 
@@ -421,8 +484,8 @@ route = decision_route(
     tiers=router.tiers,
     criteria=router.criteria,
     threshold=0.6,
-    backend="ollama",
-    model="nimble",
+    provider="ollama",
+    model="tev1:0.8b",
 )
 print(route)
 # {'tier': 'engineering', 'confidence': 0.91, 'probabilities': {...}, 'tiers': [...]}
@@ -438,16 +501,16 @@ that way a stale or narrow model degrades gracefully instead of guessing.
 
 ## Over HTTP
 
-The Flask server exposes the same decisions. `backend`, `model`, and `base_url` are
+The Flask server exposes the same decisions. `provider`, `model`, and `api_url` are
 accepted per request on all of these endpoints:
 
 | Endpoint | Body fields |
 |----------|-------------|
-| `POST /api/system1/predict` | `state`, `questions`, `backend`, `model`, `base_url`, `model_path` |
+| `POST /api/system1/predict` | `state`, `questions`, `provider`, `model`, `api_url`, `model_path` |
 | `POST /api/system1/choice` | `state`, `instructions`, `criteria`, ... |
 | `POST /api/system1/noul` | `state`, `instructions`, ... |
 | `POST /api/system1/score` | `state`, `instructions`, `criteria`, ... |
-| `POST /api/decision/predict` | `state`, `questions` (list), `backend`, `model`, `base_url`, `model_path` |
+| `POST /api/decision/predict` | `state`, `questions` (list), `provider`, `model`, `api_url`, `model_path` |
 | `POST /api/decision/choice` | `state`, `instructions`, `criteria`, ... |
 | `POST /api/decision/noul` | `state`, `instructions`, ... |
 | `POST /api/decision/score` | `state`, `instructions`, `criteria`, ... |
@@ -467,7 +530,7 @@ curl -s localhost:5337/api/system1/predict \
                  "instructions": "Does the customer explicitly ask for a refund?"}
     },
     "backend": "ollama",
-    "model": "nimble"
+    "model": "tev1:0.8b"
   }'
 ```
 
@@ -488,7 +551,7 @@ decision without leaving the template:
                  'instructions': 'Which team should handle this ticket?',
                  'criteria': {'billing': 'Payments and refunds',
                               'technical': 'Bugs and integrations'}}},
-       model='nimble')
+       model='tev1:0.8b')
    context['route'] = team['answers']['team']['choice']
    output = str(context['route'])"},
 ] %}

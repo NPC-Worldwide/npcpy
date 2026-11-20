@@ -27,10 +27,12 @@ from npcpy.gen.systemone import (
     load_ollama_system1,
 )
 from npcpy.gen.decisions import (
-    PROVIDER_ALIASES as _HOSTED_PROVIDER_ALIASES,
+    PROVIDERS,
+    DEFAULT_TRANSFORMERS_MODEL,
+    TRANSFORMERS_PROVIDER,
     DecisionsClient,
-    DecisionsConfig,
-    load_decisions,
+    TransformersDecisionsClient,
+    load_transformers_decisions,
 )
 
 
@@ -66,52 +68,44 @@ def _state_to_text(state: Union[str, Dict[str, Any], List[Any]]) -> str:
     return json.dumps(state, ensure_ascii=False, default=str)
 
 
-_OLLAMA_BACKEND_ALIASES = {"ollama", "systemone", "system_one", "system-1", "jev"}
-_LOCAL_BACKEND_ALIASES = {"local", "sklearn", "train", "local_embeddings", "embedded"}
-_HOSTED_BACKEND_ALIASES = {"hosted", "api", "decisions", "cloud", "remote"}
+_OLLAMA_PROVIDER_ALIASES = {"ollama", "systemone", "system_one", "system-1", "jev"}
+_HOSTED_PROVIDERS = frozenset(PROVIDERS)
+_NAMED_PROVIDERS = _HOSTED_PROVIDERS | {"ollama", TRANSFORMERS_PROVIDER}
 
 
-def _resolve_backend(backend: Optional[str]) -> str:
-    """Resolve the decision backend, falling back to ``NPCPY_SYSTEM1_BACKEND``.
+def _resolve_provider(
+    provider: Optional[str] = None,
+    backend: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve the named decision provider, mirroring ``get_llm_response``.
 
-    Returns ``"local"``, ``"ollama"``, ``"hosted"``, or ``"hosted:<provider>"``
-    when the caller names a hosted provider directly (e.g. ``"gemini"``).
+    ``provider=`` takes the same values it does in
+    :func:`npcpy.llm_funcs.get_llm_response`: ``"ollama"``, ``"openai"``,
+    ``"gemini"``, ``"perplexity"``. ``backend=`` is retained as a deprecated
+    alias.
+
+    Returns a provider name, or ``None`` when no provider was given -- in which
+    case the locally trained classifier is used (pass ``model_path=``).
     """
-    if backend is None:
-        backend = os.environ.get("NPCPY_SYSTEM1_BACKEND", "local")
-    key = str(backend).strip().lower()
-    if key in _OLLAMA_BACKEND_ALIASES:
+    raw = provider if provider is not None else backend
+    if raw is None:
+        return None
+    key = str(raw).strip().lower()
+    if key in _OLLAMA_PROVIDER_ALIASES:
         return "ollama"
-    if key in _LOCAL_BACKEND_ALIASES:
-        return "local"
-    if key in _HOSTED_BACKEND_ALIASES:
-        return "hosted"
-    if key.startswith("hosted:") or key.startswith("hosted_"):
-        provider = key.split(":", 1)[-1].split("_", 1)[-1]
-        return f"hosted:{_resolve_hosted_provider(provider)}"
-    if key in _HOSTED_PROVIDER_ALIASES:
-        return f"hosted:{_HOSTED_PROVIDER_ALIASES[key]}"
+    if key == TRANSFORMERS_PROVIDER:
+        return TRANSFORMERS_PROVIDER
+    if key in _HOSTED_PROVIDERS:
+        return key
     raise ValueError(
-        f"Unknown decision backend: {backend!r}. Expected 'local', 'ollama', "
-        f"'hosted', or a hosted provider ({', '.join(sorted(set(_HOSTED_PROVIDER_ALIASES.values())))})."
+        f"Unknown decision provider: {raw!r}. Expected one of: "
+        f"{', '.join(sorted(_NAMED_PROVIDERS))}."
     )
 
 
-def _resolve_hosted_provider(provider: Optional[str]) -> str:
-    if provider:
-        return provider
-    return os.environ.get("NPCPY_DECISIONS_PROVIDER", "openai")
-
-
-def _is_hosted(backend: str) -> bool:
-    return backend == "hosted" or backend.startswith("hosted:")
-
-
-def _hosted_provider_for(backend: str) -> Optional[str]:
-    if not _is_hosted(backend):
-        return None
-    _, _, provider = backend.partition(":")
-    return provider or None
+def _resolve_backend(backend: Optional[str]) -> Optional[str]:
+    """Deprecated alias for :func:`_resolve_provider` (kept for ``npcpy.serve``)."""
+    return _resolve_provider(backend=backend)
 
 
 def _default_ollama_config(
@@ -213,89 +207,112 @@ def load_decision_examples(
 class DecisionSystem1:
     """System One decision helper.
 
-    ``backend="local"`` (default) trains a small classifier over embeddings
-    (see :mod:`npcpy.ft.system1`). ``backend="ollama"`` delegates to a local
-    Ollama System One model (``/v1/systemone``, Ollama >= 0.35.0), which needs
-    no training.
+    ``provider`` names the decision engine, exactly as it does in
+    :func:`npcpy.llm_funcs.get_llm_response`:
+
+    * ``"ollama"`` -- a local Ollama System One model (``/v1/systemone``,
+      Ollama >= 0.35.0), which needs no training.
+    * ``"openai"`` / ``"gemini"`` / ``"perplexity"`` -- a hosted Decisions API.
+    * ``"transformers"`` -- a local HuggingFace zero-shot classifier
+      (``pip install transformers torch``).
+
+    ``model``, ``api_url``, and ``api_key`` carry the same meaning as in
+    ``get_llm_response``.
+
+    With no ``provider``, a locally trained classifier is used; pass
+    ``model_path=`` to load one from disk.
     """
 
     def __init__(
         self,
         model_path: Optional[str] = None,
         config: Optional[System1Config] = None,
-        backend: Optional[str] = None,
-        ollama_model: Optional[str] = None,
-        ollama_base_url: Optional[str] = None,
-        ollama_config: Optional[OllamaSystem1Config] = None,
         provider: Optional[str] = None,
-        api_model: Optional[str] = None,
+        model: Optional[str] = None,
+        api_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        backend: Optional[str] = None,          # deprecated alias for provider
+        ollama_model: Optional[str] = None,     # deprecated: use model
+        ollama_base_url: Optional[str] = None,  # deprecated: use api_url
+        ollama_config: Optional[OllamaSystem1Config] = None,
     ):
-        self.backend = _resolve_backend(backend)
+        self.provider = _resolve_provider(provider, backend)
         self.config = config or System1Config()
         self.predictor: Optional[Any] = None
         self.model_path: Optional[str] = None
         self.ollama_config: Optional[OllamaSystem1Config] = None
-        self.decisions_config: Optional[DecisionsConfig] = None
-        if self.backend == "ollama":
+        self.decisions_client: Optional[DecisionsClient] = None
+        self.transformers_client: Optional[TransformersDecisionsClient] = None
+
+        if self.provider is None:
+            if model_path is not None:
+                self.load(model_path)
+        elif self.provider == "ollama":
             self.ollama_config = ollama_config or _default_ollama_config(
-                model=ollama_model, base_url=ollama_base_url
+                model=model or ollama_model,
+                base_url=api_url or ollama_base_url,
             )
             self.predictor = OllamaSystem1Client(self.ollama_config)
-        elif _is_hosted(self.backend):
-            hosted_provider = _hosted_provider_for(self.backend) or _resolve_hosted_provider(provider)
-            self.decisions_config = DecisionsConfig(
-                provider=hosted_provider,
-                model=api_model,
-                api_key=api_key,
-                base_url=base_url,
+        elif self.provider == TRANSFORMERS_PROVIDER:
+            self.transformers_client = load_transformers_decisions(
+                model=model or DEFAULT_TRANSFORMERS_MODEL,
             )
-            self.predictor = DecisionsClient(self.decisions_config)
-        elif model_path is not None:
-            self.load(model_path)
+            self.predictor = self.transformers_client
+        elif self.provider in _HOSTED_PROVIDERS:
+            if not model:
+                raise ValueError(
+                    f"provider={self.provider!r} requires model=, e.g. "
+                    f"DecisionSystem1(provider='gemini', model='gemini-decision-1')."
+                )
+            self.decisions_client = DecisionsClient(
+                provider=self.provider,
+                model=model,
+                api_url=api_url,
+                api_key=api_key,
+            )
+            self.predictor = self.decisions_client
 
     @classmethod
     def from_ollama(
         cls,
         model: Optional[str] = None,
-        base_url: Optional[str] = None,
+        api_url: Optional[str] = None,
         **kwargs,
     ) -> "DecisionSystem1":
         """Build a decision helper backed by a local Ollama decision model."""
-        return cls(backend="ollama", ollama_model=model, ollama_base_url=base_url, **kwargs)
+        return cls(provider="ollama", model=model, api_url=api_url, **kwargs)
 
     @classmethod
     def from_hosted(
         cls,
         provider: str,
-        model: Optional[str] = None,
+        model: str,
         api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        **kwargs,
+        api_url: Optional[str] = None,
     ) -> "DecisionSystem1":
-        """Build a decision helper backed by a hosted Decisions API.
-
-        ``provider`` is one of ``openai``, ``gemini``, or ``perplexity``.
-        """
+        """Build a decision helper backed by a hosted Decisions API."""
         return cls(
-            backend="hosted",
             provider=provider,
-            api_model=model,
+            model=model,
             api_key=api_key,
-            base_url=base_url,
-            **kwargs,
+            api_url=api_url,
         )
 
     def load(self, path: str) -> "DecisionSystem1":
-        if self.backend == "ollama":
+        if self.provider == "ollama":
             raise ValueError(
-                f"The Ollama backend does not load local model paths; set ollama_model and run `ollama pull <model>` instead."
+                "The Ollama provider does not load local model paths; pass model= "
+                "and run `ollama pull <model>` instead."
             )
-        if _is_hosted(self.backend):
+        if self.provider in _HOSTED_PROVIDERS:
             raise ValueError(
-                "The hosted Decisions API backend does not load local model paths; "
-                "set provider/api_model instead."
+                "Hosted providers do not load local model paths; pass provider= "
+                "and model= instead."
+            )
+        if self.provider == TRANSFORMERS_PROVIDER:
+            raise ValueError(
+                "provider='transformers' loads its own HuggingFace model; pass "
+                "model='<hf-model-id>' instead of a local model path."
             )
         self.predictor = load_system1(path)
         self.model_path = path
@@ -306,13 +323,14 @@ class DecisionSystem1:
         examples: Union[List[System1Example], List[Dict[str, Any]]],
         output_dir: Optional[str] = None,
     ) -> str:
-        if self.backend == "ollama":
+        if self.provider == "ollama":
             raise ValueError(
-                f"The Ollama System One backend is pre-trained; no training is required. Pull a decision model with `ollama pull nimble`."
+                "The Ollama provider is pre-trained; no training is required. "
+                "Pull a decision model with `ollama pull tev1:0.8b`."
             )
-        if _is_hosted(self.backend):
+        if self.provider in _HOSTED_PROVIDERS:
             raise ValueError(
-                "The hosted Decisions API backend is pre-trained; no training is required."
+                "Hosted providers are pre-trained; no training is required."
             )
         if examples and isinstance(examples[0], dict):
             examples = _examples_from_records(examples)
@@ -417,27 +435,22 @@ class DecisionSystem1:
         return batch
 
     def to_dict(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "backend": self.backend,
-            "model_path": self.model_path,
-            "config": {
-                "encoder_name": self.config.encoder_name,
-                "classifier": self.config.classifier,
-                "output_dir": self.config.output_dir,
-                "device": self.config.device,
-            },
+        payload: Dict[str, Any] = {"model_path": self.model_path}
+        if self.provider is not None:
+            payload["provider"] = self.provider
+        payload["config"] = {
+            "encoder_name": self.config.encoder_name,
+            "classifier": self.config.classifier,
+            "output_dir": self.config.output_dir,
+            "device": self.config.device,
         }
         if self.ollama_config is not None:
-            payload["ollama"] = {
-                "model": self.ollama_config.model,
-                "base_url": self.ollama_config.resolved_base_url(),
-            }
-        if self.decisions_config is not None:
-            payload["hosted"] = {
-                "provider": self.decisions_config.provider,
-                "model": self.decisions_config.resolved_model(),
-                "base_url": self.decisions_config.resolved_base_url(),
-            }
+            payload["model"] = self.ollama_config.model
+            payload["api_url"] = self.ollama_config.resolved_base_url()
+        if self.decisions_client is not None:
+            payload.update(self.decisions_client.to_dict())
+        if self.transformers_client is not None:
+            payload.update(self.transformers_client.to_dict())
         return payload
 
 
@@ -461,7 +474,7 @@ def train_decision_model(
 
 
 def load_decision_model(path: str) -> DecisionSystem1:
-    return DecisionSystem1(backend="local").load(path)
+    return DecisionSystem1().load(path)
 
 
 _default_decision_model: Optional[DecisionSystem1] = None
@@ -477,32 +490,6 @@ def _get_default_decision_model() -> Optional[DecisionSystem1]:
         _default_decision_model = load_decision_model(env_path)
         _default_decision_model_path = env_path
     return _default_decision_model
-
-
-_default_hosted_clients: Dict[tuple, DecisionsClient] = {}
-
-
-def _get_hosted_client(
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
-) -> DecisionsClient:
-    """Return a cached :class:`DecisionsClient` keyed by provider + overrides."""
-    if model is not None or api_key is not None or base_url is not None:
-        return load_decisions(provider=provider, model=model, api_key=api_key, base_url=base_url)
-    resolved = _resolve_hosted_provider(provider)
-    suffix = resolved.upper()
-    key = (
-        resolved,
-        os.environ.get(f"NPCPY_DECISIONS_{suffix}_MODEL"),
-        os.environ.get(f"NPCPY_DECISIONS_{suffix}_BASE_URL"),
-    )
-    client = _default_hosted_clients.get(key)
-    if client is None:
-        client = load_decisions(provider=resolved)
-        _default_hosted_clients[key] = client
-    return client
 
 
 def _get_ollama_client(
@@ -523,27 +510,43 @@ def _get_ollama_client(
     return _default_ollama_client
 
 
+def _client_for(
+    provider: str,
+    model: Optional[str],
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Union[OllamaSystem1Client, DecisionsClient, TransformersDecisionsClient]:
+    """Build the client for a named provider."""
+    if provider == "ollama":
+        return _get_ollama_client(model, api_url)
+    if provider == TRANSFORMERS_PROVIDER:
+        return load_transformers_decisions(model=model or DEFAULT_TRANSFORMERS_MODEL)
+    if not model:
+        raise ValueError(
+            f"provider={provider!r} requires model=, e.g. "
+            f"decision_choice(..., provider='{provider}', model='<model-name>')."
+        )
+    return DecisionsClient(provider=provider, model=model, api_url=api_url, api_key=api_key)
+
+
 def decision_choice(
     state: Union[str, Dict[str, Any]],
     instructions: str,
     criteria: Dict[str, str],
     model_path: Optional[str] = None,
     question_name: str = "default",
-    backend: Optional[str] = None,
+    provider: Optional[str] = None,
     model: Optional[str] = None,
-    base_url: Optional[str] = None,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    backend: Optional[str] = None,  # deprecated alias for provider
 ) -> ChoiceResult:
     if model_path is not None:
         return load_decision_model(model_path).choice(state, instructions, criteria, question_name=question_name)
-    resolved_backend = _resolve_backend(backend)
-    if resolved_backend == "ollama":
-        return _get_ollama_client(model, base_url).choice(
-            state, instructions, criteria, question_name=question_name
-        )
-    if _is_hosted(resolved_backend):
-        return _get_hosted_client(
-            _hosted_provider_for(resolved_backend), model, None, base_url
-        ).choice(state, instructions, criteria, question_name=question_name)
+    resolved = _resolve_provider(provider, backend)
+    if resolved is not None:
+        client = _client_for(resolved, model, api_url, api_key)
+        return client.choice(state, instructions, criteria, question_name=question_name)
     default_model = _get_default_decision_model()
     if default_model is not None:
         return default_model.choice(state, instructions, criteria, question_name=question_name)
@@ -556,21 +559,18 @@ def decision_score(
     criteria: List[str],
     model_path: Optional[str] = None,
     question_name: str = "default",
-    backend: Optional[str] = None,
+    provider: Optional[str] = None,
     model: Optional[str] = None,
-    base_url: Optional[str] = None,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    backend: Optional[str] = None,  # deprecated alias for provider
 ) -> ScoreResult:
     if model_path is not None:
         return load_decision_model(model_path).score(state, instructions, criteria, question_name=question_name)
-    resolved_backend = _resolve_backend(backend)
-    if resolved_backend == "ollama":
-        return _get_ollama_client(model, base_url).score(
-            state, instructions, criteria, question_name=question_name
-        )
-    if _is_hosted(resolved_backend):
-        return _get_hosted_client(
-            _hosted_provider_for(resolved_backend), model, None, base_url
-        ).score(state, instructions, criteria, question_name=question_name)
+    resolved = _resolve_provider(provider, backend)
+    if resolved is not None:
+        client = _client_for(resolved, model, api_url, api_key)
+        return client.score(state, instructions, criteria, question_name=question_name)
     default_model = _get_default_decision_model()
     if default_model is not None:
         return default_model.score(state, instructions, criteria, question_name=question_name)
@@ -582,21 +582,18 @@ def decision_noul(
     instructions: str,
     model_path: Optional[str] = None,
     question_name: str = "default",
-    backend: Optional[str] = None,
+    provider: Optional[str] = None,
     model: Optional[str] = None,
-    base_url: Optional[str] = None,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    backend: Optional[str] = None,  # deprecated alias for provider
 ) -> NoulResult:
     if model_path is not None:
         return load_decision_model(model_path).noul(state, instructions, question_name=question_name)
-    resolved_backend = _resolve_backend(backend)
-    if resolved_backend == "ollama":
-        return _get_ollama_client(model, base_url).noul(
-            state, instructions, question_name=question_name
-        )
-    if _is_hosted(resolved_backend):
-        return _get_hosted_client(
-            _hosted_provider_for(resolved_backend), model, None, base_url
-        ).noul(state, instructions, question_name=question_name)
+    resolved = _resolve_provider(provider, backend)
+    if resolved is not None:
+        client = _client_for(resolved, model, api_url, api_key)
+        return client.noul(state, instructions, question_name=question_name)
     default_model = _get_default_decision_model()
     if default_model is not None:
         return default_model.noul(state, instructions, question_name=question_name)
@@ -615,19 +612,18 @@ def decision_predict(
     state: Union[str, Dict[str, Any]],
     questions: List[DecisionQuestion],
     model_path: Optional[str] = None,
-    backend: Optional[str] = None,
+    provider: Optional[str] = None,
     model: Optional[str] = None,
-    base_url: Optional[str] = None,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    backend: Optional[str] = None,  # deprecated alias for provider
 ) -> System1Result:
     if model_path is not None:
         return load_decision_model(model_path).decide(state, questions)
-    resolved_backend = _resolve_backend(backend)
-    if resolved_backend == "ollama":
-        return _get_ollama_client(model, base_url).predict(state, _questions_payload(questions))
-    if _is_hosted(resolved_backend):
-        return _get_hosted_client(
-            _hosted_provider_for(resolved_backend), model, None, base_url
-        ).predict(state, _questions_payload(questions))
+    resolved = _resolve_provider(provider, backend)
+    if resolved is not None:
+        client = _client_for(resolved, model, api_url, api_key)
+        return client.predict(state, _questions_payload(questions))
     default_model = _get_default_decision_model()
     if default_model is not None:
         return default_model.decide(state, questions)
@@ -659,7 +655,7 @@ def _route_with_fallback(
     predictor: Optional[Any],
 ) -> Dict[str, Any]:
     if predictor is not None:
-        if isinstance(predictor, (OllamaSystem1Client, DecisionsClient)):
+        if isinstance(predictor, (OllamaSystem1Client, DecisionsClient, TransformersDecisionsClient)):
             result = predictor.choice(
                 state, instructions, router.criteria, question_name=question_name
             )
@@ -686,19 +682,17 @@ def decision_route(
     threshold: Optional[float] = None,
     model_path: Optional[str] = None,
     question_name: str = "default",
-    backend: Optional[str] = None,
+    provider: Optional[str] = None,
     model: Optional[str] = None,
-    base_url: Optional[str] = None,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    backend: Optional[str] = None,  # deprecated alias for provider
 ) -> Dict[str, Any]:
     router = DecisionRouter(tiers=tiers, criteria=criteria)
     predictor: Optional[Any] = None
-    resolved_backend = _resolve_backend(backend)
-    if resolved_backend == "ollama":
-        predictor = _get_ollama_client(model, base_url)
-    elif _is_hosted(resolved_backend):
-        predictor = _get_hosted_client(
-            _hosted_provider_for(resolved_backend), model, None, base_url
-        )
+    resolved = _resolve_provider(provider, backend)
+    if resolved is not None:
+        predictor = _client_for(resolved, model, api_url, api_key)
     elif model_path is not None:
         predictor = load_decision_model(model_path).predictor
     else:

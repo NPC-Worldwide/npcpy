@@ -71,16 +71,10 @@ The bird **shows the way to hidden water (and sometimes to buried silver or gold
 ### Typed decisions instead of generated text
 
 Sometimes you do not want prose back from a model. You want a label, a yes/no
-probability, or a value on a rubric, fast, with a confidence score your code can
+probability, or a value on a rubric, fast, with a confidence your code can
 threshold on. That is what decision models are for. `npcpy` exposes one surface
-(`choice` / `noul` / `score` / `predict`) across three interchangeable backends,
-and every backend returns the same result objects.
-
-| Backend | Needs | Model |
-|---------|-------|-------|
-| `"local"` | `pip install npcpy[system1]` (scikit-learn + sentence-transformers) | your own trained classifier |
-| `"ollama"` | Ollama >= 0.35.0 | `ollama pull tev1:0.8b` (or `nimble`) |
-| `"gemini"` / `"perplexity"` / `"openai"` | `GEMINI_API_KEY` / `PERPLEXITY_API_KEY` / `OPENAI_API_KEY` | `gemini-decision-1` / `pplx-decider-latest` / `gpt-6-luna` |
+(`choice` / `noul` / `score` / `predict`) and every backend returns the same
+result objects.
 
 The local Ollama backend needs no API key and no training, so it is the quickest
 way to try this:
@@ -92,7 +86,7 @@ ollama pull tev1:0.8b
 ```python
 from npcpy import DecisionSystem1
 
-decisions = DecisionSystem1.from_ollama(model="tev1:0.8b")   # fully local
+decisions = DecisionSystem1.from_ollama(model="tev1:0.8b")
 
 ticket = "I was charged twice for my order. Please refund the extra payment."
 
@@ -141,19 +135,19 @@ result = decisions.decide(ticket, questions)
 print({name: answer.to_dict() for name, answer in result.answers.items()})
 ```
 
-Hosted decision models use the exact same calls. Swap in a backend and nothing
-else changes:
+Hosted decision models use the exact same `model` / `provider` / `api_key`
+arguments as `get_llm_response`, so there is nothing new to learn. The API key
+defaults to the usual environment variable:
 
 ```python
 from npcpy import DecisionSystem1
 
-decisions = DecisionSystem1.from_hosted(provider="gemini")   # GEMINI_API_KEY
-# or: DecisionSystem1.from_hosted(provider="perplexity")   # PERPLEXITY_API_KEY
-# or: DecisionSystem1.from_hosted(provider="openai")       # OPENAI_API_KEY
+decisions = DecisionSystem1(provider="gemini", model="gemini-decision-1")
+# or: DecisionSystem1(provider="perplexity", model="pplx-decider-latest")
+# or: DecisionSystem1(provider="openai",     model="gpt-6-luna")
 ```
 
-The functional helpers accept a `backend` and dispatch the same way, which is
-handy when you want to pick a backend from config:
+The functional helpers accept the same arguments:
 
 ```python
 from npcpy import decision_choice, decision_noul
@@ -161,14 +155,15 @@ from npcpy import decision_choice, decision_noul
 decision_noul(
     ticket,
     instructions="Is this a refund request?",
-    backend="ollama",
+    provider="ollama",
     model="tev1:0.8b",
 )
 decision_choice(
     ticket,
     instructions="Which team?",
     criteria={"billing": "Payments", "technical": "Bugs"},
-    backend="gemini",
+    provider="gemini",
+    model="gemini-decision-1",
 )
 ```
 
