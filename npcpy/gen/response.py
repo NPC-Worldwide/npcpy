@@ -2701,6 +2701,10 @@ def get_litellm_response(
         api_url = api_url or os.environ.get("REQUESTY_API_URL") or "https://router.requesty.ai/v1"
         api_key = api_key or os.environ.get("REQUESTY_API_KEY")
         provider = "openai"
+    elif provider == 'aigrow':
+        api_url = api_url or os.environ.get("AIGROW_API_URL") or "https://aigrow.gg/v1"
+        api_key = api_key or os.environ.get("AIGROW_API_KEY")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:

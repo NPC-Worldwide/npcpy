@@ -1119,6 +1119,16 @@ model_path = run_sft(X_train, y_train, config=sft_config, format_style="llama")
 
 Works with all major LLM providers through LiteLLM: `airllm`, `anthropic`, `deepseek`, `gemini`, `ollama`, `openai`, `openai-like`, and more.
 
+<details><summary>AIGROW</summary>
+
+Set `AIGROW_API_KEY` and use `provider="aigrow"` with a model ID from AIGROW's public model list (`GET https://aigrow.gg/v1/models`, no key needed, per-token prices included), for example `claude-haiku-5.5`, `gpt-6.2-sol` or `gemini-4-neon`. IDs are plain slugs without a vendor prefix. Requests go to the OpenAI-compatible Base URL `https://aigrow.gg/v1`; set `AIGROW_API_URL` to override it. Usage is prepaid; keys are created in the [AIGROW dashboard](https://aigrow.gg/dashboard/api).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="claude-haiku-5.5", provider="aigrow")
+print(response["response"])
+```
+
+</details>
 <details><summary>API Route</summary>
 
 Set `API_ROUTE_API_KEY` and use `provider="api-route"` with an exact model ID from your account's authenticated `GET /v1/models` response, for example `gpt-6.1-sol`. [API Route](https://api-route.com) uses the OpenAI-compatible Base URL `https://global.api-route.com/v1`; set `API_ROUTE_API_URL` to override it. The alias `api_route` is also accepted. Explicit `api_url` and `api_key` arguments take precedence.
