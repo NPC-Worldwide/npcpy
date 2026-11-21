@@ -3029,6 +3029,13 @@ def get_litellm_response(
             if hasattr(resp.choices[0].message, 'tool_calls') and resp.choices[0].message.tool_calls:
                 raw_tcs = resp.choices[0].message.tool_calls
                 result["tool_calls"] = raw_tcs
+                # Providers with thinking mode (DeepSeek, Anthropic) require the
+                # reasoning to be sent back with the tool-call turn; plain
+                # answers keep the history unchanged.
+                for _key in ("reasoning_content", "thinking_blocks"):
+                    _val = getattr(resp.choices[0].message, _key, None)
+                    if _val:
+                        assistant_msg[_key] = _val
                 tc_dicts = []
                 for tc in raw_tcs:
                     if isinstance(tc, dict):
