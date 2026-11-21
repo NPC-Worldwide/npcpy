@@ -55,24 +55,26 @@ def test_defaults_unchanged(response_module, generate):
     kw = generate.call_args.kwargs
     assert kw["max_new_tokens"] == 256 and kw["temperature"] == 0.7
     assert "top_p" not in kw
+    assert "top_k" not in kw
 
 
 def test_user_params_reach_generate(response_module, generate):
     response_module.get_transformers_response(
         prompt="hi", model=generate.model, tokenizer=generate.tokenizer,
-        max_tokens=17, temperature=0.2, top_p=0.5,
+        max_tokens=17, temperature=0.2, top_p=0.5, top_k=7,
     )
     kw = generate.call_args.kwargs
     assert kw["max_new_tokens"] == 17
     assert kw["temperature"] == 0.2
     assert kw["top_p"] == 0.5
+    assert kw["top_k"] == 7
 
 
 def test_zero_temperature_is_greedy(response_module, generate):
     response_module.get_transformers_response(
         prompt="hi", model=generate.model, tokenizer=generate.tokenizer,
-        temperature=0, top_p=0.5,
+        temperature=0, top_p=0.5, top_k=7,
     )
     kw = generate.call_args.kwargs
     assert kw["do_sample"] is False
-    assert "temperature" not in kw and "top_p" not in kw
+    assert "temperature" not in kw and "top_p" not in kw and "top_k" not in kw
