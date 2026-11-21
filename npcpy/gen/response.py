@@ -1313,12 +1313,11 @@ def get_llamacpp_response(
     }
 
     if prompt:
-        if messages and messages[-1]["role"] == "user":
-            messages[-1]["content"] = prompt
+        if result["messages"] and result["messages"][-1]["role"] == "user":
+            result["messages"][-1]["content"] = prompt
         else:
-            if not messages:
-                messages = []
-            messages.append({"role": "user", "content": prompt})
+            result["messages"].append({"role": "user", "content": prompt})
+    messages = result["messages"]
 
     try:
         n_ctx = kwargs.get("n_ctx", 32768)

@@ -107,3 +107,21 @@ def test_tool_call_without_content(response_module, completion, auto_process, wi
         assistant = result["messages"][-1]
     assert assistant["tool_calls"] == tool_calls
     assert assistant["content"] is None
+
+
+def test_user_turn_recorded_without_mutating_caller(response_module, completion):
+    completion.return_value = {"choices": [{"message": {
+        "role": "assistant", "content": "Hi there",
+    }}]}
+    history = [{"role": "system", "content": "Be brief."}]
+    result = response_module.get_llamacpp_response(
+        prompt="Hello", model="test.gguf", messages=history,
+    )
+    assert result["messages"] == [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there"},
+    ]
+    assert history == [{"role": "system", "content": "Be brief."}]
+    # the model saw the user turn (the list is later extended with the reply)
+    assert {"role": "user", "content": "Hello"} in completion.call_args.kwargs["messages"]
