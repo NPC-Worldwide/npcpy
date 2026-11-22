@@ -193,6 +193,7 @@ AirLLM loads and processes model layers sequentially, allowing you to run models
 
 | Provider | Example Model | Notes |
 |----------|--------------|-------|
+| `aigrow` | `claude-haiku-5.5` | [AIGROW](https://aigrow.gg/ai-api) prepaid OpenAI-compatible API for Claude, GPT, Gemini, Grok, Qwen and Kimi models under plain IDs (`GET https://aigrow.gg/v1/models`); requires `AIGROW_API_KEY`, optional `AIGROW_API_URL` override |
 | `airllm` | `Qwen/Qwen2.5-7B-Instruct` | Layer-by-layer local inference |
 | `anthropic` | `claude-sonnet-4` | Requires `ANTHROPIC_API_KEY` |
 | `api-route` (alias `api_route`) | `gpt-6.1-sol` | [API Route](https://api-route.com) OpenAI-compatible gateway; requires `API_ROUTE_API_KEY`, optional `API_ROUTE_API_URL` override |
