@@ -4160,8 +4160,8 @@ class Agent(NPC):
 
             stream_iter = response.get("response", []) if isinstance(response, dict) else response
             usage = response.get("usage", {}) if isinstance(response, dict) else {}
-            total_input_tokens += usage.get("input_tokens", 0) or 0
-            total_output_tokens += usage.get("output_tokens", 0) or 0
+            iter_input_tokens = usage.get("input_tokens", 0) or 0
+            iter_output_tokens = usage.get("output_tokens", 0) or 0
 
             collected_content = ""
             collected_tool_calls = []
@@ -4204,15 +4204,15 @@ class Agent(NPC):
                         inp = getattr(chunk_usage, "prompt_tokens", None) or (chunk_usage.get("prompt_tokens", 0) if isinstance(chunk_usage, dict) else 0)
                         out = getattr(chunk_usage, "completion_tokens", None) or (chunk_usage.get("completion_tokens", 0) if isinstance(chunk_usage, dict) else 0)
                         if inp:
-                            total_input_tokens = inp
+                            iter_input_tokens = inp
                         if out:
-                            total_output_tokens = out
+                            iter_output_tokens = out
                     prompt_eval = getattr(chunk, "prompt_eval_count", None)
                     eval_count = getattr(chunk, "eval_count", None)
                     if prompt_eval:
-                        total_input_tokens = prompt_eval
+                        iter_input_tokens = prompt_eval
                     if eval_count:
-                        total_output_tokens = eval_count
+                        iter_output_tokens = eval_count
 
             elif isinstance(stream_iter, str):
                 collected_content = stream_iter
@@ -4241,6 +4241,9 @@ class Agent(NPC):
                         "finish_reason": None,
                     }],
                 }
+
+            total_input_tokens += iter_input_tokens
+            total_output_tokens += iter_output_tokens
 
             if not collected_tool_calls:
                 if collected_content:
