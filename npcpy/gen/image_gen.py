@@ -180,9 +180,11 @@ def openai_image_gen(
                 processed_images.append(img_byte_arr)
         
         try:
+            # One file stays a single upload. Two or more are the array images.edit accepts.
+            image = processed_images if len(processed_images) > 1 else processed_images[0]
             result = client.images.edit(
                 model=model,
-                image=processed_images[0],
+                image=image,
                 prompt=prompt,
                 n=n_images,
                 size=size_str,
