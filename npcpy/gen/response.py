@@ -411,6 +411,8 @@ Do not include any additional markdown formatting or leading ```json tags in you
        generate_kwargs["temperature"] = temperature
        if kwargs.get("top_p") is not None:
            generate_kwargs["top_p"] = kwargs["top_p"]
+       if kwargs.get("top_k") is not None:
+           generate_kwargs["top_k"] = kwargs["top_k"]
 
    with torch.no_grad():
        outputs = model.generate(
