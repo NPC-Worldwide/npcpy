@@ -846,14 +846,14 @@ class TestCheapaimodelRouting:
 
 
 class TestUberLLMRouting:
-    """Test UberLLM provider resolution and request routing."""
+    """Test MartLLM provider resolution and request routing."""
 
     def test_resolve_defaults(self, monkeypatch):
         monkeypatch.delenv("UBERLLM_API_URL", raising=False)
         monkeypatch.setenv("UBERLLM_API_KEY", "test-key")
         m, p, url, key = resolve_model_provider(model="deepseek/deepseek-v4.1-flash", provider="uberllm")
         assert (m, p) == ("deepseek/deepseek-v4.1-flash", "uberllm")
-        assert url == "https://api.uberllm.dev/v1"
+        assert url == "https://api.martllm.com/v1"
         assert key == "test-key"
 
     def test_resolve_env_url_override(self, monkeypatch):
