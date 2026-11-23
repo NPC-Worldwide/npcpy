@@ -1581,9 +1581,17 @@ Do not include any additional markdown formatting or leading ```json tags in you
             tokens = air_model.tokenizer(
                 chat_text, return_tensors="pt", truncation=True, max_length=2048
             )
+            # AirLLM inherits HF generate(): pass sampling args explicitly,
+            # and use greedy decoding for temperature <= 0.
+            do_sample = bool(temperature and temperature > 0)
+            generate_kwargs = {"max_new_tokens": max_tokens, "do_sample": do_sample}
+            if do_sample:
+                generate_kwargs["temperature"] = temperature
+                if kwargs.get("top_p") is not None:
+                    generate_kwargs["top_p"] = kwargs["top_p"]
             gen_out = air_model.generate(
                 tokens['input_ids'].cuda(),
-                max_new_tokens=max_tokens,
+                **generate_kwargs,
             )
             output_ids = gen_out.sequences[0] if hasattr(gen_out, 'sequences') else gen_out[0]
             response_content = air_model.tokenizer.decode(output_ids, skip_special_tokens=True)
