@@ -1236,7 +1236,10 @@ Do not include any additional markdown formatting or leading ```json tags in you
         max_tokens = kwargs.get("max_tokens", kwargs.get("max_new_tokens", 512))
         temperature = kwargs.get("temperature", 0.7)
         top_p = kwargs.get("top_p", 0.0)
-        sampler = make_sampler(temp=temperature, top_p=top_p)
+        sampler_kwargs = {"temp": temperature, "top_p": top_p}
+        if kwargs.get("top_k") is not None:
+            sampler_kwargs["top_k"] = kwargs["top_k"]
+        sampler = make_sampler(**sampler_kwargs)
         out = mlx_generate(
             mlx_model, tokenizer, prompt=chat_text,
             max_tokens=max_tokens, sampler=sampler, verbose=False,
