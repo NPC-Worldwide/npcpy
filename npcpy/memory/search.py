@@ -1,6 +1,6 @@
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
-from npcpy.gen.embeddings import get_ollama_embeddings
+from npcpy.gen.embeddings import get_embeddings
 from npcpy.llm_funcs import get_llm_response
 from npcpy.npc_sysenv import render_markdown
 from typing import Any, Dict, List, Optional, Union 
@@ -31,7 +31,7 @@ def search_similar_texts(
     """
 
     print(f"\nQuery to embed: {query}")
-    embedded_search_term = get_ollama_embeddings([query], embedding_model)[0]
+    embedded_search_term = get_embeddings([query], embedding_model, embedding_provider)[0]
 
     if docs_to_embed is None:
         
@@ -67,7 +67,7 @@ def search_similar_texts(
 
     
     unique_docs = list(dict.fromkeys(docs_to_embed))  
-    raw_embeddings = get_ollama_embeddings(unique_docs, embedding_model)
+    raw_embeddings = get_embeddings(unique_docs, embedding_model, embedding_provider)
 
     output_embeddings = []
     unique_doc_indices = []
