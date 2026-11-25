@@ -13,17 +13,21 @@ except Exception:
 def get_ollama_embeddings(
     inputs: List[str], model: str = "nomic-embed-text"
 ) -> List[List[float]]:
-    """Generate embeddings using Ollama. Supports both text prompts and image file paths.
-    If an input is a path to an existing image file, it is embedded as an image; otherwise as text."""
+    """Generate text embeddings using Ollama.
+    Ollama's embedding API takes no image input, so a path to an existing image file
+    raises ValueError; use get_hf_image_embeddings for images."""
     import os
     import ollama
 
     embeddings = []
     for item in inputs:
         if os.path.exists(item) and item.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")):
-            response = ollama.embed(model=model, input=item)
-        else:
-            response = ollama.embeddings(model=model, prompt=item)
+            raise ValueError(
+                f"Cannot embed image {item!r} with Ollama model {model!r}: "
+                "Ollama's embedding API only accepts text. "
+                "Use get_hf_image_embeddings for images."
+            )
+        response = ollama.embeddings(model=model, prompt=item)
         embeddings.append(response["embedding"])
     return embeddings
 
