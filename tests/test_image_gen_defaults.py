@@ -2,6 +2,7 @@ import base64
 import io
 import sys
 import types
+from unittest.mock import Mock
 
 import pytest
 from PIL import Image
@@ -35,6 +36,22 @@ def sent_models(monkeypatch):
 def test_generate_image_openai_default_model_is_not_retired(sent_models):
     image_gen.generate_image("a cat", model=None, provider="openai")
     assert sent_models and sent_models[0] not in RETIRED
+
+
+def test_generate_image_openai_with_empty_attachments(monkeypatch):
+    images = Mock()
+    images.generate.return_value = types.SimpleNamespace(data=[])
+    client = types.SimpleNamespace(images=images)
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=lambda: client))
+
+    image_gen.generate_image(
+        "a cat", model="gpt-image-2.5-sunburst", provider="openai", attachments=[]
+    )
+
+    images.generate.assert_called_once_with(
+        model="gpt-image-2.5-sunburst", prompt="a cat", n=1, size="1024x1024"
+    )
+    images.edit.assert_not_called()
 
 
 def test_edit_image_openai_default_model_is_not_retired(sent_models, tmp_path):

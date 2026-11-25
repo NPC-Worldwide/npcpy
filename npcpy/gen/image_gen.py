@@ -160,7 +160,7 @@ def openai_image_gen(
     else:
         size_str = f"{width or 1024}x{height or 1024}"
 
-    if attachments is not None:
+    if attachments:
         processed_images = []
         files_to_close = []
         for attachment in attachments:
