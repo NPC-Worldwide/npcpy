@@ -147,138 +147,32 @@ print(payload["answers"]["label"]["choice"], payload["usage"])
 `state` may be a string, an object, or an array. Objects and arrays are sent as JSON
 verbatim; anything else is JSON-encoded. It is not interpreted as chat messages.
 
-## Hosted Decisions APIs (OpenAI, Gemini, Perplexity)
+## Hosted Decisions APIs
 
-OpenAI, Google, and Perplexity all ship a hosted Decisions API. They take the same
-concept as the Ollama endpoint -- shared evidence plus named questions, typed answers
-with probabilities, no generated text -- but each spells the request a little
-differently. `npcpy.gen.decisions` normalizes all three onto the same surface, and the
-answers come back as the same `ChoiceResult` / `NoulResult` / `ScoreResult` objects as
-every other backend.
+OpenAI, Gemini, Perplexity, TypeSafe, Cloudflare, Databricks, Fireworks, OpenRouter,
+and self-hosted vLLM/Laya/Bespoke all expose decision-model endpoints. They take the
+same concept as the Ollama endpoint -- shared evidence plus named questions, typed answers
+with probabilities, no generated text. `npcpy` normalizes all of them onto a single
+flat function: `get_decision_response`.
 
-| Provider | Model | Key env var | Endpoint |
-|----------|-------|-------------|----------|
-| `"openai"` | `gpt-6-luna` | `OPENAI_API_KEY` | `POST https://api.openai.com/v1/decisions` |
-| `"gemini"` | `gemini-decision-1` | `GEMINI_API_KEY` | `POST https://generativelanguage.googleapis.com/v1beta/decisions` |
-| `"perplexity"` | `pplx-decider-latest` | `PERPLEXITY_API_KEY` | `POST https://api.perplexity.ai/v1/decisions` |
+| Provider | Example model | Key env var |
+|----------|---------------|-------------|
+| `"openai"` | `gpt-6-luna` | `OPENAI_API_KEY` |
+| `"gemini"` | `gemini-decision-1` | `GEMINI_API_KEY` |
+| `"perplexity"` | `pplx-decider-latest` | `PERPLEXITY_API_KEY` |
+| `"typesafe"` | `jev-latest` | `TYPESAFE_API_KEY` |
+| `"ollama"` | `tev1:0.8b` | none (local) |
 
-No provider SDK is required; each call is a single JSON `POST` made with `requests`,
-the same way the Ollama client works.
+Use the public entrypoint exactly like `get_llm_response`:
 
-```python
-from npcpy.gen.decisions import DecisionsClient
 
-client = DecisionsClient(provider="gemini", model="gemini-decision-1")   # reads GEMINI_API_KEY
 
-ticket = "I was charged twice for my order. Please refund the extra payment."
+You can also call the lower-level helpers directly:
 
-team = client.choice(
-    ticket,
-    instructions="Which department should handle this?",
-    criteria={"billing": "Payments, invoices, refunds.",
-              "technical": "Problems using the product.",
-              "other": "Anything else."},
-)
-print(team.choice, team.confidence, team.probabilities)
 
-refund = client.noul(ticket, instructions="Is the customer asking for a refund?")
-print(refund.noul)   # P(true)
 
-severity = client.score(
-    "Export fails in Safari but works in Chrome.",
-    instructions="How severe is this issue?",
-    criteria=["Cosmetic: appearance only.",
-              "Workaround available: another way works.",
-              "Fully blocked: no workaround."],
-)
-print(severity.score, severity.legend)
-```
-
-Provider differences the client hides for you:
-
-- **Request shape.** OpenAI uses `input` + a `questions` **array** and calls yes/no
-  questions `predicate`; Gemini uses `input` + a `questions` **map**; Perplexity uses
-  `state` + a `questions` map. You always write `noul` / `choice` / `score`, and JSON
-  states are routed into the right field per provider.
-- **Response shape.** Gemini and Perplexity key answers by question name; OpenAI returns
-  an ordered array carrying `name`. Both are normalized to `result.answers[name]`.
-- **Choice/score criteria.** OpenAI wants `choices: [{value, description}]` and
-  `levels: [{label, description}]`; Gemini and Perplexity take a mapping and a list. A
-  rubric entry like `"Fully blocked: no workaround."` is split into label and
-  description automatically.
-- **Refusals.** OpenAI can return a `refusal` answer. The client raises `DecisionsError`
-  naming the question instead of returning a silent zero.
-- **Probabilities.** OpenAI returns probabilities as a list of
-  `{value, probability}` records; the client flattens them into `{key: probability}` so
-  you can index them the same way everywhere.
-
-The unified surface works identically:
-
-```python
-from npcpy.gen.decision import DecisionSystem1, DecisionQuestion, decision_choice
-
-model = DecisionSystem1(provider="perplexity", model="pplx-decider-latest")
-result = model.decide(ticket, [
-    DecisionQuestion(name="team", type="choice",
-                     instructions="Which team should handle this ticket?",
-                     criteria={"billing": "Payments and refunds",
-                               "technical": "Bugs and integrations"}),
-    DecisionQuestion(name="refund", type="noul",
-                     instructions="Does the customer explicitly ask for a refund?"),
-])
-print(result.answers["team"].choice)
-
-# Per-call provider selection
-decision_choice(
-    ticket,
-    instructions="Which team should handle this ticket?",
-    criteria={"billing": "Payments and refunds", "technical": "Bugs"},
-    provider="gemini",
-    model="gemini-decision-1",
-)
-```
-
-`DecisionSystem1` takes the same `provider=`, `model=`, `api_url=`, and `api_key=`
-arguments as `get_llm_response`. `to_dict()` reports the resolved provider, model,
-and API URL.
-
-### The `get_decision_response` entry point
-
-`get_decision_response` is the decision-model counterpart to `get_llm_response`: same
-`provider` / `model` / `api_url` / `api_key` arguments, but it returns typed answers
-with probabilities. It gives you the raw provider payload rather than result objects.
-
-```python
-from npcpy import get_decision_response
-
-payload = get_decision_response(
-    "I was charged twice for my order. Please refund the extra payment.",
-    {
-        "refund": {"type": "noul", "instructions": "Is a refund requested?"},
-        "team": {
-            "type": "choice",
-            "instructions": "Which team should handle this?",
-            "criteria": {"billing": "Payments", "technical": "Bugs"},
-        },
-    },
-    provider="gemini",
-    model="gemini-decision-1",
-)
-print(payload["answers"]["refund"]["noul"])
-print(payload["answers"]["team"]["choice"])
-```
-
-Check configuration without spending tokens:
-
-```python
-from npcpy.gen.decisions import available, require_available
-
-available("gemini")
-# {'available': True, 'provider': 'gemini', 'api_key_present': True,
-#  'api_key_env': 'GEMINI_API_KEY', 'base_url': '...', 'error': None}
-
-require_available("gemini")   # raises with a fix-it hint if the key is missing
-```
+All supported providers return the same plain dict shape: `{type, choice|noul|score,
+confidence, probabilities}`.
 
 ### Hosted credentials
 
@@ -356,108 +250,52 @@ router uses it to check whether a trained model actually covers the labels you a
 
 ## The `gen.decision` Interface
 
-`npcpy.gen.decision` is the unified surface over both backends. Pick a backend per call
-with `provider=`.
+`npcpy.gen.decision` is the unified, class-free surface over both the hosted and
+local backends. Pick a backend per call with `provider=` and `model=`.
 
-```python
-from npcpy.gen.decision import DecisionSystem1, DecisionQuestion, decision_choice
 
-# Ollama, no training
-model = DecisionSystem1.from_ollama(model="tev1:0.8b")
-result = model.decide(ticket, [
-    DecisionQuestion(name="team", type="choice",
-                     instructions="Which team should handle this ticket?",
-                     criteria={"billing": "Payments and refunds",
-                               "technical": "Bugs and integrations",
-                               "other": "None of the above"}),
-    DecisionQuestion(name="refund", type="noul",
-                     instructions="Does the customer explicitly ask for a refund?"),
-])
-print(result.answers["team"].choice)
-
-# Or per-call on the module-level helpers
-decision_choice(
-    ticket,
-    instructions="Which team should handle this ticket?",
-    criteria={"billing": "Payments and refunds", "technical": "Bugs"},
-    provider="ollama",
-    model="tev1:0.8b",
-)
-```
-
-`DecisionSystem1` also accepts `ollama_config=` for finer control. `to_dict()` reports
-the active provider, the resolved model, and the API URL.
 
 ### Backend selection
 
-Resolution order, highest first:
+The `provider=` argument takes the same values `get_llm_response` accepts:
+`"ollama"`, `"openai"`, `"gemini"`, `"perplexity"`, `"typesafe"`, etc.
+Aliases `"systemone"`, `"system_one"`, and `"jev"` are accepted for Ollama.
 
-1. The `provider=` argument on the call -- the same values `get_llm_response` accepts: `"ollama"`, `"openai"`, `"gemini"`, `"perplexity"` (`"systemone"`, `"system_one"`, `"jev"` are accepted for Ollama).
-2. No provider given: the locally trained classifier is used, loaded from `model_path=` or `NPCPY_SYSTEM1_MODEL`.
-
-`backend=` is still accepted as a deprecated alias for `provider=`.
-
-An unrecognised value raises `ValueError` rather than silently defaulting.
+No `provider=` means you must pass `model_path=` pointing to a locally trained
+`npcpy.ft.system1` model, or set `NPCPY_SYSTEM1_MODEL`.
 
 ### Environment variables
 
 | Variable | Used by | Purpose |
 |----------|---------|---------|
-| `NPCPY_SYSTEM1_OLLAMA_MODEL` | Ollama client | Default decision model (default `nimble`). Set it to use a smaller model like `tev1:0.8b`. |
+| `NPCPY_SYSTEM1_OLLAMA_MODEL` | Ollama client | Default decision model (e.g. `tev1:0.8b`). |
 | `NPCPY_OLLAMA_BASE_URL` / `OLLAMA_HOST` | Ollama client | Ollama host; default `http://localhost:11434`. |
 | `NPCPY_SYSTEM1_MODEL` | local backend | Path to a trained model directory. |
-| `NPCPY_DECISION_MODEL` | `gen.decision` | Path to a trained model used by `load_decision_model`. |
 
 ### Module-level helpers
 
 | Function | Returns |
 |----------|---------|
-| `decision_choice(state, instructions, criteria, ...)` | `ChoiceResult` |
-| `decision_score(state, instructions, criteria, ...)` | `ScoreResult` |
-| `decision_noul(state, instructions, ...)` | `NoulResult` |
-| `decision_predict(state, questions, ...)` | `System1Result` |
-| `decision_route(state, instructions, tiers, criteria=None, threshold=None, ...)` | `dict` with `tier`, `confidence`, `probabilities`, `tiers` |
+| `decision_choice(state, instructions, criteria, ...)` | dict with `choice`, `confidence`, `probabilities` |
+| `decision_score(state, instructions, criteria, ...)` | dict with `score`, `confidence`, `probabilities`, `legend` |
+| `decision_noul(state, instructions, ...)` | dict with `noul`, `confidence`, `probabilities` |
+| `decision_predict(state, questions, ...)` | dict answer for the first question in the list |
+| `decision_route(state, instructions, tiers, criteria=None, threshold=None, ...)` | dict with `tier`, `confidence`, `probabilities`, `tiers` |
 
-Each accepts `model_path=`, `provider=`, `model=`, `api_url=`, and `api_key=`. A hosted
-providers requires `model=`.
+Each accepts `model_path=`, `provider=`, `model=`, `api_url=`, and `api_key=`. A
+hosted provider requires `model=`.
 
 ## Routing
 
-`DecisionRouter` turns a decision into a dispatch. Give it ordered `tiers` and
+`decision_route` turns a decision into a dispatch. Give it ordered `tiers` and
 descriptions, and it returns the selected tier plus the confidence behind the choice.
 `threshold` is a floor: if the winning confidence is below it, routing falls back to the
 **last** tier, which you should order as your safest/most capable option.
 
-```python
-from npcpy.gen.decision import DecisionRouter, decision_route
 
-router = DecisionRouter(
-    tiers=["self_service", "agent", "engineering"],
-    criteria={
-        "self_service": "the customer can resolve it with docs",
-        "agent": "a human should respond, no code change",
-        "engineering": "requires a code or infrastructure fix",
-    },
-)
-
-route = decision_route(
-    {"ticket": "Our production API has returned 500s since 9am."},
-    instructions="Which team should handle this ticket?",
-    tiers=router.tiers,
-    criteria=router.criteria,
-    threshold=0.6,
-    provider="ollama",
-    model="tev1:0.8b",
-)
-print(route)
-# {'tier': 'engineering', 'confidence': 0.91, 'probabilities': {...}, 'tiers': [...]}
-```
-
-`DecisionSystem1.route(state, instructions, router, threshold=None)` does the same on an
-instance.
 
 With the Ollama backend, criteria are resolved per call, so the router uses the model
-directly. With a trained model, the router checks the model's `label_maps` first and
+directly. With a trained model, the router checks the model's saved label maps first and
 falls back to the LLM path if the trained labels don't cover the tiers you asked for —
 that way a stale or narrow model degrades gracefully instead of guessing.
 
@@ -521,8 +359,7 @@ decision without leaving the template:
 
 Available globals: `systemone`, `load_ollama_system1`, `OllamaSystem1Client`,
 `OllamaSystem1Config`, `systemone_available`, `decision_choice`, `decision_score`,
-`decision_noul`, `decision_predict`, `decision_route`, `DecisionSystem1`,
-`DecisionQuestion`, `DecisionRouter`.
+`decision_noul`, `decision_predict`, `decision_route`, `get_decision_response`.
 
 ## Failure Modes
 

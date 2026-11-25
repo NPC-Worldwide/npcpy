@@ -1,3 +1,10 @@
+"""Train a local npcpy.ft.system1 decision model and query it.
+
+This example uses the local sentence-transformers + sklearn backend, not a
+hosted decision API. It is useful when you want a small classifier that runs
+offline once trained.
+"""
+
 import os
 
 from npcpy.ft.system1 import (
@@ -9,12 +16,6 @@ from npcpy.ft.system1 import (
     noul,
     score,
     predict,
-)
-from npcpy.gen.decision import (
-    DecisionQuestion,
-    DecisionRouter,
-    DecisionSystem1,
-    decision_route,
 )
 
 
@@ -156,67 +157,7 @@ def use_module_level_functions():
     del os.environ["NPCPY_SYSTEM1_MODEL"]
 
 
-def gen_decision_routing_example():
-    examples = make_training_data()
-    model = DecisionSystem1(
-        config=System1Config(
-            encoder_name="sentence-transformers/all-MiniLM-L6-v2",
-            classifier="LogisticRegression",
-            output_dir="./system1_decision_model",
-        )
-    )
-    model.train(examples)
-    print("decision model trained at", model.model_path)
-
-    ticket = {
-        "ticket": "Our production API has been returning HTTP 500 errors since this morning. Around 40% of customers cannot complete checkout.",
-    }
-    questions = [
-        DecisionQuestion(
-            name="queue",
-            type="choice",
-            instructions="What queue should handle this ticket?",
-            criteria={
-                "billing": "refunds, charges, invoices",
-                "technical": "bugs, errors, outages",
-                "sales": "purchasing, upgrades",
-            },
-        ),
-        DecisionQuestion(
-            name="urgency",
-            type="score",
-            instructions="How urgent is this ticket?",
-            criteria=["low", "medium", "high", "critical"],
-        ),
-        DecisionQuestion(
-            name="churn",
-            type="noul",
-            instructions="Does the customer express churn intent?",
-        ),
-    ]
-    result = model.decide(ticket, questions)
-    print("batch decision result:", result.to_dict())
-
-    router = DecisionRouter(
-        tiers=["self_service", "agent", "engineering"],
-        criteria={
-            "self_service": "user can resolve with a link or docs",
-            "agent": "needs human support but no code change",
-            "engineering": "requires a code or infrastructure fix",
-        },
-    )
-    route = decision_route(
-        ticket,
-        instructions="Which team should handle this ticket?",
-        tiers=router.tiers,
-        criteria=router.criteria,
-        model_path=model.model_path,
-    )
-    print("routing result:", route)
-
-
 if __name__ == "__main__":
     train_and_predict()
     if os.path.isdir("./system1_ticket_model"):
         use_module_level_functions()
-    gen_decision_routing_example()

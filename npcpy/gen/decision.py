@@ -274,6 +274,72 @@ def _parse_decisions_response(payload: Dict[str, Any]) -> Dict[str, Any]:
 # Provider-specific helpers
 # --------------------------------------------------------------------------- #
 
+# Provider defaults for direct HTTP fallback when litellm.systemone is unavailable.
+_HOSTED_DECISION_DEFAULTS = {
+    "openai": {"api_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY"},
+    "gemini": {"api_url": "https://generativelanguage.googleapis.com/v1beta", "api_key_env": "GEMINI_API_KEY"},
+    "perplexity": {"api_url": "https://api.perplexity.ai/v1", "api_key_env": "PERPLEXITY_API_KEY"},
+}
+
+
+def _resolve_api_key(provider: str, api_key: Optional[str]) -> Optional[str]:
+    if api_key:
+        return api_key
+    info = _HOSTED_DECISION_DEFAULTS.get(provider.lower())
+    if info:
+        return os.environ.get(info["api_key_env"])
+    return None
+
+
+def _resolve_api_url(provider: str, api_url: Optional[str]) -> str:
+    if api_url:
+        return api_url.rstrip("/")
+    info = _HOSTED_DECISION_DEFAULTS.get(provider.lower())
+    if info:
+        return info["api_url"].rstrip("/")
+    raise DecisionError(f"No default API URL for provider {provider!r}; pass api_url=")
+
+
+def _direct_http_decision(
+    provider: str,
+    model: str,
+    payload: Dict[str, Any],
+    api_key: Optional[str],
+    api_url: Optional[str],
+    timeout: float = 120,
+    headers: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """POST a System One decision request directly to the provider endpoint."""
+    url = f"{_resolve_api_url(provider, api_url)}/systemone"
+    key = _resolve_api_key(provider, api_key)
+    if not key:
+        info = _HOSTED_DECISION_DEFAULTS.get(provider.lower(), {})
+        raise DecisionError(
+            f"No API key for provider {provider!r}. "
+            f"Set {info.get('api_key_env', 'the provider API key env var')} or pass api_key=."
+        )
+
+    request_headers = {"Content-Type": "application/json"}
+    if provider.lower() == "gemini":
+        request_headers["x-goog-api-key"] = key
+    else:
+        request_headers["Authorization"] = f"Bearer {key}"
+    if headers:
+        request_headers.update(headers)
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=request_headers,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as exc:
+        raise DecisionError(f"Direct HTTP decision call failed for {provider}: {exc}") from exc
+
+
 def get_litellm_decision(
     prompt: Union[str, Dict[str, Any], List[Any]],
     model: str,
@@ -325,34 +391,52 @@ def get_litellm_decision(
         elif hasattr(litellm, "main") and hasattr(litellm.main, "systemone"):
             resp = litellm.main.systemone(**api_params)
         else:
-            # Fallback: use the generic completion endpoint with a decisions-style prompt.
-            messages = [
-                {"role": "user", "content": f"{instructions}\n\n{_state_to_text(prompt)}"}
-            ]
-            if criteria:
-                messages[0]["content"] += f"\n\nOptions: {json.dumps(criteria)}"
-            completion_params = {
-                "model": qualified,
-                "messages": messages,
-                "temperature": 0.0,
-            }
-            if api_key is not None:
-                completion_params["api_key"] = api_key
-            if api_url is not None:
-                completion_params["api_base"] = api_url
-            for key, value in kwargs.items():
-                if key in {"timeout", "headers", "extra_headers", "temperature"}:
-                    completion_params[key] = value
-            resp = _litellm_completion(**completion_params)
-            text = resp.choices[0].message.content if resp.choices else ""
-            return {
-                "type": "choice",
-                "choice": text.strip() if text else None,
-                "confidence": 1.0 if text else 0.0,
-                "probabilities": {},
-                "model": qualified,
-                "raw": str(text),
-            }
+            # Direct HTTP fallback to the provider's /v1/systemone endpoint.
+            try:
+                raw = _direct_http_decision(
+                    provider=provider,
+                    model=model,
+                    payload=payload,
+                    api_key=api_key,
+                    api_url=api_url,
+                    timeout=kwargs.get("timeout", 120),
+                    headers=kwargs.get("headers") or kwargs.get("extra_headers"),
+                )
+                return _parse_systemone_response(raw)
+            except Exception as http_exc:
+                # Last resort: generic completion (loses probabilities).
+                messages = [
+                    {"role": "user", "content": f"{instructions}\n\n{_state_to_text(prompt)}"}
+                ]
+                if criteria:
+                    messages[0]["content"] += f"\n\nOptions: {json.dumps(criteria)}"
+                completion_params = {
+                    "model": qualified,
+                    "messages": messages,
+                    "temperature": 0.0,
+                }
+                if api_key is not None:
+                    completion_params["api_key"] = api_key
+                if api_url is not None:
+                    completion_params["api_base"] = api_url
+                for key, value in kwargs.items():
+                    if key in {"timeout", "headers", "extra_headers", "temperature"}:
+                        completion_params[key] = value
+                try:
+                    resp = _litellm_completion(**completion_params)
+                    text = resp.choices[0].message.content if resp.choices else ""
+                    return {
+                        "type": "choice",
+                        "choice": text.strip() if text else None,
+                        "confidence": 1.0 if text else 0.0,
+                        "probabilities": {},
+                        "model": qualified,
+                        "raw": str(text),
+                    }
+                except Exception as comp_exc:
+                    raise DecisionError(
+                        f"Decision HTTP fallback failed ({http_exc}); generic completion also failed ({comp_exc})"
+                    ) from comp_exc
     except Exception as e:
         raise DecisionError(f"litellm decision call failed: {e}") from e
 

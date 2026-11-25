@@ -8,9 +8,6 @@ from .systemone import (
 )
 from .decision import (
     DecisionError,
-    decision_request,
-    get_litellm_decision,
-    get_ollama_decision,
     decision_choice,
     decision_score,
     decision_noul,
@@ -29,9 +26,6 @@ __all__ = [
     "systemone_available",
     "require_systemone",
     "DecisionError",
-    "decision_request",
-    "get_litellm_decision",
-    "get_ollama_decision",
     "decision_choice",
     "decision_score",
     "decision_noul",

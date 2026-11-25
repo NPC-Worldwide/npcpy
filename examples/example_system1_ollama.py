@@ -10,20 +10,10 @@ No API key is needed; everything runs on this machine.
 
 import json
 import os
+import sys
 
-from npcpy.gen.systemone import (
-    DEFAULT_MODEL,
-    OllamaSystem1Client,
-    OllamaSystem1Config,
-    available,
-    systemone,
-)
-from npcpy.gen.decision import (
-    DecisionQuestion,
-    DecisionRouter,
-    DecisionSystem1,
-    decision_route,
-)
+from npcpy.llm_funcs import get_decision_response
+from npcpy.gen.decision import decision_predict, decision_route
 
 TICKET = {
     "ticket": "I was charged twice. Please refund the extra payment.",
@@ -56,93 +46,57 @@ QUESTIONS = {
 
 def resolve_model(model=None):
     """Honor NPCPY_SYSTEM1_OLLAMA_MODEL, the same env var the library reads."""
-    return model or os.environ.get("NPCPY_SYSTEM1_OLLAMA_MODEL") or DEFAULT_MODEL
+    return model or os.environ.get("NPCPY_SYSTEM1_OLLAMA_MODEL") or "tev1:0.8b"
 
 
-def check_environment(model=None):
+def single_question_example(model=None):
+    """Single choice decision through the public entrypoint."""
     model = resolve_model(model)
-    info = available(model=model)
-    print("ollama check:", json.dumps(info, indent=2))
-    if not info["available"]:
-        reason = info["error"] or (
-            "upgrade Ollama to >= 0.35.0" if not info["version_ok"] else f"run `ollama pull {model}`"
-        )
-        raise SystemExit(f"System One is not ready: {reason}")
-    return info
+    result = get_decision_response(
+        prompt=TICKET,
+        provider="ollama",
+        model=model,
+        question_type="choice",
+        instructions="Which team should handle this ticket?",
+        criteria=QUEUE_CRITERIA,
+    )
+    print("single question:", json.dumps(result["response"], indent=2))
 
 
-def single_request_example(model=None):
+def batch_example(model=None):
+    """Ask several questions at once with the lower-level helper."""
     model = resolve_model(model)
-    """All three question types are scored in one POST."""
-    payload = systemone(TICKET, QUESTIONS, model=model)
-    print("raw response:", json.dumps(payload, indent=2)[:2000])
+    result = decision_predict(
+        TICKET,
+        list(QUESTIONS.values()),
+        provider="ollama",
+        model=model,
+    )
+    print("batch:", json.dumps(result, indent=2)[:1200])
 
 
-def typed_client_example(model=None):
+def route_example(model=None):
+    """Route the ticket to the best support tier."""
     model = resolve_model(model)
-    client = OllamaSystem1Client(OllamaSystem1Config(model=model))
-    result = client.predict(TICKET, QUESTIONS)
-
-    team = result.answers["team"]
-    refund = result.answers["refund"]
-    urgency = result.answers["urgency"]
-
-    print(f"team:    {team.choice} (confidence {team.confidence:.3f}) {team.probabilities}")
-    print(f"refund:  {refund.noul:.3f} (P(true))")
-    print(f"urgency: {urgency.score:.3f} over {urgency.legend}")
-    return result
-
-
-def decision_helper_example(model=None):
-    model = resolve_model(model)
-    """The gen.decision surface forwards to Ollama with provider='ollama'."""
-    model_helper = DecisionSystem1.from_ollama(model=model)
-
-    ticket_questions = [
-        DecisionQuestion(name="team", type="choice",
-                         instructions="Which team should handle this ticket?",
-                         criteria=QUEUE_CRITERIA),
-        DecisionQuestion(name="refund", type="noul",
-                         instructions="Does the customer explicitly ask for a refund?"),
-        DecisionQuestion(name="urgency", type="score",
-                         instructions="How urgent is this ticket?",
-                         criteria=["Routine", "Soon", "Urgent"]),
-    ]
-    result = model_helper.decide(TICKET, ticket_questions)
-    print("decide():", json.dumps(result.to_dict(), indent=2))
-
-    router = DecisionRouter(
+    route = decision_route(
+        TICKET,
+        instructions="Which team should handle this ticket?",
         tiers=["self_service", "agent", "engineering"],
         criteria={
             "self_service": "the customer can resolve it with docs",
             "agent": "a human should respond, no code change",
             "engineering": "requires a code or infrastructure fix",
         },
-    )
-    route = decision_route(
-        TICKET,
-        instructions="Which team should handle this ticket?",
-        tiers=router.tiers,
-        criteria=router.criteria,
         threshold=0.6,
         provider="ollama",
         model=model,
     )
-    print("route():", route)
-    return result
+    print("route:", route)
 
 
 if __name__ == "__main__":
     model = resolve_model()
     print(f"using model: {model}")
-    try:
-        check_environment(model)
-    except SystemExit as exc:
-        print(exc)
-        print("(Showing the request shape only: skipping live calls.)")
-        print(json.dumps({"model": model, "state": TICKET, "questions": QUESTIONS}, indent=2))
-        raise SystemExit(0)
-
-    single_request_example(model)
-    typed_client_example(model)
-    decision_helper_example(model)
+    single_question_example(model)
+    batch_example(model)
+    route_example(model)
