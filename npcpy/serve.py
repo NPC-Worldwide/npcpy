@@ -68,16 +68,12 @@ from npcpy.ft.system1 import (
 )
 from npcpy.gen.systemone import load_ollama_system1
 from npcpy.gen.decision import (
-    DecisionQuestion,
-    DecisionRouter,
-    DecisionSystem1,
     decision_choice,
     decision_noul,
     decision_score,
     decision_predict,
     decision_route,
     load_decision_model,
-    _resolve_backend,
 )
 try:
     import litellm
@@ -6911,7 +6907,7 @@ def system1_predict_endpoint():
             return jsonify({'error': 'questions required'}), 400
         predictor = _system1_predictor_from_request(data)
         result = system1_predict(state, questions, predictor=predictor)
-        return jsonify(result.to_dict())
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -6928,7 +6924,7 @@ def system1_choice_endpoint():
             return jsonify({'error': 'instructions and criteria required'}), 400
         predictor = _system1_predictor_from_request(data)
         result = system1_choice(state, instructions, criteria, predictor=predictor)
-        return jsonify(result.to_dict())
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -6944,7 +6940,7 @@ def system1_noul_endpoint():
             return jsonify({'error': 'instructions required'}), 400
         predictor = _system1_predictor_from_request(data)
         result = system1_noul(state, instructions, predictor=predictor)
-        return jsonify(result.to_dict())
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -6961,7 +6957,7 @@ def system1_score_endpoint():
             return jsonify({'error': 'instructions and criteria required'}), 400
         predictor = _system1_predictor_from_request(data)
         result = system1_score(state, instructions, criteria, predictor=predictor)
-        return jsonify(result.to_dict())
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -6974,13 +6970,12 @@ def decision_predict_endpoint():
         state = data.get('state')
         raw_questions = data.get('questions', [])
         model_path = data.get('model_path') or os.environ.get('NPCPY_DECISION_MODEL')
-        questions = [DecisionQuestion(**q) for q in raw_questions]
         result = decision_predict(
-            state, questions, model_path=model_path,
+            state, raw_questions, model_path=model_path,
             provider=_request_provider(data), model=data.get('model'),
             api_url=_request_api_url(data), api_key=data.get('api_key'),
         )
-        return jsonify(result.to_dict())
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -7001,7 +6996,7 @@ def decision_choice_endpoint():
             provider=_request_provider(data), model=data.get('model'),
             api_url=_request_api_url(data), api_key=data.get('api_key'),
         )
-        return jsonify(result.to_dict())
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -7021,7 +7016,7 @@ def decision_noul_endpoint():
             provider=_request_provider(data), model=data.get('model'),
             api_url=_request_api_url(data), api_key=data.get('api_key'),
         )
-        return jsonify(result.to_dict())
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -7042,7 +7037,7 @@ def decision_score_endpoint():
             provider=_request_provider(data), model=data.get('model'),
             api_url=_request_api_url(data), api_key=data.get('api_key'),
         )
-        return jsonify(result.to_dict())
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -7067,6 +7062,10 @@ def decision_route_endpoint():
             criteria=criteria,
             threshold=threshold,
             model_path=model_path,
+            provider=_request_provider(data),
+            model=data.get('model'),
+            api_url=_request_api_url(data),
+            api_key=data.get('api_key'),
         )
         return jsonify(result)
     except Exception as e:

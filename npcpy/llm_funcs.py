@@ -20,6 +20,7 @@ from npcpy.npc_sysenv import (
 )
 
 from npcpy.gen.response import get_litellm_response
+from npcpy.gen.decision import decision_request
 from npcpy.gen.image_gen import generate_image
 from npcpy.gen.video_gen import generate_video_diffusers, generate_video_veo3, generate_video_minimax
 
@@ -2207,3 +2208,78 @@ def synthesize(
         context=context,
         **kwargs
     )
+
+# --------------------------------------------------------------------------- #
+# Decision Module entrypoint
+# --------------------------------------------------------------------------- #
+
+def get_decision_response(
+    prompt: str,
+    model: str = None,
+    provider: str = None,
+    api_key: str = None,
+    api_url: str = None,
+    npc: Any = None,
+    team: Any = None,
+    question_type: str = "choice",
+    instructions: str = None,
+    criteria: Any = None,
+    stream: bool = False,
+    context: str = None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Call the npcpy Decision Module for typed, probabilistic answers.
+
+    Mirrors ``get_llm_response``. Resolves ``model``/``provider``/``api_url``/
+    ``api_key`` from ``npc``/``team``/arguments, then dispatches to the
+    provider-specific decision helper in ``npcpy.gen.decision``.
+
+    ``question_type`` is one of ``choice``, ``score``, ``noul``.
+    ``criteria`` is required for ``choice`` (dict label->description) and
+    ``score`` (ordered list of level descriptions).
+
+    Returns a dict with the parsed answer under ``response`` plus ``raw``,
+    ``usage``, ``model`` and ``provider``.
+    """
+    if context and prompt:
+        prompt = f"{prompt}\n\nUser Provided Context: {context}"
+    elif context and not prompt:
+        prompt = f"User Provided Context: {context}"
+
+    run_model, run_provider, run_api_url, run_api_key = resolve_model_provider(
+        npc=npc, team=team, model=model, provider=provider,
+        api_url=api_url, api_key=api_key,
+    )
+    if api_key is not None:
+        run_api_key = api_key
+
+    if not run_model:
+        raise ValueError("No model specified. Please set a model in your NPC configuration or team settings.")
+    if not run_provider:
+        raise ValueError("No provider specified for decision model.")
+
+    if stream:
+        raise ValueError("Streaming is not supported for decision models.")
+
+    try:
+        result = decision_request(
+            prompt=prompt or "",
+            model=run_model,
+            provider=run_provider,
+            api_key=run_api_key,
+            api_url=run_api_url,
+            question_type=question_type,
+            instructions=instructions or "Choose the best answer.",
+            criteria=criteria,
+            **kwargs,
+        )
+    except Exception as e:
+        return {"error": str(e), "response": None, "model": run_model, "provider": run_provider}
+
+    return {
+        "response": result,
+        "raw": result,
+        "model": result.get("model", run_model),
+        "provider": run_provider,
+        "usage": result.get("usage"),
+    }
