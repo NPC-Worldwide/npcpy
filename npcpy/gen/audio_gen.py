@@ -777,8 +777,8 @@ def text_to_speech(
     if engine == "kokoro":
         voice = voice or "af_heart"
         voices = {v["id"]: v for v in get_kokoro_voices()}
-        lang_code = voices.get(voice, {}).get("lang", "a")
-        return tts_kokoro(text, voice=voice, lang_code=lang_code, **kwargs)
+        kwargs.setdefault("lang_code", voices.get(voice, {}).get("lang", "a"))
+        return tts_kokoro(text, voice=voice, **kwargs)
 
     elif engine in ("qwen3", "qwen3-tts", "qwen"):
         voice = voice or "ryan"
