@@ -63,10 +63,8 @@ def _load_compiled_yaml(path: str) -> Dict[str, Any]:
 
 def _parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
     """Split `---\n...\n---\nbody` into (frontmatter_dict, body_str)."""
-    if not text.startswith('---'):
-        return {}, text
-    parts = text.split('---', 2)
-    if len(parts) < 3:
+    parts = re.split(r'^---[ \t]*\r?$', text, maxsplit=2, flags=re.MULTILINE)
+    if len(parts) < 3 or parts[0]:
         return {}, text
     try:
         fm = yaml.safe_load(parts[1]) or {}
