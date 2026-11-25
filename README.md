@@ -1205,6 +1205,16 @@ print(response["response"])
 ```
 
 </details>
+<details><summary>onomeo</summary>
+
+Set `ONOMEO_API_KEY` and use `provider="onomeo"` with a model ID from onomeo's model list (`GET https://onomeo.com/v1/models` with your key, or the [models page](https://onomeo.com/models)), for example `deepseek-v4.1-flash`, `claude-sonnet-5.5` or `gpt-6.1-sol`. IDs are plain slugs without a vendor prefix. Requests go to the OpenAI-compatible Base URL `https://onomeo.com/v1`; set `ONOMEO_API_URL` to override it. Free models are available within limits; paid models are charged to a prepaid balance. Keys are created in the [onomeo dashboard](https://onomeo.com/dashboard).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="deepseek-v4.1-flash", provider="onomeo")
+print(response["response"])
+```
+
+</details>
 <details><summary>Opper</summary>
 
 Set `OPPER_API_KEY` and use `provider="opper"` with any model ID from the [Opper model catalogue](https://opper.ai/models), for example `claude-sonnet-4-6`, `gpt-5.4-mini` or `gemini-3.8-flash`. These pool names route across the providers serving that model; a `provider/model` ID such as `anthropic/claude-sonnet-4-6` pins one route. Requests go to the OpenAI-compatible Base URL `https://api.opper.ai/v3/compat`; set `OPPER_API_URL` to override it. Keys are created at [platform.opper.ai](https://platform.opper.ai).

@@ -208,6 +208,7 @@ AirLLM loads and processes model layers sequentially, allowing you to run models
 | `lora` | path to adapter | LoRA fine-tuned adapters |
 | `obscurify` | `deepseek/deepseek-v4-flash` | [Obscurify.ai](https://obscurify.ai/?utm_source=npcpy) privacy-focused OpenAI-compatible API, 200+ models; requires `OBSCURIFY_API_KEY`, optional `OBSCURIFY_API_URL` override |
 | `ollama` | `llama3.2`, `gemma3:4b` | Local models, default provider |
+| `onomeo` | `deepseek-v4.1-flash` | [onomeo](https://onomeo.com) OpenAI-compatible API for Claude, GPT, DeepSeek and free models under plain IDs (`GET https://onomeo.com/v1/models` with a key); requires `ONOMEO_API_KEY`, optional `ONOMEO_API_URL` override |
 | `openai` | `gpt-4o`, `gpt-4o-mini` | Requires `OPENAI_API_KEY` |
 | `openai` | `orcarouter/auto` | [OrcaRouter](https://www.orcarouter.ai) gateway: set `api_url` to `https://api.orcarouter.ai/v1` with a `sk-orca-` key |
 | `opper` | `claude-sonnet-4-6` | [Opper](https://opper.ai) EU-hosted OpenAI-compatible gateway; requires `OPPER_API_KEY`, optional `OPPER_API_URL` override |

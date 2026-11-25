@@ -2717,6 +2717,10 @@ def get_litellm_response(
         api_url = api_url or os.environ.get("AIGROW_API_URL") or "https://aigrow.gg/v1"
         api_key = api_key or os.environ.get("AIGROW_API_KEY")
         provider = "openai"
+    elif provider == 'onomeo':
+        api_url = api_url or os.environ.get("ONOMEO_API_URL") or "https://onomeo.com/v1"
+        api_key = api_key or os.environ.get("ONOMEO_API_KEY")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:
