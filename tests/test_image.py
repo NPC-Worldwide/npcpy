@@ -263,3 +263,41 @@ def test_compress_image_different_formats():
         print("Different format test skipped - PIL not available")
     except Exception as e:
         print(f"Different format test failed: {e}")
+
+
+def _png_bytes(img):
+    import io
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_compress_image_palette_and_grayscale_alpha_modes():
+    """PNG modes P, LA, 1, I;16 must not crash the JPEG save."""
+    import io
+    from PIL import Image
+
+    images = [
+        Image.new("P", (32, 32)),
+        Image.new("LA", (32, 32), (128, 0)),
+        Image.new("1", (32, 32)),
+        Image.new("I;16", (32, 32)),
+    ]
+    for img in images:
+        out = compress_image(_png_bytes(img))
+        assert Image.open(io.BytesIO(out)).format == "JPEG", img.mode
+
+
+def test_compress_image_transparent_pixels_become_white():
+    import io
+    from PIL import Image
+
+    la = Image.new("LA", (8, 8), (0, 0))
+    out = Image.open(io.BytesIO(compress_image(_png_bytes(la)))).convert("RGB")
+    assert min(out.getpixel((4, 4))) > 240
+
+    p = Image.new("P", (8, 8), 0)
+    p.putpalette([255, 0, 0] * 256)
+    p.info["transparency"] = 0
+    out = Image.open(io.BytesIO(compress_image(_png_bytes(p)))).convert("RGB")
+    assert min(out.getpixel((4, 4))) > 240

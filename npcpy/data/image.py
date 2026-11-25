@@ -129,10 +129,16 @@ def compress_image(image_bytes, max_size=(800, 600)):
     img.load()
 
     
-    if img.mode == "RGBA":
+    has_alpha = img.mode in ("RGBA", "LA", "PA") or (
+        img.mode == "P" and "transparency" in img.info
+    )
+    if has_alpha:
+        img = img.convert("RGBA")
         background = Image.new("RGB", img.size, (255, 255, 255))
         background.paste(img, mask=img.split()[3])
         img = background
+    elif img.mode not in ("RGB", "L", "CMYK"):
+        img = img.convert("RGB")
 
     
     if img.size[0] > max_size[0] or img.size[1] > max_size[1]:
