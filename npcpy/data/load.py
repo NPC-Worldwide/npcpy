@@ -269,11 +269,11 @@ def load_file_contents(file_path, chunk_size=None):
         elif file_ext in ['XLS', 'XLSX']:
             df = load_excel(file_path)
             full_content = df.to_string()
-        elif file_ext in ['TXT', 'MD', 'PY', 'JSX', 'TSX', 'TS', 'JS', 'JSON', 'SQL', 'NPC', 'JINX', 'LINE', 'YAML', 'DART', 'JAVA']:
-            full_content = load_txt(file_path)
         elif file_ext == 'JSON':
             data = load_json(file_path)
             full_content = json.dumps(data, indent=2)
+        elif file_ext in ['TXT', 'MD', 'PY', 'JSX', 'TSX', 'TS', 'JS', 'SQL', 'NPC', 'JINX', 'LINE', 'YAML', 'DART', 'JAVA']:
+            full_content = load_txt(file_path)
         elif file_ext in ['MP3', 'WAV', 'M4A', 'AAC', 'FLAC', 'OGG']:
             full_content = load_audio(file_path)
         elif file_ext in ['MP4', 'AVI', 'MOV', 'WMV', 'MPG', 'MPEG', 'WEBM', 'MKV']:

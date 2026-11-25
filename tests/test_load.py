@@ -154,6 +154,26 @@ class TestLoadFileContents:
         finally:
             shutil.rmtree(temp_dir)
 
+    def test_load_file_contents_json_uses_json_loader_formatting(self):
+        """JSON files must use load_json and indent=2, not the plain-text path"""
+        from npcpy.data.load import load_file_contents
+        import json
+
+        temp_dir = tempfile.mkdtemp()
+        json_file = os.path.join(temp_dir, "compact.json")
+
+        try:
+            data = {"items": [{"id": i, "name": f"item_{i}"} for i in range(3)]}
+            with open(json_file, "w") as f:
+                json.dump(data, f)
+
+            chunks = load_file_contents(json_file, chunk_size=1000)
+
+            assert "".join(chunks) == json.dumps(data, indent=2)
+
+        finally:
+            shutil.rmtree(temp_dir)
+
     def test_load_file_contents_unsupported(self):
         """Test load_file_contents with unsupported file type"""
         from npcpy.data.load import load_file_contents
