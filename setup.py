@@ -16,7 +16,7 @@ def package_files(directory):
 
 base_requirements = [
     "jinja2",
-    "litellm==1.91.1",
+    "litellm==1.111.0",
     "scipy", 
     "numpy",
     "requests",
