@@ -17,6 +17,7 @@ from npcpy.npc_sysenv import (
     request_user_input, 
     get_system_message,
     MINIMAX_MODELS,
+    TRUSTEDROUTER_DEFAULT_MODEL,
 )
 
 from npcpy.gen.response import get_litellm_response
@@ -246,6 +247,11 @@ def resolve_model_provider(
     if p == "onomeo":
         a_url = a_url or os.environ.get("ONOMEO_API_URL") or "https://onomeo.com/v1"
         a_key = a_key or os.environ.get("ONOMEO_API_KEY")
+    if p == "trustedrouter":
+        if m is None:
+            m = TRUSTEDROUTER_DEFAULT_MODEL
+        a_url = a_url or os.environ.get("TRUSTEDROUTER_API_URL") or "https://api.trustedrouter.com/v1"
+        a_key = a_key or os.environ.get("TRUSTEDROUTER_API_KEY")
     return m, p, a_url, a_key
 
 

@@ -1255,6 +1255,16 @@ print(response["response"])
 ```
 
 </details>
+<details><summary>TrustedRouter</summary>
+
+Set `TRUSTEDROUTER_API_KEY` and use `provider="trustedrouter"` with any model ID from TrustedRouter's live public catalog (`GET https://api.trustedrouter.com/v1/models`), for example `deepseek/deepseek-v4-flash` (default) or privacy presets such as `trustedrouter/zdr`, `trustedrouter/e2e`, and `trustedrouter/auto` (or `nyte/*` aliases). Requests go through hardware-attested Confidential Space TEEs at `https://api.trustedrouter.com/v1`; set `TRUSTEDROUTER_API_URL` to override it, and pass `extra_body={"min_privacy": 2}` to enforce a minimum privacy floor per request. Keys are created at [trustedrouter.com](https://trustedrouter.com).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="trustedrouter/zdr", provider="trustedrouter")
+print(response["response"])
+```
+
+</details>
 <details><summary>MartLLM</summary>
 
 Set `UBERLLM_API_KEY` and use `provider="uberllm"` with a `vendor/model` ID from MartLLM's public model list (`GET https://api.martllm.com/v1/models`), for example `deepseek/deepseek-v4.1-flash`, `openai/gpt-5.4-mini` or `anthropic/claude-sonnet-4.6`. Requests go to the OpenAI-compatible base URL `https://api.martllm.com/v1`; set `UBERLLM_API_URL` to override it. Usage is prepaid and billed per request (failed requests are not billed); per-model prices are on the [model list](https://martllm.com/models) and keys are created at [martllm.com/signup](https://martllm.com/signup). See the [quickstart](https://martllm.com/docs/quickstart).

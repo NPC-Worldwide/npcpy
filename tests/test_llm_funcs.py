@@ -1221,3 +1221,220 @@ class TestOnomeoRouting:
 
         assert result["response"] == "ok"
         assert server.seen == [("/v1/chat/completions", "Bearer on-test-key", model)]
+
+
+class TestTrustedRouterRouting:
+    """Test TrustedRouter provider resolution, live model discovery, and request routing."""
+
+    def test_resolve_defaults(self, monkeypatch):
+        monkeypatch.delenv("TRUSTEDROUTER_API_URL", raising=False)
+        monkeypatch.setenv("TRUSTEDROUTER_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(model="trustedrouter/zdr", provider="trustedrouter")
+        assert (m, p) == ("trustedrouter/zdr", "trustedrouter")
+        assert url == "https://api.trustedrouter.com/v1"
+        assert key == "test-key"
+
+    def test_resolve_default_model_when_omitted(self, monkeypatch):
+        monkeypatch.delenv("TRUSTEDROUTER_API_URL", raising=False)
+        monkeypatch.setenv("TRUSTEDROUTER_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(provider="trustedrouter")
+        assert (m, p) == ("deepseek/deepseek-v4-flash", "trustedrouter")
+        assert url == "https://api.trustedrouter.com/v1"
+        assert key == "test-key"
+
+    def test_resolve_env_url_override(self, monkeypatch):
+        monkeypatch.setenv("TRUSTEDROUTER_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("TRUSTEDROUTER_API_KEY", "env-key")
+        _, p, url, key = resolve_model_provider(model="deepseek/deepseek-v4-flash", provider="trustedrouter")
+        assert p == "trustedrouter"
+        assert url == "https://example.test/v1"
+        assert key == "env-key"
+
+    def test_explicit_arguments_win(self, monkeypatch):
+        monkeypatch.setenv("TRUSTEDROUTER_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("TRUSTEDROUTER_API_KEY", "env-key")
+        _, _, url, key = resolve_model_provider(
+            model="deepseek/deepseek-v4-flash", provider="trustedrouter",
+            api_url="https://other.test/v1", api_key="arg-key",
+        )
+        assert url == "https://other.test/v1"
+        assert key == "arg-key"
+
+    @pytest.mark.parametrize("model", ["trustedrouter/zdr", "trustedrouter/e2e", "nyte/zdr"])
+    def test_lookup_provider_presets(self, model):
+        from npcpy.npc_sysenv import lookup_provider
+        assert lookup_provider(model) == "trustedrouter"
+
+    def test_missing_key_does_not_fall_back_to_openai_credentials(self, monkeypatch):
+        from npcpy.gen import response as response_module
+        monkeypatch.delenv("TRUSTEDROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-sent")
+        calls = []
+        monkeypatch.setattr(response_module, "completion", lambda **kwargs: calls.append(kwargs))
+        with pytest.raises(ValueError, match="TRUSTEDROUTER_API_KEY"):
+            get_llm_response("Hello", model="deepseek/deepseek-v4-flash", provider="trustedrouter")
+        assert calls == []
+
+    @pytest.mark.parametrize("model", [
+        "deepseek/deepseek-v4-flash",
+        "trustedrouter/zdr",
+        "nyte/zdr",
+        "openai/gpt-5.4-mini",
+    ])
+    def test_request_keeps_model_id_and_extra_body(self, monkeypatch, model):
+        """Model IDs and extra_body fields such as min_privacy reach <base>/chat/completions unchanged."""
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                self.server.seen.append((
+                    self.path,
+                    self.headers.get("Authorization"),
+                    body.get("model"),
+                    body.get("min_privacy"),
+                ))
+                data = json.dumps({
+                    "id": "chatcmpl-local",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": body.get("model"),
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.seen = []
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            monkeypatch.setenv("TRUSTEDROUTER_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+            monkeypatch.setenv("TRUSTEDROUTER_API_KEY", "tr-test-key")
+            result = get_llm_response(
+                "Hello",
+                model=model,
+                provider="trustedrouter",
+                extra_body={"min_privacy": 2},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert result["response"] == "ok"
+        assert server.seen == [("/v1/chat/completions", "Bearer tr-test-key", model, 2)]
+
+    def test_live_models_discovery_filters_internal_hidden_synthetic_and_non_chat(self, monkeypatch, tmp_path):
+        """Live /v1/models discovery keeps public chat models and presets while dropping internal/hidden/synthetic/non-chat rows."""
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+        from npcpy import npc_sysenv
+
+        catalog = {
+            "object": "list",
+            "data": [
+                {
+                    "id": "trustedrouter/zdr",
+                    "trustedrouter": {
+                        "internal_only": False,
+                        "configuration_hidden": False,
+                        "synthetic_monitor": False,
+                        "supports_chat": True,
+                    },
+                },
+                {
+                    "id": "deepseek/deepseek-v4-flash",
+                    "trustedrouter": {
+                        "internal_only": False,
+                        "configuration_hidden": False,
+                        "synthetic_monitor": False,
+                        "supports_chat": True,
+                    },
+                },
+                {
+                    "id": "nyte/zdr",
+                },
+                {
+                    "id": "trustedrouter/athena-1.0",
+                    "trustedrouter": {"configuration_hidden": True, "supports_chat": True},
+                },
+                {
+                    "id": "internal/canary",
+                    "trustedrouter": {"internal_only": True, "supports_chat": True},
+                },
+                {
+                    "id": "monitor/probe",
+                    "trustedrouter": {"synthetic_monitor": True, "supports_chat": True},
+                },
+                {
+                    "id": "openai/text-embedding-3-large",
+                    "trustedrouter": {"supports_chat": False, "supports_embeddings": True},
+                },
+            ],
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.server.seen.append((self.path, self.headers.get("Authorization")))
+                data = json.dumps(catalog).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.seen = []
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}/v1"
+            monkeypatch.setenv("TRUSTEDROUTER_API_URL", base_url)
+            monkeypatch.setenv("TRUSTEDROUTER_API_KEY", "tr-test-key")
+            monkeypatch.setattr(npc_sysenv, "check_internet_connection", lambda timeout=5: True)
+
+            discovered = npc_sysenv.fetch_trustedrouter_models()
+            assert discovered == ["trustedrouter/zdr", "deepseek/deepseek-v4-flash", "nyte/zdr"]
+
+            available = npc_sysenv.get_locally_available_models(str(tmp_path))
+            assert available["trustedrouter/zdr"] == "trustedrouter"
+            assert available["deepseek/deepseek-v4-flash"] == "trustedrouter"
+            assert available["nyte/zdr"] == "trustedrouter"
+            assert "trustedrouter/athena-1.0" not in available
+            assert "internal/canary" not in available
+            assert "monitor/probe" not in available
+            assert "openai/text-embedding-3-large" not in available
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert ("/v1/models", "Bearer tr-test-key") in server.seen
+
+    def test_get_locally_available_models_fallback_on_error(self, monkeypatch, tmp_path):
+        """Falls back to default TrustedRouter presets if /v1/models is unreachable."""
+        from npcpy import npc_sysenv
+
+        monkeypatch.setenv("TRUSTEDROUTER_API_KEY", "tr-test-key")
+        monkeypatch.setattr(npc_sysenv, "check_internet_connection", lambda timeout=5: True)
+        monkeypatch.setattr(
+            npc_sysenv,
+            "fetch_trustedrouter_models",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+        )
+
+        available = npc_sysenv.get_locally_available_models(str(tmp_path))
+        assert available["deepseek/deepseek-v4-flash"] == "trustedrouter"
+        assert available["trustedrouter/zdr"] == "trustedrouter"
+        assert available["trustedrouter/e2e"] == "trustedrouter"
+        assert available["trustedrouter/auto"] == "trustedrouter"

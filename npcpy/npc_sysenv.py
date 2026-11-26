@@ -18,9 +18,61 @@ ON_WINDOWS = platform.system() == "Windows"
 ON_MACOS = platform.system() == "Darwin"
 MINIMAX_MODELS = ("MiniMax-M3.1-Flash", "MiniMax-M3")
 _MINIMAX_LEGACY_MODELS = frozenset({"MiniMax-M2.7"})
+TRUSTEDROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 _PROVIDER_FALLBACK_MODELS = {
     "orcarouter": {"orcarouter/auto", "orcarouter/free", "orcarouter/fusion", "orcarouter/fusion-flash", "orcarouter/fusion-mini"},
+    "trustedrouter": {
+        "deepseek/deepseek-v4-flash",
+        "trustedrouter/auto",
+        "trustedrouter/zdr",
+        "trustedrouter/e2e",
+    },
 }
+
+
+def _is_public_trustedrouter_chat_model(entry: dict) -> bool:
+    """Return True for public chat models from TrustedRouter's /v1/models response."""
+    if not isinstance(entry, dict):
+        return False
+    model_id = entry.get("id")
+    if not isinstance(model_id, str) or not model_id:
+        return False
+    meta = entry.get("trustedrouter")
+    if not isinstance(meta, dict):
+        meta = {}
+    for flag in ("internal_only", "configuration_hidden", "synthetic_monitor"):
+        if meta.get(flag) or entry.get(flag):
+            return False
+    if meta.get("supports_chat") is False:
+        return False
+    return True
+
+
+def fetch_trustedrouter_models(
+    api_url: str = None,
+    api_key: str = None,
+    timeout: float = 3.5,
+) -> List[str]:
+    """Fetch public chat model IDs from TrustedRouter's /v1/models endpoint."""
+    base_url = (
+        api_url
+        or os.environ.get("TRUSTEDROUTER_API_URL")
+        or "https://api.trustedrouter.com/v1"
+    ).rstrip("/")
+    key = api_key if api_key is not None else os.environ.get("TRUSTEDROUTER_API_KEY")
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    response = requests.get(f"{base_url}/models", headers=headers, timeout=timeout)
+    response.raise_for_status()
+    payload = response.json()
+    models = []
+    seen = set()
+    for entry in payload.get("data", []):
+        if _is_public_trustedrouter_chat_model(entry):
+            model_id = entry["id"]
+            if model_id not in seen:
+                seen.add(model_id)
+                models.append(model_id)
+    return models
 
 def get_data_dir() -> str:
     """Get the data directory."""
@@ -238,6 +290,21 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
                     available_models[clean_id] = provider
             except Exception as e:
                 logging.info(f"{provider.capitalize()} models not indexed: {e}")
+
+        trustedrouter_key = env_vars.get("TRUSTEDROUTER_API_KEY") or os.environ.get("TRUSTEDROUTER_API_KEY")
+        if trustedrouter_key:
+            trustedrouter_url = env_vars.get("TRUSTEDROUTER_API_URL") or os.environ.get("TRUSTEDROUTER_API_URL")
+            try:
+                tr_models = fetch_trustedrouter_models(
+                    api_url=trustedrouter_url,
+                    api_key=trustedrouter_key,
+                    timeout=timeout_seconds,
+                )
+            except Exception as e:
+                logging.info(f"TrustedRouter live model discovery failed, using defaults: {e}")
+                tr_models = []
+            for model_id in tr_models or sorted(_PROVIDER_FALLBACK_MODELS["trustedrouter"]):
+                available_models[model_id] = "trustedrouter"
     try:
         import ollama
         timeout_seconds = 5.0
@@ -1065,6 +1132,8 @@ def lookup_provider(model: str) -> str:
         return "deepseek"
     if model.startswith("orcarouter/") or model.startswith("orca/"):
         return "orcarouter"
+    if model.startswith("trustedrouter/") or model.startswith("nyte/"):
+        return "trustedrouter"
 
     if model.startswith("airllm-"):
         return "airllm"
