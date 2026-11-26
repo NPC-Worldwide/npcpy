@@ -60,3 +60,17 @@ def test_positive_temperature_still_samples(response_module, tmp_path):
     out, gen_kwargs = _run(response_module, tmp_path, temperature=0.4)
     assert gen_kwargs["do_sample"] is True
     assert gen_kwargs["temperature"] == 0.4
+
+
+def test_top_p_and_top_k_reach_generate(response_module, tmp_path):
+    out, gen_kwargs = _run(response_module, tmp_path, top_p=0.5, top_k=20)
+    assert gen_kwargs["top_p"] == 0.5
+    assert gen_kwargs["top_k"] == 20
+
+
+def test_greedy_decoding_omits_top_p_and_top_k(response_module, tmp_path):
+    out, gen_kwargs = _run(
+        response_module, tmp_path, temperature=0, top_p=0.5, top_k=20
+    )
+    assert "top_p" not in gen_kwargs
+    assert "top_k" not in gen_kwargs
