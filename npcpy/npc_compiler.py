@@ -946,11 +946,8 @@ def _parse_skill_md(path):
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    if not content.startswith('---'):
-        return None
-
-    parts = content.split('---', 2)
-    if len(parts) < 3:
+    parts = re.split(r'^---[ \t]*\r?$', content, maxsplit=2, flags=re.MULTILINE)
+    if len(parts) < 3 or parts[0]:
         return None
 
     frontmatter = yaml.safe_load(parts[1])

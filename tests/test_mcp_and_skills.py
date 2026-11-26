@@ -1,6 +1,8 @@
 """Tests for MCP server integration and skills functionality."""
 
 import asyncio
+import base64
+import json
 import os
 import tempfile
 import shutil
@@ -10,7 +12,10 @@ from contextlib import asynccontextmanager
 import pytest
 from pathlib import Path
 
-from npcpy.npc_compiler import NPC, Jinx, Team, _parse_skill_md, _compile_skill_to_jinx
+from npcpy.npc_compiler import (
+    NPC, Jinx, Team, _parse_skill_md, _compile_skill_to_jinx,
+    load_jinxes_from_directory,
+)
 
 
 class TestSkillParsing:
@@ -41,6 +46,30 @@ Content for section two.
         assert 'section-one' in result['sections']
         assert 'section-two' in result['sections']
         assert 'Content for section one' in result['sections']['section-one']
+
+    def test_load_skill_with_inline_frontmatter_delimiter(self, tmp_path):
+        skill_dir = tmp_path / "test-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            '---\n'
+            'name: test-skill\n'
+            'description: "draft --- final"\n'
+            '---\n'
+            '\n'
+            '## details\n'
+            'Draft instructions.\n'
+            '---\n'
+            'Final instructions.\n',
+            encoding="utf-8",
+        )
+
+        jinx, = load_jinxes_from_directory(str(tmp_path))
+        assert jinx.jinx_name == "test-skill"
+        step = jinx._raw_steps[0]
+        assert step["skill_description"] == "draft --- final"
+        assert json.loads(base64.b64decode(step["sections"])) == {
+            "details": "Draft instructions.\n---\nFinal instructions.",
+        }
 
     def test_parse_skill_md_missing_frontmatter(self, tmp_path):
         """Test parsing fails gracefully without proper frontmatter."""
