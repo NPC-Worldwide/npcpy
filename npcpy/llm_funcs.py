@@ -237,6 +237,9 @@ def resolve_model_provider(
     if p == "requesty":
         a_url = a_url or os.environ.get("REQUESTY_API_URL") or "https://router.requesty.ai/v1"
         a_key = a_key or os.environ.get("REQUESTY_API_KEY")
+    if p == "teamorouter":
+        a_url = a_url or os.environ.get("TEAMOROUTER_API_URL") or "https://api.teamorouter.com/v1"
+        a_key = a_key or os.environ.get("TEAMOROUTER_API_KEY")
     if p == "aigrow":
         a_url = a_url or os.environ.get("AIGROW_API_URL") or "https://aigrow.gg/v1"
         a_key = a_key or os.environ.get("AIGROW_API_KEY")

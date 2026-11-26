@@ -1245,6 +1245,16 @@ print(response["response"])
 ```
 
 </details>
+<details><summary>TeamoRouter</summary>
+
+Set `TEAMOROUTER_API_KEY` and use `provider="teamorouter"` with a model ID from TeamoRouter's model list (`GET https://api.teamorouter.com/v1/models` with your key), for example `glm-5.3`, `deepseek-v4-pro`, `kimi-k3.1-pro` or `claude-sonnet-5-5`. Requests go to the OpenAI-compatible Base URL `https://api.teamorouter.com/v1`; set `TEAMOROUTER_API_URL` to override it. Keys are created in the [TeamoRouter dashboard](https://teamorouter.com/dashboard?tab=api-keys).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="glm-5.3", provider="teamorouter")
+print(response["response"])
+```
+
+</details>
 <details><summary>MartLLM</summary>
 
 Set `UBERLLM_API_KEY` and use `provider="uberllm"` with a `vendor/model` ID from MartLLM's public model list (`GET https://api.martllm.com/v1/models`), for example `deepseek/deepseek-v4.1-flash`, `openai/gpt-5.4-mini` or `anthropic/claude-sonnet-4.6`. Requests go to the OpenAI-compatible base URL `https://api.martllm.com/v1`; set `UBERLLM_API_URL` to override it. Usage is prepaid and billed per request (failed requests are not billed); per-model prices are on the [model list](https://martllm.com/models) and keys are created at [martllm.com/signup](https://martllm.com/signup). See the [quickstart](https://martllm.com/docs/quickstart).
