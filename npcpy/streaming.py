@@ -361,6 +361,13 @@ def execute_tool(tool_name: str, tool_args: dict, tool_id: str,
         })
 
 
+def _delta_field(obj, key):
+    """Read ``key`` from a tool_call delta given as an SDK object or a dict."""
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
 def tool_call_slot(collected: list, tc_delta) -> int:
     """Position in ``collected`` a streamed tool_call delta belongs to.
 
@@ -369,15 +376,15 @@ def tool_call_slot(collected: list, tc_delta) -> int:
     call when it carries an id different from the last call's, or a name after
     the last call already has one; any other delta continues the last call.
     """
-    idx = getattr(tc_delta, 'index', None)
+    idx = _delta_field(tc_delta, 'index')
     if idx is not None:
         return idx
     if not collected:
         return 0
     last = collected[-1]
-    new_id = getattr(tc_delta, 'id', None)
-    fn = getattr(tc_delta, 'function', None)
-    name = getattr(fn, 'name', None) if fn else None
+    new_id = _delta_field(tc_delta, 'id')
+    fn = _delta_field(tc_delta, 'function')
+    name = _delta_field(fn, 'name') if fn else None
     if new_id and last['id'] and new_id != last['id']:
         return len(collected)
     if not new_id and name and last['function']['name']:
@@ -395,14 +402,14 @@ def accumulate_tool_call_deltas(collected: list, deltas) -> list:
                 'type': 'function',
                 'function': {'name': '', 'arguments': ''}
             })
-        if getattr(tc_delta, 'id', None):
-            collected[idx]['id'] = tc_delta.id
-        fn = getattr(tc_delta, 'function', None)
+        if _delta_field(tc_delta, 'id'):
+            collected[idx]['id'] = _delta_field(tc_delta, 'id')
+        fn = _delta_field(tc_delta, 'function')
         if fn:
-            if getattr(fn, 'name', None):
-                collected[idx]['function']['name'] = fn.name
-            if getattr(fn, 'arguments', None):
-                collected[idx]['function']['arguments'] += fn.arguments
+            if _delta_field(fn, 'name'):
+                collected[idx]['function']['name'] = _delta_field(fn, 'name')
+            if _delta_field(fn, 'arguments'):
+                collected[idx]['function']['arguments'] += _delta_field(fn, 'arguments')
     return collected
 
 
