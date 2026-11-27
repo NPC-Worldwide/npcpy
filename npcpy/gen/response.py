@@ -712,33 +712,8 @@ def get_ollama_response(
             assistant_msg["tool_calls"] = message['tool_calls']
         result["messages"].append(assistant_msg)
 
-        if (isinstance(format, type) and issubclass(format, BaseModel)) or format == "json":
-            try:
-                if isinstance(response_content, str):
-                    if response_content.startswith("```json"):
-                        response_content = (
-                            response_content.replace("```json", "")
-                            .replace("```", "")
-                            .strip()
-                        )
-                    parsed_response = json.loads(response_content)
-                    result["response"] = parsed_response
-            except json.JSONDecodeError:
-                result["error"] = f"Invalid JSON response: {response_content}"
-
-        if format == "yaml":
-            try:
-                if isinstance(response_content, str):
-                    if response_content.startswith("```yaml"):
-                        response_content = (
-                            response_content.replace("```yaml", "")
-                            .replace("```", "")
-                            .strip()
-                        )
-                    parsed_response = yaml.safe_load(response_content)
-                    result["response"] = parsed_response
-            except yaml.YAMLError:
-                result["error"] = f"Invalid YAML response: {response_content}"
+        parse_as = "json" if isinstance(format, type) and issubclass(format, BaseModel) else format
+        _parse_response_format(result, response_content, parse_as)
 
         return result
 
@@ -853,67 +828,8 @@ def get_ollama_response(
             result["response"] = _wrap_as_stream()
         else:
 
-            if format == "json":
-                try:
-                    llm_response = response_content
-                    if isinstance(llm_response, str):
-                        llm_response = llm_response.strip()
-                        
-                        if '```json' in llm_response:
-                            start = llm_response.find('```json') + 7
-                            end = llm_response.rfind('```')
-                            if end > start:
-                                llm_response = llm_response[start:end].strip()
-                        
-                        first_brace = llm_response.find('{')
-                        first_bracket = llm_response.find('[')
-                        
-                        if first_brace == -1 and first_bracket == -1:
-                            result["response"] = {}
-                            result["error"] = "No JSON found in response"
-                            return result
-                        
-                        if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
-                            llm_response = llm_response[first_brace:]
-                            last_brace = llm_response.rfind('}')
-                            if last_brace != -1:
-                                llm_response = llm_response[:last_brace+1]
-                        else:
-                            llm_response = llm_response[first_bracket:]
-                            last_bracket = llm_response.rfind(']')
-                            if last_bracket != -1:
-                                llm_response = llm_response[:last_bracket+1]
-                        
-                        parsed_json = json.loads(llm_response, strict=False)
-                        
-                        if "json" in parsed_json:
-                            result["response"] = parsed_json["json"]
-                        else:
-                            result["response"] = parsed_json
-                        
-                except (json.JSONDecodeError, TypeError) as e:
-                    logger.debug(f"JSON parsing error: {str(e)}, raw response: {llm_response[:500]}")
-                    result["response"] = {}
-                    result["error"] = "Invalid JSON response"
-
-            if format == "yaml":
-                try:
-                    if isinstance(llm_response, str):
-                        llm_response = llm_response.strip()
-
-                        if '```yaml' in llm_response:
-                            start = llm_response.find('```yaml') + 7
-                            end = llm_response.rfind('```')
-                            if end > start:
-                                llm_response = llm_response[start:end].strip()
-
-                        parsed_yaml = yaml.safe_load(llm_response)
-                        result["response"] = parsed_yaml
-
-                except (yaml.YAMLError, TypeError) as e:
-                    logger.debug(f"YAML parsing error: {str(e)}, raw response: {llm_response[:500]}")
-                    result["response"] = {}
-                    result["error"] = "Invalid YAML response"
+            parse_as = "json" if isinstance(format, type) and issubclass(format, BaseModel) else format
+            _parse_response_format(result, response_content, parse_as)
 
         return result
 
@@ -2511,6 +2427,79 @@ Do not include any additional markdown formatting or leading ```json tags in you
     return result
 
 
+def _parse_response_format(result, llm_response, format):
+    """Replace result["response"] with the parsed JSON/YAML reply."""
+    if not isinstance(llm_response, str):
+        return
+
+    if format == "json":
+        try:
+            llm_response = llm_response.strip()
+
+            if '```json' in llm_response:
+                start = llm_response.find('```json') + 7
+                end = llm_response.rfind('```')
+                if end > start:
+                    llm_response = llm_response[start:end].strip()
+
+            first_brace = llm_response.find('{')
+            first_bracket = llm_response.find('[')
+
+            if first_brace == -1 and first_bracket == -1:
+                result["response"] = {}
+                result["error"] = "No JSON found in response"
+                return
+
+            if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+                llm_response = llm_response[first_brace:]
+                last_brace = llm_response.rfind('}')
+                if last_brace != -1:
+                    llm_response = llm_response[:last_brace+1]
+            else:
+                llm_response = llm_response[first_bracket:]
+                last_bracket = llm_response.rfind(']')
+                if last_bracket != -1:
+                    llm_response = llm_response[:last_bracket+1]
+
+            parsed_json = json.loads(llm_response, strict=False)
+
+            if "json" in parsed_json:
+                result["response"] = parsed_json["json"]
+            else:
+                result["response"] = parsed_json
+
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.debug(f"JSON parsing error: {str(e)}, raw response: {llm_response[:500]}")
+            result["response"] = {}
+            result["error"] = "Invalid JSON response"
+
+    if format == "yaml":
+        try:
+            llm_response = llm_response.strip()
+
+            if '```yaml' in llm_response:
+                start = llm_response.find('```yaml') + 7
+                end = llm_response.rfind('```')
+                if end > start:
+                    llm_response = llm_response[start:end].strip()
+            elif '```' in llm_response:
+                start = llm_response.find('```') + 3
+                newline = llm_response.find('\n', start)
+                if newline != -1:
+                    start = newline + 1
+                end = llm_response.rfind('```')
+                if end > start:
+                    llm_response = llm_response[start:end].strip()
+
+            parsed_yaml = yaml.safe_load(llm_response)
+            result["response"] = parsed_yaml
+
+        except (yaml.YAMLError, TypeError) as e:
+            logger.debug(f"YAML parsing error: {str(e)}, raw response: {llm_response[:500]}")
+            result["response"] = {}
+            result["error"] = "Invalid YAML response"
+
+
 def get_litellm_response(
     prompt: str = None,
     model: str = None,
@@ -3089,74 +3078,7 @@ def get_litellm_response(
                         })
                 assistant_msg["tool_calls"] = tc_dicts
             result["messages"].append(assistant_msg)
-            if format == "json":
-                try:
-                    if isinstance(llm_response, str):
-                        llm_response = llm_response.strip()
-                        
-                        if '```json' in llm_response:
-                            start = llm_response.find('```json') + 7
-                            end = llm_response.rfind('```')
-                            if end > start:
-                                llm_response = llm_response[start:end].strip()
-                        
-                        first_brace = llm_response.find('{')
-                        first_bracket = llm_response.find('[')
-                        
-                        if first_brace == -1 and first_bracket == -1:
-                            result["response"] = {}
-                            result["error"] = "No JSON found in response"
-                            return result
-                        
-                        if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
-                            llm_response = llm_response[first_brace:]
-                            last_brace = llm_response.rfind('}')
-                            if last_brace != -1:
-                                llm_response = llm_response[:last_brace+1]
-                        else:
-                            llm_response = llm_response[first_bracket:]
-                            last_bracket = llm_response.rfind(']')
-                            if last_bracket != -1:
-                                llm_response = llm_response[:last_bracket+1]
-                        
-                        parsed_json = json.loads(llm_response, strict=False)
-                        
-                        if "json" in parsed_json:
-                            result["response"] = parsed_json["json"]
-                        else:
-                            result["response"] = parsed_json
-                        
-                except (json.JSONDecodeError, TypeError) as e:
-                    logger.debug(f"JSON parsing error: {str(e)}, raw response: {llm_response[:500]}")
-                    result["response"] = {}
-                    result["error"] = "Invalid JSON response"
-
-            if format == "yaml":
-                try:
-                    if isinstance(llm_response, str):
-                        llm_response = llm_response.strip()
-
-                        if '```yaml' in llm_response:
-                            start = llm_response.find('```yaml') + 7
-                            end = llm_response.rfind('```')
-                            if end > start:
-                                llm_response = llm_response[start:end].strip()
-                        elif '```' in llm_response:
-                            start = llm_response.find('```') + 3
-                            newline = llm_response.find('\n', start)
-                            if newline != -1:
-                                start = newline + 1
-                            end = llm_response.rfind('```')
-                            if end > start:
-                                llm_response = llm_response[start:end].strip()
-
-                        parsed_yaml = yaml.safe_load(llm_response)
-                        result["response"] = parsed_yaml
-
-                except (yaml.YAMLError, TypeError) as e:
-                    logger.debug(f"YAML parsing error: {str(e)}, raw response: {llm_response[:500]}")
-                    result["response"] = {}
-                    result["error"] = "Invalid YAML response"
+            _parse_response_format(result, llm_response, format)
 
             return result
 
@@ -3286,6 +3208,7 @@ def get_litellm_response(
             result["response"] = string_chunk_generator()
         else:
             result["response"] = llm_response
+            _parse_response_format(result, llm_response, format)
     return result            
 def process_tool_calls(response_dict, tool_map, model, provider, messages, stream=False, tools=None):
     result = response_dict.copy()
