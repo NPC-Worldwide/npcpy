@@ -3376,5 +3376,18 @@ def process_tool_calls(response_dict, tool_map, model, provider, messages, strea
                 "tool_call_id": tool_id,
                 "content": tool_result_str
             })
+        else:
+            error = f"Error: Tool '{tool_name}' not found in tool_map"
+            result["tool_results"].append({
+                "tool_call_id": tool_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "result": error
+            })
+            result["messages"].append({
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "content": json.dumps(error)
+            })
     
     return result
