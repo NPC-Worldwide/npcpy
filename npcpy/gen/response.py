@@ -2736,6 +2736,13 @@ def get_litellm_response(
         if not api_key:
             raise ValueError("TrustedRouter requires TRUSTEDROUTER_API_KEY or an explicit api_key.")
         provider = "openai"
+    elif provider == 'llmtr':
+        model = model or "qwen/qwen3.8-flash"
+        api_url = api_url or os.environ.get("LLMTR_API_URL") or "https://llmtr.com/v1"
+        api_key = api_key or os.environ.get("LLMTR_API_KEY")
+        if not api_key:
+            raise ValueError("LLMTR requires LLMTR_API_KEY or an explicit api_key.")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:

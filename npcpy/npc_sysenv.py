@@ -19,6 +19,7 @@ ON_MACOS = platform.system() == "Darwin"
 MINIMAX_MODELS = ("MiniMax-M3.1-Flash", "MiniMax-M3")
 _MINIMAX_LEGACY_MODELS = frozenset({"MiniMax-M2.7"})
 TRUSTEDROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+LLMTR_DEFAULT_MODEL = "qwen/qwen3.8-flash"
 _PROVIDER_FALLBACK_MODELS = {
     "orcarouter": {"orcarouter/auto", "orcarouter/free", "orcarouter/fusion", "orcarouter/fusion-flash", "orcarouter/fusion-mini"},
     "trustedrouter": {
@@ -26,6 +27,12 @@ _PROVIDER_FALLBACK_MODELS = {
         "trustedrouter/auto",
         "trustedrouter/zdr",
         "trustedrouter/e2e",
+    },
+    "llmtr": {
+        "qwen/qwen3.8-flash",
+        "qwen/qwen3.8-max",
+        "mistral/devstral-medium-latest",
+        "qwen/qwen3.8-27b-free",
     },
 }
 
@@ -72,6 +79,36 @@ def fetch_trustedrouter_models(
             if model_id not in seen:
                 seen.add(model_id)
                 models.append(model_id)
+    return models
+
+
+def fetch_llmtr_models(
+    api_url: str = None,
+    api_key: str = None,
+    timeout: float = 3.5,
+) -> List[str]:
+    """Fetch model IDs from LLMTR's /v1/models endpoint."""
+    base_url = (
+        api_url
+        or os.environ.get("LLMTR_API_URL")
+        or "https://llmtr.com/v1"
+    ).rstrip("/")
+    key = api_key if api_key is not None else os.environ.get("LLMTR_API_KEY")
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    response = requests.get(f"{base_url}/models", headers=headers, timeout=timeout)
+    response.raise_for_status()
+    payload = response.json()
+    models = []
+    seen = set()
+    for entry in payload.get("data", []):
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        if model_id not in seen:
+            seen.add(model_id)
+            models.append(model_id)
     return models
 
 def get_data_dir() -> str:
@@ -305,6 +342,21 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
                 tr_models = []
             for model_id in tr_models or sorted(_PROVIDER_FALLBACK_MODELS["trustedrouter"]):
                 available_models[model_id] = "trustedrouter"
+
+        llmtr_key = env_vars.get("LLMTR_API_KEY") or os.environ.get("LLMTR_API_KEY")
+        if llmtr_key:
+            llmtr_url = env_vars.get("LLMTR_API_URL") or os.environ.get("LLMTR_API_URL")
+            try:
+                llmtr_models = fetch_llmtr_models(
+                    api_url=llmtr_url,
+                    api_key=llmtr_key,
+                    timeout=timeout_seconds,
+                )
+            except Exception as e:
+                logging.info(f"LLMTR live model discovery failed, using defaults: {e}")
+                llmtr_models = []
+            for model_id in llmtr_models or sorted(_PROVIDER_FALLBACK_MODELS["llmtr"]):
+                available_models[model_id] = "llmtr"
     try:
         import ollama
         timeout_seconds = 5.0
