@@ -206,6 +206,7 @@ AirLLM loads and processes model layers sequentially, allowing you to run models
 | `llamacpp` | path to GGUF file | Direct llama.cpp binding |
 | `lmstudio` | local model name | OpenAI-compatible on port 1234 |
 | `lora` | path to adapter | LoRA fine-tuned adapters |
+| `llmtr` | `qwen/qwen3.8-flash` | [LLMTR](https://llmtr.com) prepaid OpenAI-compatible gateway using `vendor/model` IDs (`GET https://llmtr.com/v1/models`); requires `LLMTR_API_KEY`, optional `LLMTR_API_URL` override |
 | `obscurify` | `deepseek/deepseek-v4-flash` | [Obscurify.ai](https://obscurify.ai/?utm_source=npcpy) privacy-focused OpenAI-compatible API, 200+ models; requires `OBSCURIFY_API_KEY`, optional `OBSCURIFY_API_URL` override |
 | `ollama` | `llama3.2`, `gemma3:4b` | Local models, default provider |
 | `onomeo` | `deepseek-v4.1-flash` | [onomeo](https://onomeo.com) OpenAI-compatible API for Claude, GPT, DeepSeek and free models under plain IDs (`GET https://onomeo.com/v1/models` with a key); requires `ONOMEO_API_KEY`, optional `ONOMEO_API_URL` override |

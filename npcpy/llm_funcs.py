@@ -18,6 +18,7 @@ from npcpy.npc_sysenv import (
     get_system_message,
     MINIMAX_MODELS,
     TRUSTEDROUTER_DEFAULT_MODEL,
+    LLMTR_DEFAULT_MODEL,
 )
 
 from npcpy.gen.response import get_litellm_response
@@ -252,6 +253,11 @@ def resolve_model_provider(
             m = TRUSTEDROUTER_DEFAULT_MODEL
         a_url = a_url or os.environ.get("TRUSTEDROUTER_API_URL") or "https://api.trustedrouter.com/v1"
         a_key = a_key or os.environ.get("TRUSTEDROUTER_API_KEY")
+    if p == "llmtr":
+        if m is None:
+            m = LLMTR_DEFAULT_MODEL
+        a_url = a_url or os.environ.get("LLMTR_API_URL") or "https://llmtr.com/v1"
+        a_key = a_key or os.environ.get("LLMTR_API_KEY")
     return m, p, a_url, a_key
 
 

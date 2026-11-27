@@ -1181,6 +1181,16 @@ print(response["response"])
 ```
 
 </details>
+<details><summary>LLMTR</summary>
+
+Set `LLMTR_API_KEY` and use `provider="llmtr"` with a `vendor/model` ID from LLMTR's public model list (`GET https://llmtr.com/v1/models`), for example `qwen/qwen3.8-flash` (default), `qwen/qwen3.8-max` or `mistral/devstral-medium-latest`. Requests go to the OpenAI-compatible Base URL `https://llmtr.com/v1`; set `LLMTR_API_URL` to override it. Usage is prepaid; keys are created in the [LLMTR dashboard](https://llmtr.com/dashboard/keys).
+
+```python
+response = get_llm_response("Say hello in one short sentence.", model="qwen/qwen3.8-flash", provider="llmtr")
+print(response["response"])
+```
+
+</details>
 <details><summary>MiniMax</summary>
 
 Set `MINIMAX_API_KEY` and use `provider="minimax"`. When no model is configured, `MiniMax-M3.1-Flash` is the default; the model list offers it first, followed by `MiniMax-M3`. Explicit saved or custom model IDs remain supported, including legacy IDs. The optional `MINIMAX_API_URL` setting selects the region and compatible protocol; it defaults to the global OpenAI-compatible Base URL.

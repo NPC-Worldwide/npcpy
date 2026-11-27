@@ -1438,3 +1438,186 @@ class TestTrustedRouterRouting:
         assert available["trustedrouter/zdr"] == "trustedrouter"
         assert available["trustedrouter/e2e"] == "trustedrouter"
         assert available["trustedrouter/auto"] == "trustedrouter"
+
+class TestLlmtrRouting:
+    """Test LLMTR provider resolution, live model discovery, and request routing."""
+
+    def test_resolve_defaults(self, monkeypatch):
+        monkeypatch.delenv("LLMTR_API_URL", raising=False)
+        monkeypatch.setenv("LLMTR_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(model="qwen/qwen3.8-flash", provider="llmtr")
+        assert (m, p) == ("qwen/qwen3.8-flash", "llmtr")
+        assert url == "https://llmtr.com/v1"
+        assert key == "test-key"
+
+    def test_resolve_default_model_when_omitted(self, monkeypatch):
+        monkeypatch.delenv("LLMTR_API_URL", raising=False)
+        monkeypatch.setenv("LLMTR_API_KEY", "test-key")
+        m, p, url, key = resolve_model_provider(provider="llmtr")
+        assert (m, p) == ("qwen/qwen3.8-flash", "llmtr")
+        assert url == "https://llmtr.com/v1"
+        assert key == "test-key"
+
+    def test_resolve_env_url_override(self, monkeypatch):
+        monkeypatch.setenv("LLMTR_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("LLMTR_API_KEY", "env-key")
+        _, p, url, key = resolve_model_provider(model="qwen/qwen3.8-flash", provider="llmtr")
+        assert p == "llmtr"
+        assert url == "https://example.test/v1"
+        assert key == "env-key"
+
+    def test_explicit_arguments_win(self, monkeypatch):
+        monkeypatch.setenv("LLMTR_API_URL", "https://example.test/v1")
+        monkeypatch.setenv("LLMTR_API_KEY", "env-key")
+        _, _, url, key = resolve_model_provider(
+            model="qwen/qwen3.8-flash", provider="llmtr",
+            api_url="https://other.test/v1", api_key="arg-key",
+        )
+        assert url == "https://other.test/v1"
+        assert key == "arg-key"
+
+    def test_missing_key_does_not_fall_back_to_openai_credentials(self, monkeypatch):
+        from npcpy.gen import response as response_module
+        monkeypatch.delenv("LLMTR_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-sent")
+        calls = []
+        monkeypatch.setattr(response_module, "completion", lambda **kwargs: calls.append(kwargs))
+        with pytest.raises(ValueError, match="LLMTR_API_KEY"):
+            get_llm_response("Hello", model="qwen/qwen3.8-flash", provider="llmtr")
+        assert calls == []
+
+    @pytest.mark.parametrize("model", [
+        "qwen/qwen3.8-flash",
+        "qwen/qwen3.8-max",
+        "mistral/devstral-medium-latest",
+        "qwen/qwen3.8-27b-free",
+    ])
+    def test_request_keeps_model_id(self, monkeypatch, model):
+        """vendor/model IDs reach <base>/chat/completions unchanged."""
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                self.server.seen.append((
+                    self.path,
+                    self.headers.get("Authorization"),
+                    body.get("model"),
+                ))
+                data = json.dumps({
+                    "id": "chatcmpl-local",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": body.get("model"),
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.seen = []
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            monkeypatch.setenv("LLMTR_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+            monkeypatch.setenv("LLMTR_API_KEY", "llmtr-test-key")
+            result = get_llm_response(
+                "Hello",
+                model=model,
+                provider="llmtr",
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert result["response"] == "ok"
+        assert server.seen == [("/v1/chat/completions", "Bearer llmtr-test-key", model)]
+
+    def test_live_models_discovery_keeps_catalog_ids_and_drops_invalid_rows(self, monkeypatch, tmp_path):
+        """Live /v1/models discovery keeps vendor/model IDs and skips empty or non-object rows."""
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+        from npcpy import npc_sysenv
+
+        catalog = {
+            "object": "list",
+            "data": [
+                {"id": "qwen/qwen3.8-flash"},
+                {"id": "qwen/qwen3.8-max"},
+                {"id": "mistral/devstral-medium-latest"},
+                {"id": "qwen/qwen3.8-27b-free"},
+                {"id": "qwen/qwen3.8-flash"},
+                {"id": ""},
+                {"id": 123},
+                "not-an-object",
+                {},
+            ],
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.server.seen.append((self.path, self.headers.get("Authorization")))
+                data = json.dumps(catalog).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.seen = []
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}/v1"
+            monkeypatch.setenv("LLMTR_API_URL", base_url)
+            monkeypatch.setenv("LLMTR_API_KEY", "llmtr-test-key")
+            monkeypatch.setattr(npc_sysenv, "check_internet_connection", lambda timeout=5: True)
+
+            discovered = npc_sysenv.fetch_llmtr_models()
+            assert discovered == [
+                "qwen/qwen3.8-flash",
+                "qwen/qwen3.8-max",
+                "mistral/devstral-medium-latest",
+                "qwen/qwen3.8-27b-free",
+            ]
+
+            available = npc_sysenv.get_locally_available_models(str(tmp_path))
+            assert available["qwen/qwen3.8-flash"] == "llmtr"
+            assert available["qwen/qwen3.8-max"] == "llmtr"
+            assert available["mistral/devstral-medium-latest"] == "llmtr"
+            assert available["qwen/qwen3.8-27b-free"] == "llmtr"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert ("/v1/models", "Bearer llmtr-test-key") in server.seen
+
+    def test_get_locally_available_models_fallback_on_error(self, monkeypatch, tmp_path):
+        """Falls back to default LLMTR model IDs if /v1/models is unreachable."""
+        from npcpy import npc_sysenv
+
+        monkeypatch.setenv("LLMTR_API_KEY", "llmtr-test-key")
+        monkeypatch.setattr(npc_sysenv, "check_internet_connection", lambda timeout=5: True)
+        monkeypatch.setattr(
+            npc_sysenv,
+            "fetch_llmtr_models",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+        )
+
+        available = npc_sysenv.get_locally_available_models(str(tmp_path))
+        assert available["qwen/qwen3.8-flash"] == "llmtr"
+        assert available["qwen/qwen3.8-max"] == "llmtr"
+        assert available["mistral/devstral-medium-latest"] == "llmtr"
+        assert available["qwen/qwen3.8-27b-free"] == "llmtr"
