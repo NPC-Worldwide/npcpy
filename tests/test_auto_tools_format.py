@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 
 from npcpy.gen.response import get_litellm_response, get_ollama_response
 
@@ -65,3 +66,23 @@ def test_litellm_auto_tools_parses_format_when_no_tool_is_called(fmt, text):
 
     assert result["response"] == {"answer": 3}
     assert result["messages"][-1] == {"role": "assistant", "content": text}
+
+
+class Answer(BaseModel):
+    answer: int
+
+
+@pytest.mark.parametrize("fmt,text", [
+    ("json", 'Here you go:\n```json\n{"answer": 3}\n```'),
+    ("yaml", "```\nanswer: 3\n```"),
+    (Answer, '```json\n{"answer": 3}\n```'),
+])
+def test_ollama_parses_format_without_auto_tools(fmt, text):
+    pytest.importorskip("ollama")
+    client = MagicMock()
+    client.chat.return_value = {"message": {"role": "assistant", "content": text}}
+    with patch("ollama.Client", return_value=client), patch("ollama.chat", client.chat):
+        result = get_ollama_response(prompt="what is 1 + 2?", model="llama3.2", format=fmt)
+
+    assert result["response"] == {"answer": 3}
+    assert "error" not in result
