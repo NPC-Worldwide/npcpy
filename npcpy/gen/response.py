@@ -1025,10 +1025,14 @@ Do not include any additional markdown formatting or leading ```json tags in you
         temperature = kwargs.get("temperature", 0.7)
 
         # transformers rejects temperature=0 when do_sample=True; use greedy
-        # decoding for temperature <= 0 and only pass temperature when sampling.
+        # decoding for temperature <= 0 and only pass sampling args when sampling.
         generate_kwargs = {"do_sample": bool(temperature and temperature > 0)}
         if generate_kwargs["do_sample"]:
             generate_kwargs["temperature"] = temperature
+            if kwargs.get("top_p") is not None:
+                generate_kwargs["top_p"] = kwargs["top_p"]
+            if kwargs.get("top_k") is not None:
+                generate_kwargs["top_k"] = kwargs["top_k"]
 
         with torch.no_grad():
             outputs = model_with_adapter.generate(
