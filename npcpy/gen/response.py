@@ -2725,6 +2725,13 @@ def get_litellm_response(
         api_url = api_url or os.environ.get("ONOMEO_API_URL") or "https://onomeo.com/v1"
         api_key = api_key or os.environ.get("ONOMEO_API_KEY")
         provider = "openai"
+    elif provider == 'trustedrouter':
+        model = model or "deepseek/deepseek-v4-flash"
+        api_url = api_url or os.environ.get("TRUSTEDROUTER_API_URL") or "https://api.trustedrouter.com/v1"
+        api_key = api_key or os.environ.get("TRUSTEDROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("TrustedRouter requires TRUSTEDROUTER_API_KEY or an explicit api_key.")
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:
@@ -2935,6 +2942,9 @@ def get_litellm_response(
     if kwargs:
         for key, value in kwargs.items():
             if minimax_direct and key in minimax_reasoning:
+                continue
+            if key == "extra_body" and isinstance(value, dict):
+                api_params["extra_body"] = {**(api_params.get("extra_body") or {}), **value}
                 continue
             if key in [
                 "stop", "temperature", "top_p", "max_tokens", "max_completion_tokens",
