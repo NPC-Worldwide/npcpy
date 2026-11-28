@@ -184,7 +184,7 @@ def get_elevenlabs_voices(api_key: Optional[str] = None) -> list:
 
 async def openai_realtime_connect(
     api_key: Optional[str] = None,
-    model: str = "gpt-4o-realtime-preview-2024-12-17",
+    model: str = "gpt-realtime-1.5",
     voice: str = "alloy",
     instructions: str = "You are a helpful assistant."
 ):
@@ -199,27 +199,35 @@ async def openai_realtime_connect(
     api_key = api_key or os.environ.get('OPENAI_API_KEY')
 
     url = f"wss://api.openai.com/v1/realtime?model={model}"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "OpenAI-Beta": "realtime=v1"
-    }
+    headers = {"Authorization": f"Bearer {api_key}"}
 
-    ws = await websockets.connect(url, extra_headers=headers)
+    try:
+        ws = await websockets.connect(url, additional_headers=headers)
+    except TypeError:
+        # websockets < 14 calls this argument extra_headers
+        ws = await websockets.connect(url, extra_headers=headers)
 
     await ws.send(json.dumps({
         "type": "session.update",
         "session": {
-            "modalities": ["text", "audio"],
+            "type": "realtime",
+            "output_modalities": ["audio"],
             "instructions": instructions,
-            "voice": voice,
-            "input_audio_format": "pcm16",
-            "output_audio_format": "pcm16",
-            "input_audio_transcription": {"model": "whisper-1"},
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "silence_duration_ms": 500
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    "transcription": {"model": "whisper-1"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500
+                    }
+                },
+                "output": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    "voice": voice
+                }
             }
         }
     }))
@@ -273,13 +281,13 @@ async def openai_realtime_receive(ws, on_audio=None, on_text=None):
         event = json.loads(message)
         event_type = event.get("type", "")
 
-        if event_type == "response.audio.delta":
+        if event_type in ("response.output_audio.delta", "response.audio.delta"):
             audio = base64.b64decode(event.get("delta", ""))
             audio_chunks.append(audio)
             if on_audio:
                 on_audio(audio)
 
-        elif event_type == "response.text.delta":
+        elif event_type in ("response.output_text.delta", "response.text.delta"):
             text = event.get("delta", "")
             text_chunks.append(text)
             if on_text:
