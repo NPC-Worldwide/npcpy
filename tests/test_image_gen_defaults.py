@@ -102,3 +102,26 @@ def test_openai_image_gen_edit_sends_every_reference(sent_edits, tmp_path):
         attachments=[str(first), str(second)],
     )
     assert sent_edits == [[first.read_bytes(), second.read_bytes()]]
+
+
+@pytest.mark.parametrize("attachments", [None, [b"ref"]])
+def test_gemini_flash_image_honors_n_images(monkeypatch, attachments):
+    genai = pytest.importorskip("google.genai")
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(buf, format="PNG")
+    part = types.SimpleNamespace(inline_data=types.SimpleNamespace(data=buf.getvalue()))
+    candidate = types.SimpleNamespace(content=types.SimpleNamespace(parts=[part]))
+    client = Mock()
+    client.models.generate_content.return_value = types.SimpleNamespace(candidates=[candidate])
+    monkeypatch.setattr(genai, "Client", lambda **kwargs: client)
+
+    images = image_gen.generate_image(
+        "a cat",
+        model="gemini-3.1-flash-image",
+        provider="gemini",
+        n_images=3,
+        attachments=attachments,
+    )
+
+    assert len(images) == 3
+    assert client.models.generate_content.call_count == 3

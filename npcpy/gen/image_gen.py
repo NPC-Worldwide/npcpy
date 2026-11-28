@@ -289,24 +289,25 @@ def gemini_image_gen(
                     )
                 )
         
-        response = client.models.generate_content(
-            model=model,
-            contents=processed_contents,
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE", "TEXT"],
-            ),
-        )
+        for _ in range(n_images):
+            response = client.models.generate_content(
+                model=model,
+                contents=processed_contents,
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE", "TEXT"],
+                ),
+            )
 
-        if hasattr(response, 'candidates') and response.candidates:
-            for candidate in response.candidates:
-                if candidate.content and candidate.content.parts:
-                    for part in candidate.content.parts:
-                        if hasattr(part, 'inline_data') and part.inline_data:
-                            image_data = part.inline_data.data
-                            collected_images.append(Image.open(BytesIO(image_data)))
+            if hasattr(response, 'candidates') and response.candidates:
+                for candidate in response.candidates:
+                    if candidate.content and candidate.content.parts:
+                        for part in candidate.content.parts:
+                            if hasattr(part, 'inline_data') and part.inline_data:
+                                image_data = part.inline_data.data
+                                collected_images.append(Image.open(BytesIO(image_data)))
 
-        if not collected_images and hasattr(response, 'text'):
-            print(f"Gemini response text: {response.text}")
+            if not collected_images and hasattr(response, 'text'):
+                print(f"Gemini response text: {response.text}")
 
         return collected_images
     else:
@@ -330,24 +331,25 @@ def gemini_image_gen(
             or 'pro-image' in model
             or 'image-generation' in model
         ):
-            response = client.models.generate_content(
-                model=model,
-                contents=[prompt],
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"],
-                ),
-            )
+            for _ in range(n_images):
+                response = client.models.generate_content(
+                    model=model,
+                    contents=[prompt],
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE", "TEXT"],
+                    ),
+                )
 
-            if hasattr(response, 'candidates') and response.candidates:
-                for candidate in response.candidates:
-                    if candidate.content and candidate.content.parts:
-                        for part in candidate.content.parts:
-                            if hasattr(part, 'inline_data') and part.inline_data:
-                                image_data = part.inline_data.data
-                                collected_images.append(Image.open(BytesIO(image_data)))
+                if hasattr(response, 'candidates') and response.candidates:
+                    for candidate in response.candidates:
+                        if candidate.content and candidate.content.parts:
+                            for part in candidate.content.parts:
+                                if hasattr(part, 'inline_data') and part.inline_data:
+                                    image_data = part.inline_data.data
+                                    collected_images.append(Image.open(BytesIO(image_data)))
             
-            if not collected_images and hasattr(response, 'text'):
-                print(f"Gemini response text: {response.text}")
+                if not collected_images and hasattr(response, 'text'):
+                    print(f"Gemini response text: {response.text}")
             
             return collected_images
         
