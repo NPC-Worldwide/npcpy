@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import sys
 import types
@@ -28,6 +29,48 @@ def test_gemini_live_connect_default_model_is_not_retired(monkeypatch):
 
     model = sent[0]["setup"]["model"].removeprefix("models/")
     assert model not in RETIRED
+
+
+def test_openai_realtime_tts_uses_ga_api(monkeypatch):
+    sent = []
+    seen = {}
+    events = [
+        {
+            "type": "response.output_audio.delta",
+            "delta": base64.b64encode(b"\x01\x02").decode(),
+        },
+        {"type": "response.done"},
+    ]
+
+    class FakeWebSocket:
+        async def send(self, message):
+            sent.append(json.loads(message))
+
+        async def recv(self):
+            return json.dumps({"type": "session.created"})
+
+        async def __aiter__(self):
+            for event in events:
+                yield json.dumps(event)
+
+        async def close(self):
+            pass
+
+    async def connect(url, additional_headers=None):
+        seen["url"] = url
+        seen["headers"] = additional_headers
+        return FakeWebSocket()
+
+    monkeypatch.setitem(sys.modules, "websockets", types.SimpleNamespace(connect=connect))
+
+    audio = asyncio.run(audio_gen.tts_openai_realtime("hi", api_key="test-key"))
+
+    assert audio == b"\x01\x02"
+    assert "OpenAI-Beta" not in seen["headers"]
+    assert "gpt-4o-realtime-preview" not in seen["url"]
+    session = sent[0]["session"]
+    assert session["type"] == "realtime"
+    assert session["audio"]["output"]["voice"] == "alloy"
 
 
 def test_kokoro_forwards_explicit_lang_code(monkeypatch):
